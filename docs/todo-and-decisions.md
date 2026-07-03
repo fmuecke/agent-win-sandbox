@@ -4,7 +4,7 @@ Running log to update the project step by step. Captures decisions already made
 (with rationale) and open items still to action. Personal/career discussions are
 deliberately excluded.
 
-_Last updated: 2026-07-01_
+_Last updated: 2026-07-04_
 
 ---
 
@@ -25,9 +25,15 @@ _Last updated: 2026-07-01_
 - **No credential caching.** The per-launch `runas` password prompt is the only
   credential path; acts as a deliberate speed-bump / cross-user boundary enforcer.
   Infrequent use doesn't justify the security tradeoff of caching.
-- **Short fixed password (Option A) over per-launch random reset (Option B).** The
-  prompt is friction, not a true gate; Option B added elevated prompts every launch
-  and extra failure points for marginal value.
+- **Stable policy-compliant password (Option A) over per-launch random reset
+  (Option B).** The sandbox password must satisfy the local/domain Windows
+  password policy; a short simple password may not be accepted on managed
+  machines. A random password reset on every launch would avoid the user knowing
+  the `ClaudeSandbox` password, but it would require elevation every time and
+  turn the daily launcher into a privileged broker. It also does not fit cleanly
+  with `runas`, adds failure points for marginal value, and may interfere with
+  per-user protected state if Windows secrets become tied to the previous logon
+  password. Keep setup elevated once; keep daily launch non-elevated.
 
 ### Account hardening
 - **Interactive logon stays ENABLED on purpose** — the launcher needs it; denying

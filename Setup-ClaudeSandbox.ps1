@@ -80,7 +80,7 @@ function Read-SandboxPassword {
     param([string]$AccountName)
 
     while ($true) {
-        $first = Read-Host "Set password for '$AccountName'" -AsSecureString
+        $first = Read-Host "Set password for '$AccountName' (must satisfy Windows password policy)" -AsSecureString
         $second = Read-Host "Confirm password for '$AccountName'" -AsSecureString
         $firstText = [pscredential]::new('user', $first).GetNetworkCredential().Password
         $secondText = [pscredential]::new('user', $second).GetNetworkCredential().Password
@@ -164,13 +164,29 @@ if (Test-Path $SandboxPath) {
 Write-Step "Ensuring local user '$UserName' exists"
 $existing = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
 if (-not $existing) {
-    if (-not $Password) {
-        $Password = Read-SandboxPassword -AccountName $UserName
+    while ($true) {
+        if (-not $Password) {
+            $Password = Read-SandboxPassword -AccountName $UserName
+        }
+        try {
+            New-LocalUser -Name $UserName -Password $Password `
+                -FullName 'Claude Code Sandbox User' `
+                -Description 'Low-privilege user for running Claude Code' `
+                -PasswordNeverExpires:$true | Out-Null
+            break
+        }
+        catch {
+            $errorId = $_.FullyQualifiedErrorId
+            $exceptionType = $_.Exception.GetType().FullName
+            if (($errorId -like 'InvalidPassword*') -or
+                ($exceptionType -eq 'Microsoft.PowerShell.Commands.InvalidPasswordException')) {
+                Write-Warning 'Windows rejected that password. It may not satisfy local/domain length, complexity, or history policy. Try another password.'
+                $Password = $null
+                continue
+            }
+            throw
+        }
     }
-    New-LocalUser -Name $UserName -Password $Password `
-        -FullName 'Claude Code Sandbox User' `
-        -Description 'Low-privilege user for running Claude Code' `
-        -PasswordNeverExpires:$true | Out-Null
 
     # Ensure it is ONLY a standard user (member of Users, not Administrators)
     Add-LocalGroupMember -Group 'Users' -Member $UserName -ErrorAction SilentlyContinue

@@ -138,6 +138,7 @@ per-user install is present and warns if a copy exists elsewhere.
 #   will be created; Enter accepts C:\dev
 #   if the workspace folder already exists, setup asks before reusing it
 #   when creating ClaudeSandbox, setup asks for the password twice
+#   the password must satisfy the machine's Windows password policy
 
 # 2. Install the Claude Code policy  (ELEVATED)
 New-Item -ItemType Directory -Path C:\ProgramData\ClaudeCode -Force | Out-Null
@@ -191,7 +192,14 @@ desktop — `Start-Process -Credential` can produce a window that renders but wo
 accept keyboard input (a "hung" shell).
 
 No password caching: the prompt is the only credential path, which keeps the tool
-simple and avoids storing the password anywhere.
+simple and avoids storing the password anywhere. Use a stable password that
+satisfies the local or domain Windows password policy.
+
+The launcher also deliberately does not reset `ClaudeSandbox` to a random
+password on every start. That would hide the password from the user, but it
+would require elevation for every daily launch, make the starter script a
+privileged broker, and add more failure modes than it removes. Keep provisioning
+elevated and keep normal launches non-elevated.
 
 
 ## Limitations
