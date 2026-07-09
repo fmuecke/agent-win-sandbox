@@ -9,7 +9,7 @@ This repository contains a small Windows PowerShell toolset for running Claude C
 - `Start-ClaudeSandbox.ps1`: normal day-to-day launcher using `runas`.
 - `Check-ClaudeSandbox.ps1`: read-only verifier for account state, ACLs, bootstrap, policy, and toolchain assumptions.
 - `bootstrap/`: source bootstrap scripts copied into locked ProgramData by setup.
-- `managed-settings.json`: Claude Code enterprise policy intended for `C:\ProgramData\ClaudeCode\`.
+- `managed-settings.json`: Claude Code enterprise policy template intended for deployment to `C:\Program Files\ClaudeCode\managed-settings.json`.
 - `README.md`: user-facing setup and threat-model documentation.
 - `discovery/`: research notes and design background. Do not treat these as executable source.
 

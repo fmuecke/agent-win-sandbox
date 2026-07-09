@@ -70,7 +70,8 @@ Primary assets to protect:
 - Development-domain services, repositories, package feeds, shares, and build
   systems reachable from the developer VLAN.
 - Source trees outside `C:\dev\ClaudeSandbox`.
-- Trusted launcher and policy files under ProgramData.
+- Trusted launcher files under ProgramData and Claude Code policy under
+  Program Files.
 - Claude Code configuration and credentials scoped to `ClaudeSandbox`.
 
 Assets intentionally exposed to the agent:
@@ -98,7 +99,11 @@ admin-write / Users-read-execute:
 - `C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1`
 - `C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1`
 - `C:\ProgramData\claude-win-sandbox\bootstrap\Enter-ClaudeDevShell.ps1`
-- `C:\ProgramData\ClaudeCode\managed-settings.json`
+
+File-based Claude Code managed policy lives under Program Files and should be
+admin-write / Users-read:
+
+- `C:\Program Files\ClaudeCode\managed-settings.json`
 
 The writable workspace must not be the source of trusted launcher code.
 
@@ -166,12 +171,13 @@ Limitations:
 - There is no per-repo, per-command, or read-only mode in the current
   PowerShell implementation.
 
-### Protected ProgramData control plane
+### Protected control plane
 
 Setup copies the launcher, checker, and bootstrap, and writes configuration
 under `C:\ProgramData\claude-win-sandbox`, then locks the directory admin-write /
 Users-read-execute. The managed Claude Code policy is also intended to live under
-`C:\ProgramData\ClaudeCode` with admin-write permissions.
+`C:\Program Files\ClaudeCode\managed-settings.json` with admin-write
+permissions.
 
 Security effect:
 
@@ -228,20 +234,21 @@ Limitations:
 
 ### Claude Code managed settings
 
-`managed-settings.json` disables bypass-permissions mode, denies obvious secret
-reads and several risky shell patterns, denies `WebFetch`, and asks before some
-remote-git actions.
+`managed-settings.json` disables bypass-permissions and auto mode, locks down
+hooks/MCP/plugin sideload surfaces, denies WebFetch/WebSearch, and blocks edits
+to agent-control paths such as `.git`, `.claude`, and `.mcp.json`.
 
 Security effect:
 
-- Adds a tool-level guardrail in case the model tries to read known secret
-  paths or run common credential-discovery commands.
+- Reduces policy/config poisoning through Claude-controlled files.
 - Prevents local policy bypass mode when installed correctly.
+- Avoids broad secret-read promises that would duplicate or weaken the Windows
+  user/ACL boundary story.
 
 Limitations:
 
 - This is defense in depth, not a kernel boundary.
-- Path and command policies can be incomplete.
+- Path and command policies are intentionally narrow and incomplete.
 - Agent bugs or future Claude Code behavior changes can affect enforcement.
 
 ## STRIDE Summary
@@ -442,8 +449,8 @@ For full coverage, run it elevated. Review every WARN and FAIL, especially:
 - `ClaudeSandbox` is not an administrator and has no risky group memberships.
 - Network and RDP logon deny rights are present.
 - Interactive logon is still allowed.
-- ProgramData config, launcher/checker, bootstrap, and policy files are
-  admin-write-only.
+- ProgramData config, launcher/checker, bootstrap, and the Program Files Claude
+  policy file are admin-write-only.
 - The sandbox workspace exists and grants `ClaudeSandbox` write access.
 - The developer profile is not readable by Users, Everyone, or Authenticated
   Users.

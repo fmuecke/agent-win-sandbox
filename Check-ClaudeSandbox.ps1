@@ -19,6 +19,9 @@
 .PARAMETER ManagedSettings
     Claude Code enterprise policy file.
 
+.PARAMETER ManagedSettingsRegistryPath
+    Machine-wide Claude Code policy registry key.
+
 .PARAMETER ConfigFile
     claude-win-sandbox ProgramData config file.
 
@@ -39,7 +42,9 @@ param(
     [string]$BootstrapScript = 'C:\ProgramData\claude-win-sandbox\bootstrap\Enter-ClaudeDevShell.ps1',
     [string]$LauncherScript = 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1',
     [string]$InstalledCheckScript = 'C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1',
-    [string]$ManagedSettings = 'C:\ProgramData\ClaudeCode\managed-settings.json',
+    [string]$ManagedSettings = 'C:\Program Files\ClaudeCode\managed-settings.json',
+    [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
+    [string]$ManagedSettingsRegistryValue = 'Settings',
     [string]$ConfigFile = 'C:\ProgramData\claude-win-sandbox\config.json'
 )
 
@@ -70,6 +75,7 @@ $script:fails = 0
 $script:warns = 0
 
 function Pass { param($m) Write-Host "  [PASS] $m" -ForegroundColor Green }
+function Info { param($m) Write-Host "  [INFO] $m" -ForegroundColor DarkGray }
 function Warn { param($m) Write-Host "  [WARN] $m" -ForegroundColor Yellow; $script:warns++ }
 function Fail { param($m) Write-Host "  [FAIL] $m" -ForegroundColor Red; $script:fails++ }
 function Section { param($m) Write-Host "`n== $m ==" -ForegroundColor Cyan }
@@ -78,14 +84,15 @@ function Get-NonAdminWritableAce {
         [System.Security.AccessControl.FileSystemSecurity]$Acl,
         [string]$UserName
     )
-    $identityPattern = "\\($([regex]::Escape($UserName))|Users|Everyone|Authenticated Users)$|^Everyone$"
+    $adminWritePrincipalPattern = '^(BUILTIN\\Administrators|NT AUTHORITY\\SYSTEM|NT SERVICE\\TrustedInstaller)$|\\Administrators$'
     $Acl.Access | Where-Object {
         $_.AccessControlType -eq 'Allow' -and
+        $_.PropagationFlags -notmatch 'InheritOnly' -and
         $_.FileSystemRights -match 'Write|Modify|FullControl|Delete|ChangePermissions|TakeOwnership' -and
-        $_.IdentityReference -match $identityPattern
+        $_.IdentityReference -notmatch $adminWritePrincipalPattern
     }
 }
-function Test-ProgramDataLock {
+function Test-AdminWriteOnlyPath {
     param(
         [string]$Path,
         [string]$Description,
@@ -104,6 +111,38 @@ function Test-ProgramDataLock {
     }
     else {
         Pass "$Description is admin-write-only."
+    }
+}
+function Test-ManagedPolicyContent {
+    param(
+        [string]$Description,
+        [string]$JsonText
+    )
+
+    try {
+        $json = $JsonText | ConvertFrom-Json
+        if ($json.permissions.disableBypassPermissionsMode -eq 'disable') {
+            Pass "$Description disables bypass-permissions mode."
+        }
+        else {
+            Warn "$Description does NOT disable bypass-permissions mode."
+        }
+        if ($json.permissions.deny) {
+            Pass "$Description has deny rules ($($json.permissions.deny.Count) entries)."
+        }
+        else {
+            Warn "$Description has no deny rules."
+        }
+        if ($json.allowedMcpServers -is [array] -and $json.allowedMcpServers.Count -eq 0 -and
+            $json.allowManagedMcpServersOnly -eq $true) {
+            Pass "$Description locks MCP servers to an empty managed allowlist."
+        }
+        else {
+            Warn "$Description does not lock MCP servers to an empty managed allowlist."
+        }
+    }
+    catch {
+        Fail "$Description is not valid JSON: $($_.Exception.Message)"
     }
 }
 function Test-ConfigSetupField {
@@ -309,8 +348,8 @@ else {
     }
 
     $programDataRoot = Split-Path $ConfigFile -Parent
-    Test-ProgramDataLock -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
-    Test-ProgramDataLock -Path $ConfigFile -Description 'Sandbox config file' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $ConfigFile -Description 'Sandbox config file' -UserName $UserName
 
     if ([string]::IsNullOrWhiteSpace($SandboxPath) -or ((Split-Path $SandboxPath -Leaf) -ne 'ClaudeSandbox')) {
         Section "Summary"
@@ -447,11 +486,11 @@ else {
 # --- 6. Installed scripts + tooling ------------------------------------------
 Section "Installed scripts & toolchain"
 $programDataRoot = Split-Path $ConfigFile -Parent
-Test-ProgramDataLock -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
+Test-AdminWriteOnlyPath -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
 
 if (Test-Path $LauncherScript) {
     Pass "Launcher present: $LauncherScript"
-    Test-ProgramDataLock -Path $LauncherScript -Description 'Launcher script' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $LauncherScript -Description 'Launcher script' -UserName $UserName
 }
 else {
     Fail "Launcher missing: $LauncherScript - run setup."
@@ -459,7 +498,7 @@ else {
 
 if (Test-Path $InstalledCheckScript) {
     Pass "Installed checker present: $InstalledCheckScript"
-    Test-ProgramDataLock -Path $InstalledCheckScript -Description 'Installed checker script' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $InstalledCheckScript -Description 'Installed checker script' -UserName $UserName
 }
 else {
     Fail "Installed checker missing: $InstalledCheckScript - run setup."
@@ -472,8 +511,8 @@ if (Test-Path $BootstrapScript) {
     # otherwise the agent could rewrite what runs at next launch. Verify the
     # bootstrap dir and script are admin-write only.
     $bootstrapDir = Split-Path $BootstrapScript -Parent
-    Test-ProgramDataLock -Path $bootstrapDir -Description 'Bootstrap directory' -UserName $UserName
-    Test-ProgramDataLock -Path $BootstrapScript -Description 'Bootstrap script' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $bootstrapDir -Description 'Bootstrap directory' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $BootstrapScript -Description 'Bootstrap script' -UserName $UserName
 }
 else {
     Fail "Bootstrap missing: $BootstrapScript - run setup."
@@ -544,28 +583,33 @@ else {
 # --- 8. Claude Code managed policy -------------------------------------------
 Section "Claude Code managed policy"
 if (-not (Test-Path $ManagedSettings)) {
-    Warn "Managed settings not found: $ManagedSettings - copy managed-settings.json there (see README)."
+    Warn "File-based managed settings not found: $ManagedSettings - run setup and choose managed settings deployment."
 }
 else {
-    Pass "Policy file present."
-    try {
-        $json = Get-Content $ManagedSettings -Raw | ConvertFrom-Json
-        if ($json.disableBypassPermissionsMode -eq 'disable') {
-            Pass "Bypass-permissions mode is disabled."
-        }
-        else {
-            Warn "Bypass-permissions mode is NOT disabled in policy."
-        }
-        if ($json.permissions.deny) { Pass "Deny rules present ($($json.permissions.deny.Count) entries)." }
-        else { Warn "No deny rules in policy." }
-    }
-    catch {
-        Fail "Policy file is not valid JSON: $($_.Exception.Message)"
-    }
+    Pass "File-based policy present: $ManagedSettings"
+    Test-ManagedPolicyContent -Description 'File-based policy' -JsonText (Get-Content $ManagedSettings -Raw)
+
     # Policy location should be admin-write-only.
     $policyDir = Split-Path $ManagedSettings -Parent
-    Test-ProgramDataLock -Path $policyDir -Description 'ClaudeCode policy directory' -UserName $UserName
-    Test-ProgramDataLock -Path $ManagedSettings -Description 'Policy file' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $policyDir -Description 'ClaudeCode policy directory' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $ManagedSettings -Description 'Policy file' -UserName $UserName
+}
+
+$registryPolicy = $null
+try {
+    $registryPolicy = (Get-ItemProperty -Path $ManagedSettingsRegistryPath -Name $ManagedSettingsRegistryValue -ErrorAction SilentlyContinue).$ManagedSettingsRegistryValue
+}
+catch {
+    Warn "Could not read HKLM managed settings registry policy: $($_.Exception.Message)"
+}
+
+if ([string]::IsNullOrWhiteSpace($registryPolicy)) {
+    Info "No HKLM registry policy found at $ManagedSettingsRegistryPath\$ManagedSettingsRegistryValue."
+}
+else {
+    Pass "HKLM registry policy present: $ManagedSettingsRegistryPath\$ManagedSettingsRegistryValue"
+    Info "HKLM policy has higher precedence than the file-based managed settings."
+    Test-ManagedPolicyContent -Description 'HKLM registry policy' -JsonText $registryPolicy
 }
 
 # --- Summary ------------------------------------------------------------------

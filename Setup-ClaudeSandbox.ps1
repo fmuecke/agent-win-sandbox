@@ -40,9 +40,12 @@ $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
 $LauncherSource = Join-Path $PSScriptRoot 'Start-ClaudeSandbox.ps1'
 $CheckerSource = Join-Path $PSScriptRoot 'Check-ClaudeSandbox.ps1'
 $BootstrapSource = Join-Path $PSScriptRoot 'bootstrap\Enter-ClaudeDevShell.ps1'
+$ManagedSettingsSource = Join-Path $PSScriptRoot 'managed-settings.json'
 $LauncherScript = Join-Path $ProgramDataRoot 'Start-ClaudeSandbox.ps1'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
 $BootstrapScript = 'C:\ProgramData\claude-win-sandbox\bootstrap\Enter-ClaudeDevShell.ps1'    # baked in; not configurable
+$ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
+$ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $FirewallRuleGroup = 'claude-win-sandbox'
@@ -137,6 +140,69 @@ function Set-SandboxFirewallRule {
         -LocalUser $LocalUserSddl | Out-Null
 
     Write-Host "  created firewall rule: $($RuleSpec.DisplayName)" -ForegroundColor Green
+}
+function ConvertTo-ClaudePermissionPath {
+    param([string]$Path)
+
+    $resolved = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($resolved)
+    if ($root -match '^[A-Za-z]:\\$') {
+        $drive = $root.Substring(0, 1).ToLowerInvariant()
+        $relative = $resolved.Substring($root.Length).TrimEnd('\') -replace '\\', '/'
+        if ([string]::IsNullOrWhiteSpace($relative)) {
+            return "//$drive"
+        }
+        return "//$drive/$relative"
+    }
+
+    return ($resolved.TrimEnd('\') -replace '\\', '/')
+}
+function Install-ClaudeManagedSettings {
+    param(
+        [string]$Source,
+        [string]$Destination,
+        [string]$SandboxPath
+    )
+
+    if (-not (Test-Path $Source)) {
+        Write-Warning "  managed settings source not found: $Source"
+        return
+    }
+
+    $shouldInstall = $false
+    if (Test-Path $Destination) {
+        $answer = Read-Host "Claude Code managed settings already exist at '$Destination'. Overwrite? [y/N]"
+        $shouldInstall = ($answer -match '^(y|yes)$')
+    }
+    else {
+        $answer = Read-Host "Install Claude Code managed settings to '$Destination'? [Y/n]"
+        $shouldInstall = ($answer -notmatch '^(n|no)$')
+    }
+
+    if (-not $shouldInstall) {
+        Write-Host '  skipped managed settings deployment.' -ForegroundColor Yellow
+        return
+    }
+
+    $claudeSandboxPath = ConvertTo-ClaudePermissionPath -Path $SandboxPath
+    $settingsText = (Get-Content $Source -Raw).Replace('$SANDBOXDIR', $claudeSandboxPath)
+    try {
+        $settingsText | ConvertFrom-Json | Out-Null
+    }
+    catch {
+        throw "Generated managed settings JSON is invalid: $($_.Exception.Message)"
+    }
+
+    $destinationDir = Split-Path $Destination -Parent
+    if (-not (Test-Path $destinationDir)) {
+        New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+    }
+
+    Set-Content -Path $Destination -Value $settingsText -Encoding UTF8
+    icacls $Destination /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' 'Users:R' | Out-Null
+    Write-Host "  wrote $Destination" -ForegroundColor Green
+    Write-Host "  substituted `$SANDBOXDIR with $claudeSandboxPath" -ForegroundColor Green
+    Write-Host '  locked policy file: Administrators/SYSTEM full, Users read' -ForegroundColor Green
 }
 # --- 0. Sanity ----------------------------------------------------------------
 $callingUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name  # DOMAIN\user
@@ -329,6 +395,10 @@ if (Test-Path $LegacySetupMarkerFile) {
     Remove-Item -LiteralPath $LegacySetupMarkerFile -Force
     Write-Host "  removed legacy $LegacySetupMarkerFile" -ForegroundColor Green
 }
+
+# --- 3b. Optional Claude Code managed settings deployment --------------------
+Write-Step "Optional Claude Code managed settings"
+Install-ClaudeManagedSettings -Source $ManagedSettingsSource -Destination $ManagedSettings -SandboxPath $SandboxPath
 
 # --- 4. Verify the calling user's profile is not world/Users-readable --------
 # On a standard Windows config, C:\Users\<you> is accessible only to that user,

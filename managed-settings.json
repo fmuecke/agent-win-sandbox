@@ -1,47 +1,43 @@
 {
+  "allowManagedHooksOnly": true,
+  "disableSkillShellExecution": true,
+  "disableRemoteControl": true,
+  "disableDeepLinkRegistration": "disable",
+  "disableSideloadFlags": true,
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [],
+  "strictKnownMarketplaces": [],
+  "strictPluginOnlyCustomization": [
+    "hooks",
+    "mcp"
+  ],
   "permissions": {
     "defaultMode": "default",
+    "disableBypassPermissionsMode": "disable",
+    "disableAutoMode": "disable",
     "deny": [
-      "Read(**/.ssh/**)",
-      "Read(**/.aws/**)",
-      "Read(**/.azure/**)",
-      "Read(**/.git-credentials)",
-      "Read(**/_netrc)",
-      "Read(**/*.pat)",
-      "Read(**/*.kdbx)",
-      "Read(**/secrets/**)",
-      "Read(**/.env)",
-      "Read(**/.env.*)",
-      "Bash(cat *id_rsa*)",
-      "Bash(cat *.kdbx*)",
-      "Bash(Get-Content *id_rsa*)",
-      "Bash(Get-Content *.kdbx*)",
-      "Bash(reg query *Credential*)",
-      "Bash(cmdkey *)",
-      "WebFetch"
+      "Edit(**/.git/**)",
+      "Write(**/.git/**)",
+      "Edit(**/.claude/**)",
+      "Write(**/.claude/**)",
+      "Edit(**/.mcp.json)",
+      "Write(**/.mcp.json)",
+      "WebFetch",
+      "WebSearch"
     ],
-    "ask": [
-      "Bash(git push *)",
-      "Bash(git remote *)"
-    ],
+    "ask": [],
     "allow": [
       "Bash(git status *)",
       "Bash(git diff *)",
-      "Bash(git add *)",
-      "Bash(git commit *)",
       "Bash(git log *)",
-      "Bash(git fetch *)",
-      "Bash(git pull *)",
-      "Bash(git checkout *)",
-      "Bash(git branch *)",
+      "Bash(git show *)",
       "Bash(msbuild *)",
       "Bash(cl *)",
       "Bash(cmake *)",
       "Bash(ctest *)",
       "Bash(dir *)",
-      "Read(C:/dev/repo/**)",
-      "Edit(C:/dev/repo/**)"
+      "Read($SANDBOXDIR/**)",
+      "Edit($SANDBOXDIR/**)"
     ]
-  },
-  "disableBypassPermissionsMode": "disable"
+  }
 }

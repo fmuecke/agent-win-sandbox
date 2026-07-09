@@ -273,7 +273,7 @@ Claude implication:
 
 - Keep `C:\ProgramData\claude-win-sandbox\config.json`, launcher/checker, and
   bootstrap scripts admin-write / Users-RX.
-- Keep `C:\ProgramData\ClaudeCode\managed-settings.json` admin-write.
+- Keep `C:\Program Files\ClaudeCode\managed-settings.json` admin-write.
 - Do not put trusted launch scripts under the writable workspace.
 - If we add a helper binary, install/copy it to an admin-controlled location,
   not to `C:\dev\ClaudeSandbox`.

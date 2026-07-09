@@ -4,7 +4,7 @@ Running log to update the project step by step. Captures decisions already made
 (with rationale) and open items still to action. Personal/career discussions are
 deliberately excluded.
 
-_Last updated: 2026-07-04_
+_Last updated: 2026-07-09_
 
 ---
 
@@ -45,13 +45,17 @@ _Last updated: 2026-07-04_
   allowlisting is deferred because it needs a managed proxy or network policy.
 
 ### Filesystem layout
-- **Config/launcher/checker/bootstrap/managed-settings → ProgramData**
+- **Config/launcher/checker/bootstrap → ProgramData; Claude managed settings
+  → Program Files.**
   (`C:\ProgramData\claude-win-sandbox\config.json` for the sandbox path,
   `C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1` for launch,
   `C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1` for verification,
   `C:\ProgramData\claude-win-sandbox\bootstrap\` for the bootstrap, and
-  `C:\ProgramData\ClaudeCode\` for policy), admin-write and Users-RX/read only
-  — not writable by sandbox user, prevents launch/check/config/policy poisoning.
+  `C:\Program Files\ClaudeCode\managed-settings.json` for file-based Claude Code
+  policy), admin-write and Users-RX/read only — not writable by sandbox user,
+  prevents launch/check/config/policy poisoning. Program Files is used because
+  current Claude Code no longer supports the legacy ProgramData managed-settings
+  location on Windows.
 - **Workspace default → `C:\dev\ClaudeSandbox\`** with setup asking only for the
   base directory. Chosen over `C:\Users\Public\` as the most developer-intuitive
   tradeoff; awareness carried by naming + in-shell prompt marker, not ownership
@@ -72,6 +76,11 @@ _Last updated: 2026-07-04_
   `sandboxPath` plus nested setup metadata (`setupVersion`, timestamp, sandbox
   user, installing user, and firewall intent). A separate `setup-marker.json` is
   unnecessary duplication.
+- **Setup optionally deploys Claude Code managed settings.** The repo template
+  keeps `$SANDBOXDIR` as a placeholder; setup asks before installing the policy,
+  asks overwrite/skip when one already exists, substitutes the resolved
+  `ClaudeSandbox` workspace path, writes to Program Files, and locks the policy
+  file admin-write / Users-read.
 - **Removal does not clean workspace ACLs.** After the sandbox user and profile
   are deleted, stale workspace ACL cleanup is low-value complexity. The shared
   workspace is deliberately left untouched for manual review or deletion.

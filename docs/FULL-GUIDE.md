@@ -39,10 +39,14 @@ shops. This project is for that case.
      ProgramData artifacts admin-write / Users-RX
    - Can create a Public Desktop shortcut that launches the sandbox
 
-2. **`managed-settings.json`** (copy once, elevated)
-   - Enterprise Claude Code policy: denies obvious secret reads, disables
-     bypass-permissions mode, pre-approves routine git + build verbs
-   - Copy to `C:\ProgramData\ClaudeCode\` and lock it (see setup below)
+2. **`managed-settings.json`** (optional setup deployment, elevated)
+   - Enterprise Claude Code policy: disables bypass/auto modes, blocks web
+     fetch/search, locks down hooks/MCP/plugin sideload surfaces, protects
+     Claude control files such as `.claude`, `.mcp.json`, and `.git`, and
+     pre-approves routine read-only git + build verbs
+   - Setup can deploy it to `C:\Program Files\ClaudeCode\managed-settings.json`
+     and lock it admin-write / Users-read. If the file already exists, setup
+     asks whether to overwrite or skip it.
 
 3. **`Remove-ClaudeSandbox.ps1`** (run for teardown, elevated)
    - Removes the `ClaudeSandbox` local user and profile, account-scoped firewall
@@ -90,7 +94,7 @@ managed-settings deny rules. Defense in depth:
 | Layer | What it stops | Enforced by |
 |-------|---------------|-------------|
 | NTFS ACLs (low-priv user) | Reading/writing your secrets & system dirs | Windows kernel |
-| `managed-settings.json` deny rules | Agent tool calls to secret paths | Claude Code |
+| `managed-settings.json` deny rules | High-risk Claude modes and agent-control file edits | Claude Code |
 | Permission prompts (no bypass mode) | Unreviewed command execution | Claude Code |
 | Account logon hardening | Network/RDP logon as the sandbox user | Windows user rights |
 | Account-scoped firewall rules | Outbound SMB/NetBIOS/RDP/WinRM from the sandbox user | Windows Firewall |
@@ -132,28 +136,25 @@ per-user install is present and warns if a copy exists elsewhere.
 ## Setup
 
 ```powershell
-# 1. Provision the user, ACLs, bootstrap  (ELEVATED)
+# 1. Provision the user, ACLs, bootstrap, and optional Claude policy  (ELEVATED)
 .\Setup-ClaudeSandbox.ps1
 #   prompts for the base directory where the ClaudeSandbox workspace folder
 #   will be created; Enter accepts C:\dev
 #   if the workspace folder already exists, setup asks before reusing it
 #   when creating ClaudeSandbox, setup asks for the password twice
 #   the password must satisfy the machine's Windows password policy
+#   setup asks whether to deploy managed-settings.json to:
+#     C:\Program Files\ClaudeCode\managed-settings.json
+#   if that file already exists, setup asks whether to overwrite or skip it
 
-# 2. Install the Claude Code policy  (ELEVATED)
-New-Item -ItemType Directory -Path C:\ProgramData\ClaudeCode -Force | Out-Null
-Copy-Item .\managed-settings.json C:\ProgramData\ClaudeCode\ -Force
-$f = 'C:\ProgramData\ClaudeCode\managed-settings.json'
-icacls $f /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' 'Users:R'   # admin-write only
-
-# 3. Install Claude Code AS ClaudeSandbox (see "Installing Claude Code" above)
+# 2. Install Claude Code AS ClaudeSandbox (see "Installing Claude Code" above)
 & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
 #   in the new window:  irm https://claude.ai/install.ps1 | iex
 
-# 4. Verify everything took  (ELEVATED for full coverage)
+# 3. Verify everything took  (ELEVATED for full coverage)
 & 'C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1'
 
-# 5. First-time: log in as ClaudeSandbox once to set up its git/ADO credential
+# 4. First-time: log in as ClaudeSandbox once to set up its git/ADO credential
 #    (scoped, minimal PAT — kept separate from yours)
 ```
 

@@ -16,7 +16,7 @@ This project helps you:
 - Run Claude Code as a dedicated standard Windows user instead of your main account.
 - Keep Claude Code configuration, credentials, and installation under `C:\Users\ClaudeSandbox`.
 - Limit expected agent writes to a fixed sandbox workspace.
-- Protect launcher, bootstrap, check, and managed-settings files under admin-write ProgramData paths.
+- Protect launcher, bootstrap, check, and managed-settings files under admin-write locations.
 - Block common Windows lateral-movement protocols from the sandbox account.
 
 ## Limitations
@@ -44,14 +44,13 @@ Run once from an elevated PowerShell:
 .\Setup-ClaudeSandbox.ps1
 ```
 
-Install the Claude Code managed settings, also elevated:
+During setup, choose whether to deploy the Claude Code managed settings to:
 
-```powershell
-New-Item -ItemType Directory -Path C:\ProgramData\ClaudeCode -Force | Out-Null
-Copy-Item .\managed-settings.json C:\ProgramData\ClaudeCode\ -Force
-$f = 'C:\ProgramData\ClaudeCode\managed-settings.json'
-icacls $f /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' 'Users:R'
+```text
+C:\Program Files\ClaudeCode\managed-settings.json
 ```
+
+If a policy file already exists there, setup asks whether to overwrite or skip it.
 
 Start the sandbox shell via desktop shortcut or use:
 
