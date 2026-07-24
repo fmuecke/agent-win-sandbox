@@ -120,20 +120,16 @@ live with the sandbox user so they stay inside the boundary; a machine-wide or
 your-profile install can be picked up off the machine PATH, pulling binary/config
 from **outside** the sandbox — exactly what the boundary is meant to prevent.
 
-After running setup, start a sandboxed shell and install as `ClaudeSandbox`:
+After running setup, start the sandboxed shell via desktop shortcut and install as `ClaudeSandbox`:
 
 ```powershell
-& 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
-
-# in the new window (running as ClaudeSandbox):
 irm https://claude.ai/install.ps1 | iex
 ```
 
 This installs to `C:\Users\ClaudeSandbox\.local\bin\claude.exe`. The bootstrap
 prepends that directory to PATH on every launch, so no manual PATH edit or
-restart is needed — just reopen the shell. `Check-ClaudeSandbox.ps1` verifies the
-per-user install is present and warns if a copy exists elsewhere.
-
+restart is needed. `Check-ClaudeSandbox.ps1` verifies the per-user install is
+present and warns if a copy exists elsewhere.
 
 ## Setup
 

@@ -134,7 +134,23 @@ Set-Location $SandboxPath
 # wins over any machine-wide / other-profile install that may be on PATH - the
 # install must live inside this profile to stay within the boundary.
 $claudeBin = Join-Path $env:USERPROFILE '.local\bin'
-if (Test-Path $claudeBin) { $env:PATH = "$claudeBin;$env:PATH" }
+$claudeBinFull = [System.IO.Path]::GetFullPath($claudeBin).TrimEnd('\')
+$claudeBinOnPath = @($env:PATH -split ';') | Where-Object {
+    if ([string]::IsNullOrWhiteSpace($_)) {
+        $false
+    }
+    else {
+        try {
+            [System.IO.Path]::GetFullPath($_).TrimEnd('\') -ieq $claudeBinFull
+        }
+        catch {
+            $_.TrimEnd('\') -ieq $claudeBinFull
+        }
+    }
+}
+if (-not $claudeBinOnPath) {
+    $env:PATH = if ([string]::IsNullOrWhiteSpace($env:PATH)) { $claudeBin } else { "$claudeBin;$env:PATH" }
+}
 
 # Verify claude resolves; if not, tell the user how to install it (as THIS user).
 if (Get-Command claude.exe -ErrorAction SilentlyContinue) {
@@ -147,6 +163,6 @@ else {
     Write-Host 'Install it AS THIS USER (do not use a machine-wide install):' -ForegroundColor Yellow
     Write-Host '  irm https://claude.ai/install.ps1 | iex' -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Then reopen this shell - the bootstrap puts $claudeBin on PATH." -ForegroundColor DarkGray
+    Write-Host "Then simply run 'claude' in this shell." -ForegroundColor DarkGray
     Write-Host ""
 }

@@ -65,10 +65,10 @@ In the new window, install Claude Code as the `ClaudeSandbox` user:
 irm https://claude.ai/install.ps1 | iex
 ```
 
-Close and reopen the sandbox shell, then verify from an elevated PowerShell:
+After installation, verify using:
 
 ```powershell
-& 'C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1'
+Check-ClaudeSandbox
 ```
 
 ## Daily Use

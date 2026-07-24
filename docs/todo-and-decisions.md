@@ -97,6 +97,9 @@ _Last updated: 2026-07-09_
 ### Claude Code install
 - **Installed per-user under `ClaudeSandbox`**, not machine-wide — prevents
   binary/config leakage via machine PATH.
+- **Bootstrap always adds `~\.local\bin` to PATH.**
+  This lets the user install Claude Code and run `claude` in the same shell
+  without reopening the session. This also supports other CLI agents.
 
 ### IDE / launch UX
 - **Full Visual Studio embedding ruled out** — no terminal-profile equivalent;
