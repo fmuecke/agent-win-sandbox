@@ -14,7 +14,7 @@
     typing - the "hung shell".) runas prompts for the password natively.
 
 .EXAMPLE
-    & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
+    & "$env:ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1"
     Prompts for the password, launches a sandboxed Dev Shell in the workspace
     stored in the ProgramData config by setup.
 #>
@@ -25,8 +25,10 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'ClaudeSandbox'
-$BootstrapScript = 'C:\ProgramData\claude-win-sandbox\bootstrap\Enter-ClaudeDevShell.ps1'
-$ConfigFile = 'C:\ProgramData\claude-win-sandbox\config.json'
+$ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
+$BootstrapScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Enter-ClaudeDevShell.ps1'
+$CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
+$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 
 # --- Pre-flight checks --------------------------------------------------------
 if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
@@ -69,7 +71,7 @@ runas /user:$UserName $inner
 
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "runas returned exit code $LASTEXITCODE (wrong password, or the account lacks interactive logon)."
-    Write-Host "Verify setup with: & 'C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1'" -ForegroundColor Yellow
+    Write-Host "Verify setup with: & '$CheckerScript'" -ForegroundColor Yellow
 }
 else {
     Write-Host "Launched. In the new window, run: claude" -ForegroundColor Cyan

@@ -3,7 +3,9 @@
 # Opens a VS Developer Shell in the configured sandbox workspace. Run AS ClaudeSandbox.
 # Uses -VsInstanceId (more reliable than -VsInstallPath discovery under a
 # different user profile). Errors loudly if VS isn't found.
-$ConfigFile = 'C:\ProgramData\claude-win-sandbox\config.json'
+$ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
+$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$CheckScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
 if (-not (Test-Path $ConfigFile)) {
     Write-Host "Sandbox config missing: $ConfigFile" -ForegroundColor Red
     Write-Host 'Run Setup-ClaudeSandbox.ps1 again.' -ForegroundColor Yellow
@@ -44,6 +46,19 @@ function Set-ClaudeSandboxWindowTitle {
     }
     catch {
         # Some non-console hosts do not expose a mutable window title.
+    }
+}
+
+function Set-CheckClaudeSandboxAlias {
+    if (Test-Path $CheckScript) {
+        Set-Alias -Name Check-ClaudeSandbox -Value $CheckScript -Scope Global
+        Write-Host "Run 'Check-ClaudeSandbox' anytime to verify the sandbox setup." -ForegroundColor DarkGray
+        Write-Host ""
+    }
+    else {
+        Write-Host "Sandbox checker missing: $CheckScript" -ForegroundColor Yellow
+        Write-Host 'Run Setup-ClaudeSandbox.ps1 again to deploy it.' -ForegroundColor Yellow
+        Write-Host ""
     }
 }
 
@@ -105,6 +120,7 @@ function Write-SandboxNetworkExposureWarning {
 }
 
 Set-ClaudeSandboxWindowTitle
+Set-CheckClaudeSandboxAlias
 Write-SandboxNetworkExposureWarning
 
 $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -format json | ConvertFrom-Json

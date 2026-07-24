@@ -26,7 +26,7 @@
     claude-win-sandbox ProgramData config file.
 
 .EXAMPLE
-    & 'C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1'
+    & "$env:ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1"
     Runs all checks and prints a PASS/WARN/FAIL summary.
 
 .NOTES
@@ -39,13 +39,13 @@
 [CmdletBinding()]
 param(
     [string]$UserName = 'ClaudeSandbox',
-    [string]$BootstrapScript = 'C:\ProgramData\claude-win-sandbox\bootstrap\Enter-ClaudeDevShell.ps1',
-    [string]$LauncherScript = 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1',
-    [string]$InstalledCheckScript = 'C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1',
-    [string]$ManagedSettings = 'C:\Program Files\ClaudeCode\managed-settings.json',
+    [string]$BootstrapScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'Enter-ClaudeDevShell.ps1'),
+    [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Start-ClaudeSandbox.ps1'),
+    [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Check-ClaudeSandbox.ps1'),
+    [string]$ManagedSettings = (Join-Path (Join-Path $env:ProgramFiles 'ClaudeCode') 'managed-settings.json'),
     [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
     [string]$ManagedSettingsRegistryValue = 'Settings',
-    [string]$ConfigFile = 'C:\ProgramData\claude-win-sandbox\config.json'
+    [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'config.json')
 )
 
 $SetupVersion = 3

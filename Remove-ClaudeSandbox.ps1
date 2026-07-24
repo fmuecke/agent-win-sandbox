@@ -8,7 +8,7 @@
     This is the teardown counterpart to Setup-ClaudeSandbox.ps1. It removes the
     fixed ClaudeSandbox local user, that user's Windows profile, account-scoped
     firewall rules, the hidden-login-screen registry value, generated
-    ProgramData files under C:\ProgramData\claude-win-sandbox, and the optional
+    ProgramData files under the claude-win-sandbox ProgramData directory, and the optional
     Public Desktop shortcut.
 
     It deliberately does NOT delete or modify the shared sandbox workspace
@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'ClaudeSandbox'   # baked in; not configurable
-$ProgramDataRoot = 'C:\ProgramData\claude-win-sandbox'    # baked in; not configurable
+$ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
 $FirewallRuleGroup = 'claude-win-sandbox'
