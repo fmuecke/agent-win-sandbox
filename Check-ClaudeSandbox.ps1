@@ -50,6 +50,22 @@ param(
 
 $SetupVersion = 3
 $FirewallMode = 'BlockWindowsLanProtocols'
+$BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+$LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$TrustedInstallerSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$EveryoneSid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$AuthenticatedUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-11')
+$RemoteDesktopUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-555')
+$BackupOperatorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-551')
+$PowerUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-547')
+$AdminWriteSidValues = @($BuiltinAdministratorsSid.Value, $LocalSystemSid.Value, $TrustedInstallerSid.Value)
+$BroadReadSidValues = @($BuiltinUsersSid.Value, $EveryoneSid.Value, $AuthenticatedUsersSid.Value)
+$RiskyGroupChecks = @(
+    [pscustomobject]@{ Description = 'Remote Desktop Users'; Sid = $RemoteDesktopUsersSid },
+    [pscustomobject]@{ Description = 'Backup Operators'; Sid = $BackupOperatorsSid },
+    [pscustomobject]@{ Description = 'Power Users'; Sid = $PowerUsersSid }
+)
 $FirewallRules = @(
     [pscustomobject]@{
         Name = 'claude_win_sandbox_block_smb_netbios_tcp'
@@ -79,17 +95,38 @@ function Info { param($m) Write-Host "  [INFO] $m" -ForegroundColor DarkGray }
 function Warn { param($m) Write-Host "  [WARN] $m" -ForegroundColor Yellow; $script:warns++ }
 function Fail { param($m) Write-Host "  [FAIL] $m" -ForegroundColor Red; $script:fails++ }
 function Section { param($m) Write-Host "`n== $m ==" -ForegroundColor Cyan }
+function Get-IdentitySidValue {
+    param([Security.Principal.IdentityReference]$Identity)
+
+    try {
+        if ($Identity -is [Security.Principal.SecurityIdentifier]) {
+            return $Identity.Value
+        }
+        return $Identity.Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        return $null
+    }
+}
+function Test-IdentitySidIn {
+    param(
+        [Security.Principal.IdentityReference]$Identity,
+        [string[]]$SidValues
+    )
+
+    $sidValue = Get-IdentitySidValue -Identity $Identity
+    return $sidValue -and ($sidValue -in $SidValues)
+}
 function Get-NonAdminWritableAce {
     param(
         [System.Security.AccessControl.FileSystemSecurity]$Acl,
         [string]$UserName
     )
-    $adminWritePrincipalPattern = '^(BUILTIN\\Administrators|NT AUTHORITY\\SYSTEM|NT SERVICE\\TrustedInstaller)$|\\Administrators$'
     $Acl.Access | Where-Object {
         $_.AccessControlType -eq 'Allow' -and
         $_.PropagationFlags -notmatch 'InheritOnly' -and
         $_.FileSystemRights -match 'Write|Modify|FullControl|Delete|ChangePermissions|TakeOwnership' -and
-        $_.IdentityReference -notmatch $adminWritePrincipalPattern
+        -not (Test-IdentitySidIn -Identity $_.IdentityReference -SidValues $AdminWriteSidValues)
     }
 }
 function Test-AdminWriteOnlyPath {
@@ -373,14 +410,16 @@ Pass "User '$UserName' exists."
 if (-not $u.Enabled) { Warn "Account is disabled - launcher won't work until enabled." }
 else { Pass "Account is enabled." }
 
-$adminMembers = (Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue).Name
-if ($adminMembers -match "\\$UserName$") { Fail "'$UserName' is in Administrators - should be Standard only." }
+$adminMembers = Get-LocalGroupMember -SID $BuiltinAdministratorsSid -ErrorAction SilentlyContinue
+if ($adminMembers | Where-Object { $_.SID -and ($_.SID.Value -eq $u.SID.Value) }) { Fail "'$UserName' is in Administrators - should be Standard only." }
 else { Pass "Not a member of Administrators." }
 
-$userGroups = Get-LocalGroup | Where-Object {
-    (Get-LocalGroupMember -Group $_.Name -ErrorAction SilentlyContinue).Name -match "\\$UserName$"
+$riskyGroups = foreach ($groupCheck in $RiskyGroupChecks) {
+    $members = Get-LocalGroupMember -SID $groupCheck.Sid -ErrorAction SilentlyContinue
+    if ($members | Where-Object { $_.SID -and ($_.SID.Value -eq $u.SID.Value) }) {
+        $groupCheck.Description
+    }
 }
-$riskyGroups = $userGroups.Name | Where-Object { $_ -match 'Remote Desktop|Backup Operators|Power Users' }
 if ($riskyGroups) { Warn "Member of elevated/remote groups: $($riskyGroups -join ', ')" }
 else { Pass "No risky group memberships." }
 
@@ -458,7 +497,7 @@ if (-not (Test-Path $SandboxPath)) {
 }
 else {
     $acl = Get-Acl $SandboxPath
-    $userAce = $acl.Access | Where-Object { $_.IdentityReference -match "\\$UserName$" }
+    $userAce = $acl.Access | Where-Object { (Get-IdentitySidValue -Identity $_.IdentityReference) -eq $u.SID.Value }
     if ($userAce | Where-Object { $_.FileSystemRights -match 'Modify|FullControl|Write' }) {
         Pass "'$UserName' has write access to the workspace (and sub-repos, via inheritance)."
     }
@@ -474,7 +513,7 @@ $acl = Get-Acl $callingProfile
 $risky = $acl.Access | Where-Object {
     $_.AccessControlType -eq 'Allow' -and
     $_.FileSystemRights -match 'Read|FullControl|Modify' -and
-    $_.IdentityReference -match '\\(Users|Everyone|Authenticated Users)$|^Everyone$'
+    (Test-IdentitySidIn -Identity $_.IdentityReference -SidValues $BroadReadSidValues)
 }
 if ($risky) {
     Fail "Your profile grants broad read access: $(($risky.IdentityReference | Sort-Object -Unique) -join ', '). Fix the profile ACL."
@@ -537,8 +576,17 @@ else { Warn "git not on machine PATH." }
 # up off the machine PATH, pulling binary/config from outside the sandbox.
 Section "Claude Code install"
 $expected = "C:\Users\$UserName\.local\bin\claude.exe"
-if (Test-Path $expected) { Pass "Claude Code installed for ${UserName}: $expected" }
-else { Warn "No per-user Claude for $UserName at $expected - install AS $UserName (irm https://claude.ai/install.ps1 | iex)." }
+$expectedCheckFailed = $false
+try {
+    $expectedExists = Test-Path -LiteralPath $expected -ErrorAction Stop
+}
+catch {
+    $expectedExists = $false
+    $expectedCheckFailed = $true
+    Warn "Could not verify per-user Claude for ${UserName}: $expected ($($_.Exception.Message))"
+}
+if ($expectedExists) { Pass "Claude Code installed for ${UserName}: $expected" }
+elseif (-not $expectedCheckFailed) { Warn "No per-user Claude for $UserName at $expected - install AS $UserName (irm https://claude.ai/install.ps1 | iex)." }
 
 # Flag installs OUTSIDE the sandbox user that could leak in via machine PATH.
 $leaks = @()

@@ -49,6 +49,12 @@ $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $FirewallRuleGroup = 'claude-win-sandbox'
+$BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+$LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$EveryoneSid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$AuthenticatedUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-11')
+$BroadReadSidValues = @($BuiltinUsersSid.Value, $EveryoneSid.Value, $AuthenticatedUsersSid.Value)
 $FirewallRules = @(
     [pscustomobject]@{
         Name        = 'claude_win_sandbox_block_smb_netbios_tcp'
@@ -75,6 +81,36 @@ $FirewallRules = @(
 
 
 function Write-Step { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
+function Get-IcaclsSidAce {
+    param(
+        [Security.Principal.SecurityIdentifier]$Sid,
+        [string]$Rights
+    )
+
+    return "*$($Sid.Value):$Rights"
+}
+function Get-IdentitySidValue {
+    param([Security.Principal.IdentityReference]$Identity)
+
+    try {
+        if ($Identity -is [Security.Principal.SecurityIdentifier]) {
+            return $Identity.Value
+        }
+        return $Identity.Translate([Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        return $null
+    }
+}
+function Test-IdentitySidIn {
+    param(
+        [Security.Principal.IdentityReference]$Identity,
+        [string[]]$SidValues
+    )
+
+    $sidValue = Get-IdentitySidValue -Identity $Identity
+    return $sidValue -and ($sidValue -in $SidValues)
+}
 function Get-LocalUserFirewallSddl {
     param([string]$Sid)
     return "D:(A;;CC;;;$Sid)"
@@ -199,7 +235,10 @@ function Install-ClaudeManagedSettings {
     }
 
     Set-Content -Path $Destination -Value $settingsText -Encoding UTF8
-    icacls $Destination /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' 'Users:R' | Out-Null
+    icacls $Destination /inheritance:r /grant `
+        (Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F') `
+        (Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F') `
+        (Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'R') | Out-Null
     Write-Host "  wrote $Destination" -ForegroundColor Green
     Write-Host "  substituted `$SANDBOXDIR with $claudeSandboxPath" -ForegroundColor Green
     Write-Host '  locked policy file: Administrators/SYSTEM full, Users read' -ForegroundColor Green
@@ -255,7 +294,7 @@ if (-not $existing) {
     }
 
     # Ensure it is ONLY a standard user (member of Users, not Administrators)
-    Add-LocalGroupMember -Group 'Users' -Member $UserName -ErrorAction SilentlyContinue
+    Add-LocalGroupMember -SID $BuiltinUsersSid -Member $UserName -ErrorAction SilentlyContinue
     Write-Host "  created." -ForegroundColor Green
 }
 else {
@@ -263,10 +302,12 @@ else {
 }
 
 # Hard guard: make sure it is NOT an administrator
-$adminMembers = (Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue).Name
-if ($adminMembers -match "\\$UserName$") {
+$sandboxUser = Get-LocalUser -Name $UserName
+$sandboxSid = $sandboxUser.SID.Value
+$adminMembers = Get-LocalGroupMember -SID $BuiltinAdministratorsSid -ErrorAction SilentlyContinue
+if ($adminMembers | Where-Object { $_.SID -and ($_.SID.Value -eq $sandboxSid) }) {
     Write-Warning "'$UserName' is in Administrators. Removing for safety."
-    Remove-LocalGroupMember -Group 'Administrators' -Member $UserName
+    Remove-LocalGroupMember -SID $BuiltinAdministratorsSid -Member $sandboxUser
 }
 
 # --- 1b. Harden the account ---------------------------------------------------
@@ -412,7 +453,7 @@ $acl = Get-Acl -Path $callingProfile
 $risky = $acl.Access | Where-Object {
     $_.AccessControlType -eq 'Allow' -and
     $_.FileSystemRights -match 'Read|FullControl|Modify' -and
-    $_.IdentityReference -match '\\(Users|Everyone|Authenticated Users)$|^Everyone$'
+    (Test-IdentitySidIn -Identity $_.IdentityReference -SidValues $BroadReadSidValues)
 }
 
 if ($risky) {
@@ -487,8 +528,11 @@ foreach ($artifact in $launchArtifacts) {
 # Lock ProgramData artifacts down: admin-write only, Users get read+execute
 # (read/run but not modify). Mirrors the managed-settings.json lock so the
 # sandbox user can't tamper with config or what runs at launch.
-icacls $ProgramDataRoot /inheritance:r /grant 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' 'Users:(OI)(CI)RX' | Out-Null
-icacls $bootstrapDir /inheritance:r /grant 'Administrators:(OI)(CI)F' 'SYSTEM:(OI)(CI)F' 'Users:(OI)(CI)RX' | Out-Null
+$adminFullInheritAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights '(OI)(CI)F'
+$systemFullInheritAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F'
+$usersReadExecuteInheritAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
+icacls $ProgramDataRoot /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
+icacls $bootstrapDir /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
 Write-Host "  locked ProgramData artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
 
 # --- 6b. Optional: desktop shortcut for double-click launch ------------------
