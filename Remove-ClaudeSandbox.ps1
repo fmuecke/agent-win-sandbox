@@ -8,7 +8,7 @@
     This is the teardown counterpart to Setup-ClaudeSandbox.ps1. It removes the
     fixed ClaudeSandbox local user, that user's Windows profile, account-scoped
     firewall rules, the hidden-login-screen registry value, generated
-    ProgramData files under the claude-win-sandbox ProgramData directory, and the optional
+    ProgramData files under the claude-win-sandbox ProgramData directory, and the
     Public Desktop shortcut.
 
     It deliberately does NOT delete or modify the shared sandbox workspace
@@ -149,8 +149,8 @@ Remove-SandboxFirewallRules
 Write-Step "Removing login-screen hiding entry"
 Remove-SandboxLoginScreenEntry
 
-# --- 2. Remove optional launcher shortcut ------------------------------------
-Write-Step "Removing optional desktop shortcut"
+# --- 2. Remove launcher shortcut ---------------------------------------------
+Write-Step "Removing desktop shortcut"
 Remove-SandboxShortcut
 
 # --- 3. Remove sandbox user profile ------------------------------------------

@@ -52,7 +52,8 @@ C:\Program Files\ClaudeCode\managed-settings.json
 
 If a policy file already exists there, setup asks whether to overwrite or skip it.
 
-Start the sandbox shell via desktop shortcut or use:
+Setup creates a Public Desktop shortcut named `Claude (sandboxed)`. Start the
+sandbox shell with that shortcut, or use:
 
 ```powershell
 & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
@@ -72,13 +73,9 @@ Close and reopen the sandbox shell, then verify from an elevated PowerShell:
 
 ## Daily Use
 
-Desktop shortcut, or
+Use the `Claude (sandboxed)` desktop shortcut.
 
-```powershell
-& 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
-```
-
-Enter the `ClaudeSandbox` password when `runas` prompts. In the new window:
+Enter the `ClaudeSandbox` users's password when `runas` prompts. In the new window:
 
 ```powershell
 claude
@@ -93,7 +90,7 @@ Run from an elevated PowerShell:
 ```
 
 Removal deletes the sandbox user, profile, generated ProgramData state, firewall
-rules, and optional desktop shortcut. It does not delete the workspace directory,
+rules, and the Public Desktop shortcut if present. It does not delete the workspace directory,
 for example `C:\dev\ClaudeSandbox`.
 
 ## Notes

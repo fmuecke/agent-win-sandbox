@@ -37,7 +37,7 @@ shops. This project is for that case.
      `C:\ProgramData\claude-win-sandbox\bootstrap\`, installs the launcher and
      checker into `C:\ProgramData\claude-win-sandbox\`, and locks those
      ProgramData artifacts admin-write / Users-RX
-   - Can create a Public Desktop shortcut that launches the sandbox
+   - Creates a Public Desktop shortcut that launches the sandbox
 
 2. **`managed-settings.json`** (optional setup deployment, elevated)
    - Enterprise Claude Code policy: disables bypass/auto modes, blocks web
@@ -51,8 +51,8 @@ shops. This project is for that case.
 3. **`Remove-ClaudeSandbox.ps1`** (run for teardown, elevated)
    - Removes the `ClaudeSandbox` local user and profile, account-scoped firewall
      rules, hidden-login-screen registry value, generated
-     `C:\ProgramData\claude-win-sandbox\` files, optional Public Desktop
-     shortcut
+     `C:\ProgramData\claude-win-sandbox\` files, and the Public Desktop
+     shortcut if present
    - Does **not** delete or modify the shared workspace directory or its ACLs.
      Delete it manually only after reviewing that it contains nothing you still
      need.
@@ -149,6 +149,7 @@ per-user install is present and warns if a copy exists elsewhere.
 
 # 2. Install Claude Code AS ClaudeSandbox (see "Installing Claude Code" above)
 & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
+# or use the Claude (sandboxed) desktop shortcut created by setup
 #   in the new window:  irm https://claude.ai/install.ps1 | iex
 
 # 3. Verify everything took  (ELEVATED for full coverage)
@@ -162,7 +163,7 @@ Then, day to day (normal PowerShell, no elevation):
 
 ```powershell
 & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
-# or use the optional desktop shortcut created by setup
+# or use the Claude (sandboxed) desktop shortcut created by setup
 # enter ClaudeSandbox password (runas) -> new window opens -> type: claude
 ```
 
@@ -176,7 +177,7 @@ Run the removal script from an elevated PowerShell session:
 
 The script removes the local sandbox account, its Windows profile including the
 per-user Claude install/settings, generated `C:\ProgramData\claude-win-sandbox\`
-state, account-scoped firewall rules, and optional Public Desktop shortcut.
+state, account-scoped firewall rules, and the Public Desktop shortcut if present.
 
 It does **not** delete or modify the workspace directory or its ACLs, for example
 `C:\dev\ClaudeSandbox`. That folder is a shared working area and may contain

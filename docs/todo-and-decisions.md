@@ -101,6 +101,8 @@ _Last updated: 2026-07-09_
 ### IDE / launch UX
 - **Full Visual Studio embedding ruled out** — no terminal-profile equivalent;
   a VSIX tool window would still fight the cross-user input problem. Not worth it.
+- **Setup always creates the Public Desktop shortcut.** It is part of the normal
+  launch path. This keeps setup and usage straightforward.
 - **VS Code NOT being pursued right now** (despite being the cleanest integration
   path if VS Code itself were launched as `ClaudeSandbox`).
 - **Preferred mitigation: dedicated Windows Terminal tab** to reduce alt-tab
@@ -130,7 +132,7 @@ _Last updated: 2026-07-09_
       setup/start paths.
 - [x] Update `Setup-ClaudeSandbox.ps1` to prompt for the workspace base
       directory and apply Modify grants to the fixed `ClaudeSandbox` child tree.
-- [x] Add optional desktop shortcut for the fixed bootstrap workspace.
+- [x] Add required Public Desktop shortcut for the fixed bootstrap workspace.
 - [x] Update `Check-ClaudeSandbox.ps1` paths + ProgramData lock verification.
 - [x] Update README default paths and setup flow.
 - [x] Decide whether `Setup` should deploy launcher/check scripts themselves to

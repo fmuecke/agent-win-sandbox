@@ -236,9 +236,9 @@ function Install-ClaudeManagedSettings {
 
     Set-Content -Path $Destination -Value $settingsText -Encoding UTF8
     icacls $Destination /inheritance:r /grant `
-        (Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F') `
-        (Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F') `
-        (Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'R') | Out-Null
+    (Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F') `
+    (Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F') `
+    (Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'R') | Out-Null
     Write-Host "  wrote $Destination" -ForegroundColor Green
     Write-Host "  substituted `$SANDBOXDIR with $claudeSandboxPath" -ForegroundColor Green
     Write-Host '  locked policy file: Administrators/SYSTEM full, Users read' -ForegroundColor Green
@@ -421,7 +421,7 @@ Write-Step "Writing sandbox configuration to ProgramData"
 if (-not (Test-Path $ProgramDataRoot)) { New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null }
 $config = [ordered]@{
     sandboxPath = $SandboxPath
-    setup = [ordered]@{
+    setup       = [ordered]@{
         setupVersion      = $SetupVersion
         createdAtUtc      = (Get-Date).ToUniversalTime().ToString('o')
         userName          = $UserName
@@ -535,47 +535,41 @@ icacls $ProgramDataRoot /inheritance:r /grant $adminFullInheritAce $systemFullIn
 icacls $bootstrapDir /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
 Write-Host "  locked ProgramData artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
 
-# --- 6b. Optional: desktop shortcut for double-click launch ------------------
-Write-Step "Optional desktop shortcut"
+# --- 6b. Desktop shortcut for double-click launch ----------------------------
+Write-Step "Creating desktop shortcut"
 
-$launcher = $LauncherScript
-if (-not (Test-Path $launcher)) {
-    Write-Warning "  installed launcher not found at $launcher - skipping shortcut."
+if (-not (Test-Path $LauncherScript)) {
+    throw "Installed launcher not found at $LauncherScript."
 }
-else {
-    $answer = Read-Host "Create a desktop shortcut to launch the sandbox? [Y/n]"
-    if ($answer -match '^(n|no)$') {
-        Write-Host "  skipped." -ForegroundColor Yellow
-    }
-    else {
-        try {
-            $powershellExe = (Get-Command powershell.exe).Source
-            $wsh = New-Object -ComObject WScript.Shell
-            $sc = $wsh.CreateShortcut($ShortcutPath)
-            $sc.TargetPath = $powershellExe
-            $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
-            $sc.WorkingDirectory = $SandboxPath
-            $sc.IconLocation = "$powershellExe,0"
-            $sc.Description = 'Launch Claude Code as the low-privilege sandbox user'
-            $sc.Save()
+try {
+    $powershellExe = (Get-Command powershell.exe).Source
+    $wsh = New-Object -ComObject WScript.Shell
+    $sc = $wsh.CreateShortcut($ShortcutPath)
+    $sc.TargetPath = $powershellExe
+    $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$LauncherScript`""
+    $sc.WorkingDirectory = $SandboxPath
+    $sc.IconLocation = "$powershellExe,0"
+    $sc.Description = 'Launch Claude Code as the low-privilege sandbox user'
+    $sc.Save()
 
-            Write-Host "  created $ShortcutPath" -ForegroundColor Green
-        }
-        catch {
-            Write-Warning "  could not create desktop shortcut: $($_.Exception.Message)"
-            Write-Warning "  setup is otherwise complete; launch with & '$LauncherScript'"
-        }
-    }
+    Write-Host "  created $ShortcutPath" -ForegroundColor Green
+}
+catch {
+    throw "Could not create desktop shortcut at ${ShortcutPath}: $($_.Exception.Message)"
 }
 
 # --- 7. Done ------------------------------------------------------------------
 Write-Step "Setup complete"
 Write-Host @"
-To start a Claude Code session, use the launcher (or the optional desktop shortcut):
+To start a Claude Code session, use the desktop shortcut:
+
+  $ShortcutPath
+
+Or run the launcher directly:
 
   & '$LauncherScript'
 
-  NOTES:
+  NOTE:
   - Keep secrets in your own Windows profile or another location ClaudeSandbox
     cannot read. Shared folders, drives, and vaults outside your profile need
     separate review.
