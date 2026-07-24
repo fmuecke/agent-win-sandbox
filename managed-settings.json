@@ -17,11 +17,8 @@
     "disableAutoMode": "disable",
     "deny": [
       "Edit(**/.git/**)",
-      "Write(**/.git/**)",
       "Edit(**/.claude/**)",
-      "Write(**/.claude/**)",
       "Edit(**/.mcp.json)",
-      "Write(**/.mcp.json)",
       "WebFetch",
       "WebSearch"
     ],

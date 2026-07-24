@@ -155,6 +155,7 @@ if (-not $claudeBinOnPath) {
 # Verify claude resolves; if not, tell the user how to install it (as THIS user).
 if (Get-Command claude.exe -ErrorAction SilentlyContinue) {
     Write-Host "Ready for claude'ing in $SandboxPath." -ForegroundColor Cyan
+    Write-Host "Check/update version with 'claude update'."
     Write-Host ""
 }
 else {
