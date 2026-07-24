@@ -559,7 +559,7 @@ catch {
 }
 
 # --- 7. Done ------------------------------------------------------------------
-Write-Step "Setup complete"
+Write-Step "Setup complete" -ForegroundColor Cyan
 Write-Host @"
 To start a Claude Code session, use the desktop shortcut:
 
@@ -569,11 +569,11 @@ Or run the launcher directly:
 
   & '$LauncherScript'
 
-  NOTE:
+NOTE:
   - Keep secrets in your own Windows profile or another location ClaudeSandbox
     cannot read. Shared folders, drives, and vaults outside your profile need
     separate review.
   - ClaudeSandbox has its own Windows Credential Manager and profile. Set up its
     ADO PAT/git credential separately, scoped minimally.
 
-"@ -ForegroundColor Cyan
+"@
