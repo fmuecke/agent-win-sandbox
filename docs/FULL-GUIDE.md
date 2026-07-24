@@ -61,6 +61,8 @@ shops. This project is for that case.
    - Prompts for the `ClaudeSandbox` password (via `runas`)
    - Launches a new console as `ClaudeSandbox`, in the Dev Shell, `cd`'d to the
      sandbox path stored in `C:\ProgramData\claude-win-sandbox\config.json`
+   - Keeps the launcher window open on pre-flight or `runas` errors so shortcut
+     launches do not hide the failure
    - The bootstrap warns at launch if the sandbox profile has current
      mapped drives, persistent mapped-drive entries, or saved Network Shortcuts
    - You type `claude` and go
@@ -192,6 +194,9 @@ opens an interactive console as `ClaudeSandbox`. `runas` is used rather than
 `Start-Process -Credential` because it attaches the new process to an interactive
 desktop — `Start-Process -Credential` can produce a window that renders but won't
 accept keyboard input (a "hung" shell).
+
+If `runas` fails, for example because of a wrong password or cancelled prompt,
+the launcher prints the error and waits for Enter before closing.
 
 No password caching: the prompt is the only credential path, which keeps the tool
 simple and avoids storing the password anywhere. Use a stable password that

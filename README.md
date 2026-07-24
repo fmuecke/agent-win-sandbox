@@ -75,7 +75,7 @@ Close and reopen the sandbox shell, then verify from an elevated PowerShell:
 
 Use the `Claude (sandboxed)` desktop shortcut.
 
-Enter the `ClaudeSandbox` users's password when `runas` prompts. In the new window:
+Enter the `ClaudeSandbox` user's password when `runas` prompts. In the new window:
 
 ```powershell
 claude

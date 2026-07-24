@@ -102,7 +102,11 @@ _Last updated: 2026-07-09_
 - **Full Visual Studio embedding ruled out** — no terminal-profile equivalent;
   a VSIX tool window would still fight the cross-user input problem. Not worth it.
 - **Setup always creates the Public Desktop shortcut.** It is part of the normal
-  launch path. This keeps setup and usage straightforward.
+  launch path, not an optional prompt. This keeps setup more straightforward and
+  reduces branching/complexity.
+- **Launcher pauses on launch errors.** Desktop-shortcut launches should not
+  disappear before the user can read a wrong-password, cancelled-prompt, or
+  pre-flight failure.
 - **VS Code NOT being pursued right now** (despite being the cleanest integration
   path if VS Code itself were launched as `ClaudeSandbox`).
 - **Preferred mitigation: dedicated Windows Terminal tab** to reduce alt-tab

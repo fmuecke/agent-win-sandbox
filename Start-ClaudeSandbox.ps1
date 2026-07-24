@@ -30,34 +30,44 @@ $BootstrapScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Enter-Cla
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 
+function Stop-LauncherError {
+    param([string]$Message)
+
+    Write-Host $Message -ForegroundColor Red
+    if (Test-Path $CheckerScript) {
+        Write-Host "Verify setup with: & '$CheckerScript'" -ForegroundColor Yellow
+    }
+    Write-Host ""
+    Read-Host 'Press Enter to close'
+    exit 1
+}
+
+trap {
+    Stop-LauncherError "Unexpected launcher error: $($_.Exception.Message)"
+}
+
 # --- Pre-flight checks --------------------------------------------------------
 if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
-    Write-Error "User '$UserName' does not exist. Run Setup-ClaudeSandbox.ps1 first."
-    exit 1
+    Stop-LauncherError "User '$UserName' does not exist. Run Setup-ClaudeSandbox.ps1 first."
 }
 if (-not (Test-Path $BootstrapScript)) {
-    Write-Error "Bootstrap not found at $BootstrapScript. Run Setup-ClaudeSandbox.ps1 first."
-    exit 1
+    Stop-LauncherError "Bootstrap not found at $BootstrapScript. Run Setup-ClaudeSandbox.ps1 first."
 }
 if (-not (Test-Path $ConfigFile)) {
-    Write-Error "Config not found at $ConfigFile. Run Setup-ClaudeSandbox.ps1 first."
-    exit 1
+    Stop-LauncherError "Config not found at $ConfigFile. Run Setup-ClaudeSandbox.ps1 first."
 }
 try {
     $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     $sandboxPath = $config.sandboxPath
 }
 catch {
-    Write-Error "Config at $ConfigFile is invalid: $($_.Exception.Message)"
-    exit 1
+    Stop-LauncherError "Config at $ConfigFile is invalid: $($_.Exception.Message)"
 }
 if ([string]::IsNullOrWhiteSpace($sandboxPath)) {
-    Write-Error "Config at $ConfigFile does not define sandboxPath. Run Setup-ClaudeSandbox.ps1 again."
-    exit 1
+    Stop-LauncherError "Config at $ConfigFile does not define sandboxPath. Run Setup-ClaudeSandbox.ps1 again."
 }
 if (-not (Test-Path $sandboxPath)) {
-    Write-Error "Sandbox path $sandboxPath does not exist. Run Setup-ClaudeSandbox.ps1 again."
-    exit 1
+    Stop-LauncherError "Sandbox path $sandboxPath does not exist. Run Setup-ClaudeSandbox.ps1 again."
 }
 Write-Host "Configured sandbox path: $sandboxPath" -ForegroundColor Cyan
 
@@ -70,8 +80,13 @@ Write-Host "(runas will prompt for the '$UserName' password.)" -ForegroundColor 
 runas /user:$UserName $inner
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Warning "runas returned exit code $LASTEXITCODE (wrong password, or the account lacks interactive logon)."
-    Write-Host "Verify setup with: & '$CheckerScript'" -ForegroundColor Yellow
+    Write-Warning "runas returned exit code $LASTEXITCODE (wrong password, cancelled prompt, or the account lacks interactive logon)."
+    if (Test-Path $CheckerScript) {
+        Write-Host "Verify setup with: & '$CheckerScript'" -ForegroundColor Yellow
+    }
+    Write-Host ""
+    Read-Host 'Press Enter to close'
+    exit 1
 }
 else {
     Write-Host "Launched. In the new window, run: claude" -ForegroundColor Cyan
