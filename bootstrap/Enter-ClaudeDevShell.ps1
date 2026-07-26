@@ -3,6 +3,7 @@
 # Opens a VS Developer Shell in the configured sandbox workspace. Run AS ClaudeSandbox.
 # Uses -VsInstanceId (more reliable than -VsInstallPath discovery under a
 # different user profile). Errors loudly if VS isn't found.
+$Version = '0.4.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $CheckScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
@@ -37,10 +38,10 @@ if ($me -ne 'ClaudeSandbox') {
     Write-Host 'Launch via Start-ClaudeSandbox.ps1 (which uses runas), not directly.' -ForegroundColor Yellow
     exit 1
 }
-Write-Host "Running as user $me" -ForegroundColor Green
+Write-Host "claude-win-sandbox $Version" -ForegroundColor Cyan
+Write-Host "Running as: $me" -ForegroundColor Green
+Write-Host 'Check for newer versions: https://github.com/fmuecke/claude-win-sandbox' -ForegroundColor DarkGray
 Write-Host ""
-
-Show-ClaudeSandboxVersion -Config $config -CurrentProjectVersion $ProjectVersion -CurrentSetupVersion $SetupVersion
 
 function Set-ClaudeSandboxWindowTitle {
     try {
@@ -55,12 +56,10 @@ function Set-CheckClaudeSandboxAlias {
     if (Test-Path $CheckScript) {
         Set-Alias -Name Check-ClaudeSandbox -Value $CheckScript -Scope Global
         Write-Host "Run 'Check-ClaudeSandbox' anytime to verify the sandbox setup." -ForegroundColor DarkGray
-        Write-Host ""
     }
     else {
         Write-Host "Sandbox checker missing: $CheckScript" -ForegroundColor Yellow
         Write-Host 'Run Setup-ClaudeSandbox.ps1 again to deploy it.' -ForegroundColor Yellow
-        Write-Host ""
     }
 }
 
@@ -99,7 +98,6 @@ function Set-ClaudeCodeSettings {
 
     $settings | ConvertTo-Json -Depth 8 | Set-Content -Path $settingsFile -Encoding utf8
     Write-Host "Managed Claude settings written to $settingsFile." -ForegroundColor DarkGray
-    Write-Host 'Values for env.CLAUDE_CODE_USE_POWERSHELL_TOOL, defaultShell, and autoUpdatesChannel are overwritten by this dev shell.' -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -161,9 +159,9 @@ function Write-SandboxNetworkExposureWarning {
 }
 
 Set-ClaudeSandboxWindowTitle
-Set-CheckClaudeSandboxAlias
-Set-ClaudeCodeSettings
 Write-SandboxNetworkExposureWarning
+Set-ClaudeCodeSettings
+Set-CheckClaudeSandboxAlias
 
 $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -format json | ConvertFrom-Json
 Import-Module (Join-Path $vs.installationPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
@@ -197,7 +195,7 @@ if (-not $claudeBinOnPath) {
 # Verify claude resolves; if not, tell the user how to install it (as THIS user).
 if (Get-Command claude.exe -ErrorAction SilentlyContinue) {
     Write-Host "Ready for claude'ing in $SandboxPath." -ForegroundColor Cyan
-    Write-Host "Check/update version with 'claude update'."
+    Write-Host "Update version with 'claude update'." -ForegroundColor Gray
     Write-Host ""
 }
 else {

@@ -73,7 +73,7 @@ _Last updated: 2026-07-09_
   stable trusted path instead of a mutable repo checkout. `Setup` and `Remove`
   remain repo/package maintenance scripts for now.
 - **Single ProgramData state file.** `config.json` carries the runtime
-  `sandboxPath` plus nested setup metadata (`setupVersion`, timestamp, sandbox
+  `sandboxPath` plus nested setup metadata (version, timestamp, sandbox
   user, installing user, and firewall intent). A separate `setup-marker.json` is
   unnecessary duplication.
 - **Setup optionally deploys Claude Code managed settings.** The repo template

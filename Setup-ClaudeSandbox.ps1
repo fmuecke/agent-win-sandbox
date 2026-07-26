@@ -33,7 +33,7 @@ $ErrorActionPreference = 'Stop'
 
 $UserName = 'ClaudeSandbox'   # baked in; not configurable
 $SandboxDirectoryName = 'ClaudeSandbox'   # baked in; not configurable
-$SetupVersion = 3
+$Version = '0.4.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
@@ -422,7 +422,7 @@ if (-not (Test-Path $ProgramDataRoot)) { New-Item -ItemType Directory -Path $Pro
 $config = [ordered]@{
     sandboxPath = $SandboxPath
     setup       = [ordered]@{
-        setupVersion      = $SetupVersion
+        version           = $Version
         createdAtUtc      = (Get-Date).ToUniversalTime().ToString('o')
         userName          = $UserName
         installedByUser   = $callingUser

@@ -48,7 +48,7 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'config.json')
 )
 
-$SetupVersion = 3
+$Version = '0.4.0'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -367,11 +367,12 @@ else {
             Fail 'Config does not define setup metadata. Run setup with the current script.'
         }
         else {
-            if ($setup.setupVersion -ne $SetupVersion) {
-                Fail "Config setup version drift: config '$($setup.setupVersion)', expected '$SetupVersion'."
+            $versionProperty = $setup.PSObject.Properties['version']
+            if ($versionProperty -and -not [string]::IsNullOrWhiteSpace([string]$versionProperty.Value)) {
+                Info "Installed version: $($versionProperty.Value). Current checker version: $Version."
             }
             else {
-                Pass 'Config setup version matches current script.'
+                Info "Installed version metadata is not present. Current checker version: $Version."
             }
             Test-ConfigSetupRequiredField -Setup $setup -Field 'createdAtUtc' -Description 'Setup timestamp'
             Test-ConfigSetupField -Setup $setup -Field 'userName' -Expected $UserName -Description 'Sandbox user'
