@@ -61,6 +61,9 @@ shops. This project is for that case.
    - Prompts for the `ClaudeSandbox` password (via `runas`)
    - Launches a new console as `ClaudeSandbox`, in the Dev Shell, `cd`'d to the
      sandbox path stored in `C:\ProgramData\claude-win-sandbox\config.json`
+   - Creates/updates `C:\Users\ClaudeSandbox\.claude\settings.json`, preserving
+     other valid settings while overwriting the sandbox-managed Claude Code
+     shell/update settings documented below
    - Keeps the launcher window open on pre-flight or `runas` errors so shortcut
      launches do not hide the failure
    - The bootstrap warns at launch if the sandbox profile has current
@@ -130,6 +133,21 @@ This installs to `C:\Users\ClaudeSandbox\.local\bin\claude.exe`. The bootstrap
 prepends that directory to PATH on every launch, so no manual PATH edit or
 restart is needed. `Check-ClaudeSandbox.ps1` verifies the per-user install is
 present and warns if a copy exists elsewhere.
+
+On every sandbox shell launch, the bootstrap also creates or updates
+`C:\Users\ClaudeSandbox\.claude\settings.json`. If the file already exists and
+contains valid JSON, unrelated settings are preserved, but these values are
+managed by the dev shell and overwritten each time:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"
+  },
+  "defaultShell": "powershell",
+  "autoUpdatesChannel": "stable"
+}
+```
 
 ## Setup
 
