@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: MIT
+# Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+
 <#
 .SYNOPSIS
     Verifies a claude-win-sandbox installation: user, hardening, ACLs, policy,

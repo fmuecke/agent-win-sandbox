@@ -1,5 +1,8 @@
-# claude-win-sandbox Dev Shell bootstrap.
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: MIT
 # Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+
+# claude-win-sandbox Dev Shell bootstrap.
 # Opens a VS Developer Shell in the configured sandbox workspace. Run AS ClaudeSandbox.
 # Uses -VsInstanceId (more reliable than -VsInstallPath discovery under a
 # different user profile). Errors loudly if VS isn't found.
