@@ -40,6 +40,8 @@ if ($me -ne 'ClaudeSandbox') {
 Write-Host "Running as user $me" -ForegroundColor Green
 Write-Host ""
 
+Show-ClaudeSandboxVersion -Config $config -CurrentProjectVersion $ProjectVersion -CurrentSetupVersion $SetupVersion
+
 function Set-ClaudeSandboxWindowTitle {
     try {
         $Host.UI.RawUI.WindowTitle = 'Claude Sandbox'
@@ -60,6 +62,45 @@ function Set-CheckClaudeSandboxAlias {
         Write-Host 'Run Setup-ClaudeSandbox.ps1 again to deploy it.' -ForegroundColor Yellow
         Write-Host ""
     }
+}
+
+function Set-ClaudeCodeSettings {
+    $claudeConfigDir = Join-Path $env:USERPROFILE '.claude'
+    $settingsFile = Join-Path $claudeConfigDir 'settings.json'
+
+    if (-not (Test-Path $claudeConfigDir)) {
+        New-Item -Path $claudeConfigDir -ItemType Directory -Force | Out-Null
+    }
+
+    $settings = [pscustomobject]@{}
+    if (Test-Path $settingsFile) {
+        try {
+            $settings = Get-Content $settingsFile -Raw | ConvertFrom-Json
+            if ($null -eq $settings -or $settings -isnot [pscustomobject]) {
+                $settings = [pscustomobject]@{}
+            }
+        }
+        catch {
+            Write-Host "Claude settings file is invalid JSON; rewriting managed values in $settingsFile." -ForegroundColor Yellow
+            $settings = [pscustomobject]@{}
+        }
+    }
+
+    # These per-user settings are managed by this dev shell and rewritten on every launch.
+    if (-not ($settings.PSObject.Properties.Name -contains 'env') -or
+        $null -eq $settings.env -or
+        $settings.env -isnot [pscustomobject]) {
+        $settings | Add-Member -MemberType NoteProperty -Name 'env' -Value ([pscustomobject]@{}) -Force
+    }
+
+    $settings.env | Add-Member -MemberType NoteProperty -Name 'CLAUDE_CODE_USE_POWERSHELL_TOOL' -Value '1' -Force
+    $settings | Add-Member -MemberType NoteProperty -Name 'defaultShell' -Value 'powershell' -Force
+    $settings | Add-Member -MemberType NoteProperty -Name 'autoUpdatesChannel' -Value 'stable' -Force
+
+    $settings | ConvertTo-Json -Depth 8 | Set-Content -Path $settingsFile -Encoding utf8
+    Write-Host "Managed Claude settings written to $settingsFile." -ForegroundColor DarkGray
+    Write-Host 'Values for env.CLAUDE_CODE_USE_POWERSHELL_TOOL, defaultShell, and autoUpdatesChannel are overwritten by this dev shell.' -ForegroundColor DarkGray
+    Write-Host ""
 }
 
 function Write-SandboxNetworkExposureWarning {
@@ -121,6 +162,7 @@ function Write-SandboxNetworkExposureWarning {
 
 Set-ClaudeSandboxWindowTitle
 Set-CheckClaudeSandboxAlias
+Set-ClaudeCodeSettings
 Write-SandboxNetworkExposureWarning
 
 $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -format json | ConvertFrom-Json
