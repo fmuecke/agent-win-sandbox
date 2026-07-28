@@ -12,10 +12,9 @@
     Part of claude-win-sandbox. Assumes Setup-ClaudeSandbox.ps1 has provisioned
     the low-priv user, sandbox ACLs, config, and the Dev Shell bootstrap.
 
-    Launch uses runas.exe, which attaches the new process to an interactive
-    desktop for the target user so the console accepts keyboard input.
-    (Start-Process -Credential can produce a window that renders but won't accept
-    typing - the "hung shell".) runas prompts for the password natively.
+    Launch uses the bundled launch-as.exe helper. It starts an interactive
+    console with the target user's token and uses Windows Credential UI to
+    obtain or update the target account credential when required.
 
 .EXAMPLE
     & "$env:ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1"
@@ -31,6 +30,7 @@ $ErrorActionPreference = 'Stop'
 $UserName = 'ClaudeSandbox'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
 $BootstrapScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Enter-ClaudeDevShell.ps1'
+$LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 
@@ -57,6 +57,9 @@ if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
 if (-not (Test-Path $BootstrapScript)) {
     Stop-LauncherError "Bootstrap not found at $BootstrapScript. Run Setup-ClaudeSandbox.ps1 first."
 }
+if (-not (Test-Path $LaunchAsExe)) {
+    Stop-LauncherError "launch-as not found at $LaunchAsExe. Run Setup-ClaudeSandbox.ps1 first."
+}
 if (-not (Test-Path $ConfigFile)) {
     Stop-LauncherError "Config not found at $ConfigFile. Run Setup-ClaudeSandbox.ps1 first."
 }
@@ -76,15 +79,18 @@ if (-not (Test-Path $sandboxPath)) {
 Write-Host "Configured sandbox path: $sandboxPath" -ForegroundColor Cyan
 
 # --- Launch -------------------------------------------------------------------
-$inner = "powershell.exe -NoExit -ExecutionPolicy Bypass -File `"$BootstrapScript`""
-
+$powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
 Write-Host "Launching as '$UserName' in $sandboxPath ..." -ForegroundColor Green
-Write-Host "(runas will prompt for the '$UserName' password.)" -ForegroundColor DarkGray
+Write-Host '(Windows Credential UI appears if launch-as needs a credential.)' -ForegroundColor DarkGray
 
-runas /user:$UserName $inner
+& $LaunchAsExe `
+    --user $UserName `
+    --working-directory $sandboxPath `
+    --terminal `
+    -- $powershellExe -NoExit -ExecutionPolicy Bypass -File $BootstrapScript
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Warning "runas returned exit code $LASTEXITCODE (wrong password, cancelled prompt, or the account lacks interactive logon)."
+    Write-Warning "launch-as returned exit code $LASTEXITCODE. The credential may be missing or incorrect, or the account may lack interactive logon."
     if (Test-Path $CheckerScript) {
         Write-Host "Verify setup with: & '$CheckerScript'" -ForegroundColor Yellow
     }
@@ -93,5 +99,5 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 else {
-    Write-Host "Launched. In the new window, run: claude" -ForegroundColor Cyan
+    Write-Host 'Sandbox session ended.' -ForegroundColor Cyan
 }

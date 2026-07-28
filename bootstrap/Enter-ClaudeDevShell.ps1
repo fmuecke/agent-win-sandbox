@@ -6,7 +6,7 @@
 # Opens a VS Developer Shell in the configured sandbox workspace. Run AS ClaudeSandbox.
 # Uses -VsInstanceId (more reliable than -VsInstallPath discovery under a
 # different user profile). Errors loudly if VS isn't found.
-$Version = '0.4.0'
+$Version = '0.5.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $CheckScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
@@ -33,12 +33,12 @@ if (-not (Test-Path $SandboxPath)) {
 }
 
 # Guard: this must run as the sandbox user, not whoever launched it. If the
-# bootstrap is invoked directly (no runas), refuse - running as the wrong user
+# bootstrap is invoked directly (without launch-as), refuse - running as the wrong user
 # silently defeats the boundary.
 $me = $env:USERNAME
 if ($me -ne 'ClaudeSandbox') {
     Write-Host "Refusing to run: expected user 'ClaudeSandbox' but running as '$me'." -ForegroundColor Red
-    Write-Host 'Launch via Start-ClaudeSandbox.ps1 (which uses runas), not directly.' -ForegroundColor Yellow
+    Write-Host 'Launch via Start-ClaudeSandbox.ps1 (which uses launch-as), not directly.' -ForegroundColor Yellow
     exit 1
 }
 Write-Host "claude-win-sandbox $Version" -ForegroundColor Cyan

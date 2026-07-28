@@ -97,6 +97,7 @@ admin-write / Users-read-execute:
 
 - `C:\ProgramData\claude-win-sandbox\config.json`
 - `C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1`
+- `C:\ProgramData\claude-win-sandbox\launch-as.exe`
 - `C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1`
 - `C:\ProgramData\claude-win-sandbox\bootstrap\Enter-ClaudeDevShell.ps1`
 
@@ -173,7 +174,7 @@ Limitations:
 
 ### Protected control plane
 
-Setup copies the launcher, checker, and bootstrap, and writes configuration
+Setup downloads and verifies launch-as, copies the launcher, checker, and bootstrap, and writes configuration
 under `C:\ProgramData\claude-win-sandbox`, then locks the directory admin-write /
 Users-read-execute. The managed Claude Code policy is also intended to live under
 `C:\Program Files\ClaudeCode\managed-settings.json` with admin-write
@@ -181,7 +182,7 @@ permissions.
 
 Security effect:
 
-- Prevents `ClaudeSandbox` from rewriting the launcher/checker/bootstrap or
+- Prevents `ClaudeSandbox` from rewriting launch-as, the launcher/checker/bootstrap, or
   changing the configured sandbox path.
 - Keeps trusted launch scripts out of the agent-writable workspace.
 
@@ -195,7 +196,7 @@ Limitations:
 
 Setup denies network logon and remote interactive logon for `ClaudeSandbox`,
 hides the account from the login screen, and leaves normal interactive logon
-enabled because `runas` needs it.
+enabled because launch-as needs it.
 
 Security effect:
 
@@ -449,7 +450,7 @@ For full coverage, run it elevated. Review every WARN and FAIL, especially:
 - `ClaudeSandbox` is not an administrator and has no risky group memberships.
 - Network and RDP logon deny rights are present.
 - Interactive logon is still allowed.
-- ProgramData config, launcher/checker, bootstrap, and the Program Files Claude
+- ProgramData config, launcher/launch-as/checker, bootstrap, and the Program Files Claude
   policy file are admin-write-only.
 - The sandbox workspace exists and grants `ClaudeSandbox` write access.
 - The developer profile is not readable by Users, Everyone, or Authenticated

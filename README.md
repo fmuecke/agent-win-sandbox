@@ -16,7 +16,7 @@ This project helps you:
 - Run Claude Code as a dedicated standard Windows user instead of your main account.
 - Keep Claude Code configuration, credentials, and installation under `C:\Users\ClaudeSandbox`.
 - Limit expected agent writes to a fixed sandbox workspace.
-- Protect launcher, bootstrap, check, and managed-settings files under admin-write locations.
+- Protect launcher, launch-as, bootstrap, check, and managed-settings files under admin-write locations.
 - Block common Windows lateral-movement protocols from the sandbox account.
 
 ## Limitations
@@ -75,7 +75,8 @@ Check-ClaudeSandbox
 
 Use the `Claude (sandboxed)` desktop shortcut.
 
-Enter the `ClaudeSandbox` user's password when `runas` prompts. In the new window:
+On the first launch, Windows Credential UI asks for the `ClaudeSandbox` password.
+Choose whether Windows should remember it for later launches. In the new window:
 
 ```powershell
 claude
@@ -97,7 +98,7 @@ for example `C:\dev\ClaudeSandbox`.
 
 - Claude Code must be installed per-user under `C:\Users\ClaudeSandbox`, not
   machine-wide and not from your main profile.
-- Trusted launcher/check/bootstrap/config files live under ProgramData and are
+- Trusted launcher/launch-as/check/bootstrap/config files live under ProgramData and are
   locked admin-write / Users-read-execute.
 - The sandbox user can still access anything explicitly placed in the sandbox
   workspace and anything otherwise readable by normal Windows users.

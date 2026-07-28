@@ -24,7 +24,8 @@ For `claude-win-sandbox`, the closest useful concept is: keep Claude Code under
 a dedicated Windows account, move trusted launch/control files outside the
 writable workspace, and let Windows enforce filesystem and network boundaries.
 Codex goes further by automating per-command ACL refresh and using a helper
-binary instead of `runas`.
+binary with restricted-token support. This project now also uses a small native
+launcher (`launch-as`) for cross-user process creation.
 
 ## Relevant Files
 
@@ -93,8 +94,9 @@ stored user file and reruns setup/refresh.
 
 Claude implication:
 
-- Our current `runas` model avoids password storage, but requires manual entry.
-- A Codex-style launcher would need stored or otherwise retrievable sandbox
+- launch-as can request the sandbox password through Windows Credential UI and
+  optionally store it in the launching user's Credential Manager.
+- A Codex-style launcher would need protected, machine-managed sandbox
   credentials, plus careful ACL protection around that state.
 
 ### 3. Setup Markers and Refresh
@@ -163,7 +165,7 @@ every future sandbox run to use every previously allowed path.
 
 Claude implication:
 
-- Pure `runas` cannot attach custom restricting capability SIDs.
+- launch-as does not attach custom restricting capability SIDs.
 - To port this concept, we need a native helper or equivalent Windows API layer.
 - Without capability SIDs, our practical boundary is the sandbox account's
   normal ACL access.
@@ -199,8 +201,8 @@ The runner:
 
 Claude implication:
 
-- `runas` gives us a real interactive terminal with much less machinery.
-- A Codex-style helper would replace `runas` if we want automatic launch,
+- launch-as gives us a real interactive terminal with much less machinery.
+- A Codex-style helper with a restricted-token runner would be needed for
   restricted tokens, process tree cleanup, or parent-controlled sessions.
 
 ### 7. Restricted Token Inside the Dedicated User
@@ -292,7 +294,7 @@ Claude implication:
 ## What Requires a Helper Binary
 
 These Codex elevated-mode features do not map cleanly to the current
-PowerShell-plus-`runas` implementation:
+PowerShell-plus-launch-as implementation:
 
 1. Launching without manual password entry while preserving an interactive
    session.
@@ -314,10 +316,10 @@ For this repository, the practical path is:
 1. Keep the current single `ClaudeSandbox` user for now.
 2. Add Codex-style setup state/versioning under ProgramData.
 3. Add optional account-scoped outbound firewall blocking.
-4. Keep using `runas` until we have a clear need for automatic launch,
-   restricted tokens, or per-run writable roots.
-5. Treat a native helper as a later redesign, not as a prerequisite for the
-   current PowerShell toolset.
+4. Keep using launch-as until we need restricted tokens or per-run writable
+   roots.
+5. Treat a more capable native helper/runner as a later redesign, not as a
+   prerequisite for the current PowerShell toolset.
 
 If we later want to mirror Codex elevated mode closely, split the design into:
 

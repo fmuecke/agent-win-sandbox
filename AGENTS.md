@@ -6,7 +6,7 @@ This repository contains a small Windows PowerShell toolset for running Claude C
 
 - `Setup-ClaudeSandbox.ps1`: one-time elevated provisioning for the `ClaudeSandbox` user, ACLs, hardening, and bootstrap installation.
 - `Remove-ClaudeSandbox.ps1`: elevated teardown for the `ClaudeSandbox` user, firewall rules, login-screen registry value, and generated ProgramData state.
-- `Start-ClaudeSandbox.ps1`: normal day-to-day launcher using `runas`.
+- `Start-ClaudeSandbox.ps1`: normal day-to-day launcher using the bundled `launch-as` helper.
 - `Check-ClaudeSandbox.ps1`: read-only verifier for account state, ACLs, bootstrap, policy, and toolchain assumptions.
 - `bootstrap/`: source bootstrap scripts copied into locked ProgramData by setup.
 - `managed-settings.json`: Claude Code enterprise policy template intended for deployment to `C:\Program Files\ClaudeCode\managed-settings.json`.

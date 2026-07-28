@@ -20,18 +20,20 @@ _Last updated: 2026-07-09_
 - **Threat model = blast-radius reduction, not hard containment.** Defends against
   agent mistakes and prompt-injection overreach on a trusted machine; not against
   a determined attacker who already has your privileges.
-- **`runas.exe` over `Start-Process -Credential`.** The latter produces a hung
-  shell (renders but won't accept keyboard input) — confirmed on this machine.
-- **No credential caching.** The per-launch `runas` password prompt is the only
-  credential path; acts as a deliberate speed-bump / cross-user boundary enforcer.
-  Infrequent use doesn't justify the security tradeoff of caching.
+- **`launch-as.exe` over `runas.exe` and `Start-Process -Credential`.** It opens
+  an interactive console as the target standard user and verifies the target
+  token before resuming the child process.
+- **Credential Manager storage is optional.** launch-as uses Windows Credential
+  UI; the launching user can choose whether to remember the sandbox password.
+  A stored generic credential is available only to processes running as that
+  regular Windows user, not to ClaudeSandbox.
 - **Stable policy-compliant password (Option A) over per-launch random reset
   (Option B).** The sandbox password must satisfy the local/domain Windows
   password policy; a short simple password may not be accepted on managed
   machines. A random password reset on every launch would avoid the user knowing
   the `ClaudeSandbox` password, but it would require elevation every time and
   turn the daily launcher into a privileged broker. It also does not fit cleanly
-  with `runas`, adds failure points for marginal value, and may interfere with
+  with the launcher, adds failure points for marginal value, and may interfere with
   per-user protected state if Windows secrets become tied to the previous logon
   password. Keep setup elevated once; keep daily launch non-elevated.
 
@@ -45,10 +47,11 @@ _Last updated: 2026-07-09_
   allowlisting is deferred because it needs a managed proxy or network policy.
 
 ### Filesystem layout
-- **Config/launcher/checker/bootstrap → ProgramData; Claude managed settings
+- **Config/launcher/launch-as/checker/bootstrap → ProgramData; Claude managed settings
   → Program Files.**
   (`C:\ProgramData\claude-win-sandbox\config.json` for the sandbox path,
   `C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1` for launch,
+  `C:\ProgramData\claude-win-sandbox\launch-as.exe` for cross-user process creation,
   `C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1` for verification,
   `C:\ProgramData\claude-win-sandbox\bootstrap\` for the bootstrap, and
   `C:\Program Files\ClaudeCode\managed-settings.json` for file-based Claude Code
@@ -67,7 +70,7 @@ _Last updated: 2026-07-09_
 - **Setup regenerates ProgramData artifacts** from the repo source and writes the
   resolved sandbox path to ProgramData config; the project repo remains the
   source of truth for scripts.
-- **Setup deploys the daily launcher and checker into ProgramData** alongside
+- **Setup deploys the daily launcher, launch-as helper, and checker into ProgramData** alongside
   the bootstrap. These entrypoints are admin-write / Users-RX so desktop
   shortcuts, Windows Terminal profiles, and elevated verification can target a
   stable trusted path instead of a mutable repo checkout. `Setup` and `Remove`
@@ -149,8 +152,8 @@ _Last updated: 2026-07-09_
       is decided.
 
 ### Launch UX
-- [ ] Finalize the Windows Terminal profile (test `runas` desktop-attachment
-      behaviour first — does it dock or detach?).
+- [ ] Finalize the Windows Terminal profile (test launch-as terminal-mode
+      behaviour first — does it relay cleanly?).
 - [ ] **Decide:** pursue "VS Code launched as `ClaudeSandbox`" for tighter IDE
       integration, or leave as WT-tab only?
 

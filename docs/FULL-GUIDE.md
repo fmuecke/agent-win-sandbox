@@ -33,7 +33,7 @@ shops. This project is for that case.
      internal services
    - Writes `C:\ProgramData\claude-win-sandbox\config.json` with the sandbox
      path and setup metadata, locates VS Developer Shell + git, copies the Dev
-     Shell bootstrap into
+     Shell bootstrap and the verified `launch-as.exe` helper into
      `C:\ProgramData\claude-win-sandbox\bootstrap\`, installs the launcher and
      checker into `C:\ProgramData\claude-win-sandbox\`, and locks those
      ProgramData artifacts admin-write / Users-RX
@@ -58,13 +58,15 @@ shops. This project is for that case.
      need.
 
 4. **`Start-ClaudeSandbox.ps1`** (run per session, normal priv)
-   - Prompts for the `ClaudeSandbox` password (via `runas`)
+   - Uses `launch-as` to start the target user's interactive console. Windows
+     Credential UI requests the `ClaudeSandbox` password when no usable stored
+     credential is available.
    - Launches a new console as `ClaudeSandbox`, in the Dev Shell, `cd`'d to the
      sandbox path stored in `C:\ProgramData\claude-win-sandbox\config.json`
    - Creates/updates `C:\Users\ClaudeSandbox\.claude\settings.json`, preserving
      other valid settings while overwriting the sandbox-managed Claude Code
      shell/update settings documented below
-   - Keeps the launcher window open on pre-flight or `runas` errors so shortcut
+   - Keeps the launcher window open on pre-flight or launch errors so shortcut
      launches do not hide the failure
    - The bootstrap warns at launch if the sandbox profile has current
      mapped drives, persistent mapped-drive entries, or saved Network Shortcuts
@@ -180,7 +182,7 @@ Then, day to day (normal PowerShell, no elevation):
 ```powershell
 & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
 # or use the Claude (sandboxed) desktop shortcut created by setup
-# enter ClaudeSandbox password (runas) -> new window opens -> type: claude
+# Windows Credential UI may request the ClaudeSandbox password -> new window opens -> type: claude
 ```
 
 ## Removal
@@ -203,24 +205,23 @@ longer needed.
 
 ## Credential handling
 
-The launcher uses **`runas`**, which prompts for the password each launch and
-opens an interactive console as `ClaudeSandbox`. `runas` is used rather than
-`Start-Process -Credential` because it attaches the new process to an interactive
-desktop — `Start-Process -Credential` can produce a window that renders but won't
-accept keyboard input (a "hung" shell).
+The launcher uses the bundled **`launch-as`** helper to start a separate
+interactive console as `ClaudeSandbox`. It uses Windows Credential UI when it
+needs the sandbox password. The default credential mode may store the credential
+in the launching user's Windows Credential Manager if the user selects Remember;
+the sandbox account cannot read that credential.
 
-If `runas` fails, for example because of a wrong password or cancelled prompt,
+If launch-as fails, for example because of a wrong password or cancelled prompt,
 the launcher prints the error and waits for Enter before closing.
 
-No password caching: the prompt is the only credential path, which keeps the tool
-simple and avoids storing the password anywhere. Use a stable password that
-satisfies the local or domain Windows password policy.
+Use a stable password that satisfies the local or domain Windows password policy.
 
 The launcher also deliberately does not reset `ClaudeSandbox` to a random
 password on every start. That would hide the password from the user, but it
 would require elevation for every daily launch, make the starter script a
 privileged broker, and add more failure modes than it removes. Keep provisioning
-elevated and keep normal launches non-elevated.
+elevated and keep normal launches non-elevated. Credential Manager storage is
+optional and scoped to the regular Windows user who starts the launcher.
 
 
 ## Limitations

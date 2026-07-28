@@ -17,6 +17,9 @@
 .PARAMETER LauncherScript
     Installed launcher written by Setup-ClaudeSandbox.ps1.
 
+.PARAMETER LaunchAsExe
+    launch-as executable downloaded by Setup-ClaudeSandbox.ps1.
+
 .PARAMETER InstalledCheckScript
     Installed checker written by Setup-ClaudeSandbox.ps1.
 
@@ -45,6 +48,7 @@ param(
     [string]$UserName = 'ClaudeSandbox',
     [string]$BootstrapScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'Enter-ClaudeDevShell.ps1'),
     [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Start-ClaudeSandbox.ps1'),
+    [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'launch-as.exe'),
     [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Check-ClaudeSandbox.ps1'),
     [string]$ManagedSettings = (Join-Path (Join-Path $env:ProgramFiles 'ClaudeCode') 'managed-settings.json'),
     [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
@@ -52,7 +56,7 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'config.json')
 )
 
-$Version = '0.4.0'
+$Version = '0.5.0'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -383,6 +387,7 @@ else {
             Test-ConfigSetupRequiredField -Setup $setup -Field 'installedByUser' -Description 'Installing user'
             Test-ConfigSetupField -Setup $setup -Field 'firewallMode' -Expected $FirewallMode -Description 'Firewall mode'
             Test-ConfigSetupStringList -Setup $setup -Field 'firewallRuleNames' -Expected @($FirewallRules | ForEach-Object { $_.Name }) -Description 'Firewall rule names'
+            Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected 'v0.3.0' -Description 'launch-as version'
         }
     }
     catch {
@@ -538,6 +543,14 @@ if (Test-Path $LauncherScript) {
 }
 else {
     Fail "Launcher missing: $LauncherScript - run setup."
+}
+
+if (Test-Path $LaunchAsExe) {
+    Pass "launch-as present: $LaunchAsExe"
+    Test-AdminWriteOnlyPath -Path $LaunchAsExe -Description 'launch-as executable' -UserName $UserName
+}
+else {
+    Fail "launch-as missing: $LaunchAsExe - run setup."
 }
 
 if (Test-Path $InstalledCheckScript) {

@@ -37,7 +37,7 @@ $ErrorActionPreference = 'Stop'
 
 $UserName = 'ClaudeSandbox'   # baked in; not configurable
 $SandboxDirectoryName = 'ClaudeSandbox'   # baked in; not configurable
-$Version = '0.4.0'
+$Version = '0.5.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
@@ -48,6 +48,10 @@ $ManagedSettingsSource = Join-Path $PSScriptRoot 'managed-settings.json'
 $LauncherScript = Join-Path $ProgramDataRoot 'Start-ClaudeSandbox.ps1'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
 $BootstrapScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Enter-ClaudeDevShell.ps1'    # baked in; not configurable
+$LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
+$LaunchAsVersion = 'v0.3.0'
+$LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v0.3.0/launch-as-v0.3.0-win64.zip'
+$LaunchAsSha256 = 'D914A97AEC81702680C9DEFECC6B0A933FD078FD98EBF4D9AB45833E73B680B6'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
@@ -247,6 +251,41 @@ function Install-ClaudeManagedSettings {
     Write-Host "  substituted `$SANDBOXDIR with $claudeSandboxPath" -ForegroundColor Green
     Write-Host '  locked policy file: Administrators/SYSTEM full, Users read' -ForegroundColor Green
 }
+function Install-LaunchAs {
+    param(
+        [string]$Destination,
+        [string]$DownloadUri,
+        [string]$ExpectedSha256
+    )
+
+    $tempRoot = Join-Path $env:TEMP ("claude-win-sandbox-launch-as-" + [guid]::NewGuid().ToString('N'))
+    $archivePath = Join-Path $tempRoot 'launch-as.zip'
+    $extractPath = Join-Path $tempRoot 'extracted'
+
+    try {
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        Invoke-WebRequest -Uri $DownloadUri -OutFile $archivePath
+
+        $actualSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+        if ($actualSha256 -ine $ExpectedSha256) {
+            throw "launch-as download hash mismatch. Expected $ExpectedSha256, got $actualSha256."
+        }
+
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
+        $executables = @(Get-ChildItem -LiteralPath $extractPath -Filter 'launch-as.exe' -File -Recurse)
+        if ($executables.Count -ne 1) {
+            throw "Expected exactly one launch-as.exe in the release archive; found $($executables.Count)."
+        }
+
+        Copy-Item -LiteralPath $executables[0].FullName -Destination $Destination -Force
+        Write-Host "  downloaded and verified launch-as: $Destination" -ForegroundColor Green
+    }
+    finally {
+        if (Test-Path $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 # --- 0. Sanity ----------------------------------------------------------------
 $callingUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name  # DOMAIN\user
 $callingProfile = $env:USERPROFILE
@@ -315,8 +354,8 @@ if ($adminMembers | Where-Object { $_.SID -and ($_.SID.Value -eq $sandboxSid) })
 }
 
 # --- 1b. Harden the account ---------------------------------------------------
-# This account is only ever used via the launcher (Start-Process -Credential /
-# runas), which uses the INTERACTIVE logon type. So we deliberately do NOT deny
+# This account is only ever used via launch-as, which uses the INTERACTIVE logon
+# type. So we deliberately do NOT deny
 # interactive logon - doing so breaks the launcher (verified behavior). We deny
 # the logon types the account never needs (network, RDP), set sane password
 # flags, and hide it from the welcome screen.
@@ -329,7 +368,7 @@ Set-LocalUser -Name $UserName -PasswordNeverExpires $true -UserMayChangePassword
 Write-Host "  password: never-expires, user-cannot-change" -ForegroundColor Green
 
 # Deny NETWORK and REMOTE INTERACTIVE (RDP) logon rights via secedit.
-# (Interactive + the runas path are intentionally left allowed.)
+# (Interactive + the launch-as path are intentionally left allowed.)
 $sid = $u.SID.Value
 $tmp = Join-Path $env:TEMP "claude_sandbox_secpol"
 $inf = "$tmp.inf"; $sdb = "$tmp.sdb"
@@ -432,6 +471,7 @@ $config = [ordered]@{
         installedByUser   = $callingUser
         firewallMode      = $FirewallMode
         firewallRuleNames = @($FirewallRules | ForEach-Object { $_.Name })
+        launchAsVersion   = $LaunchAsVersion
     }
 }
 $config | ConvertTo-Json -Depth 4 | Set-Content -Path $ConfigFile -Encoding UTF8
@@ -528,6 +568,7 @@ foreach ($artifact in $launchArtifacts) {
     Copy-Item -Path $artifact.Source -Destination $artifact.Destination -Force
     Write-Host "  wrote $($artifact.Destination)" -ForegroundColor Green
 }
+Install-LaunchAs -Destination $LaunchAsExe -DownloadUri $LaunchAsDownloadUri -ExpectedSha256 $LaunchAsSha256
 
 # Lock ProgramData artifacts down: admin-write only, Users get read+execute
 # (read/run but not modify). Mirrors the managed-settings.json lock so the
@@ -537,6 +578,12 @@ $systemFullInheritAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F
 $usersReadExecuteInheritAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
 icacls $ProgramDataRoot /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
 icacls $bootstrapDir /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
+$adminFullAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F'
+$systemFullAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F'
+$usersReadExecuteAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'RX'
+foreach ($protectedFile in @($ConfigFile, $LauncherScript, $CheckerScript, $BootstrapScript, $LaunchAsExe)) {
+    icacls $protectedFile /inheritance:r /grant $adminFullAce $systemFullAce $usersReadExecuteAce | Out-Null
+}
 Write-Host "  locked ProgramData artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
 
 # --- 6b. Desktop shortcut for double-click launch ----------------------------
