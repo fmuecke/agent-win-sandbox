@@ -107,6 +107,7 @@ for example `C:\dev\ClaudeSandbox`.
 
 ## More Detail
 
+- [Changelog](CHANGELOG.md)
 - [Full guide](docs/FULL-GUIDE.md)
 - [Threat model](docs/threat-model.md)
 - [Todo and decisions](docs/todo-and-decisions.md)
