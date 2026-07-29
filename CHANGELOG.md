@@ -4,7 +4,7 @@ All notable user-facing changes are documented here. Versions before 0.4.0 were
 developed without explicit release versions; their history remains available in
 the Git log.
 
-## 0.5.0 — Unreleased
+## 0.5.1 — 2026-07-29
 
 ### User-facing features
 
@@ -20,7 +20,7 @@ the Git log.
   sessions.
 - The launcher uses launch-as terminal mode, so the sandbox shell runs in the
   initiating terminal instead of opening a separate console window.
-- Setup downloads the pinned launch-as v0.3.0 Windows x64 release, verifies its
+- Setup downloads the pinned launch-as v0.3.1 Windows x64 release, verifies its
   SHA-256 archive hash, and installs `launch-as.exe` under the protected
   ProgramData directory.
 

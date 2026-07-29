@@ -56,7 +56,7 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'config.json')
 )
 
-$Version = '0.5.0'
+$Version = '0.5.1'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -76,22 +76,22 @@ $RiskyGroupChecks = @(
 )
 $FirewallRules = @(
     [pscustomobject]@{
-        Name = 'claude_win_sandbox_block_smb_netbios_tcp'
+        Name        = 'claude_win_sandbox_block_smb_netbios_tcp'
         DisplayName = 'Claude Sandbox - Block SMB and NetBIOS TCP'
-        Protocol = 'TCP'
-        RemotePort = @('139', '445')
+        Protocol    = 'TCP'
+        RemotePort  = @('139', '445')
     },
     [pscustomobject]@{
-        Name = 'claude_win_sandbox_block_netbios_udp'
+        Name        = 'claude_win_sandbox_block_netbios_udp'
         DisplayName = 'Claude Sandbox - Block NetBIOS UDP'
-        Protocol = 'UDP'
-        RemotePort = @('137', '138')
+        Protocol    = 'UDP'
+        RemotePort  = @('137', '138')
     },
     [pscustomobject]@{
-        Name = 'claude_win_sandbox_block_remote_admin_tcp'
+        Name        = 'claude_win_sandbox_block_remote_admin_tcp'
         DisplayName = 'Claude Sandbox - Block remote admin TCP'
-        Protocol = 'TCP'
-        RemotePort = @('135', '3389', '5985', '5986')
+        Protocol    = 'TCP'
+        RemotePort  = @('135', '3389', '5985', '5986')
     }
 )
 
@@ -387,7 +387,7 @@ else {
             Test-ConfigSetupRequiredField -Setup $setup -Field 'installedByUser' -Description 'Installing user'
             Test-ConfigSetupField -Setup $setup -Field 'firewallMode' -Expected $FirewallMode -Description 'Firewall mode'
             Test-ConfigSetupStringList -Setup $setup -Field 'firewallRuleNames' -Expected @($FirewallRules | ForEach-Object { $_.Name }) -Description 'Firewall rule names'
-            Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected 'v0.3.0' -Description 'launch-as version'
+            Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected 'v0.3.1' -Description 'launch-as version'
         }
     }
     catch {
