@@ -56,7 +56,7 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'config.json')
 )
 
-$Version = '0.5.1'
+$Version = '0.5.2'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -387,7 +387,7 @@ else {
             Test-ConfigSetupRequiredField -Setup $setup -Field 'installedByUser' -Description 'Installing user'
             Test-ConfigSetupField -Setup $setup -Field 'firewallMode' -Expected $FirewallMode -Description 'Firewall mode'
             Test-ConfigSetupStringList -Setup $setup -Field 'firewallRuleNames' -Expected @($FirewallRules | ForEach-Object { $_.Name }) -Description 'Firewall rule names'
-            Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected 'v0.3.1' -Description 'launch-as version'
+            Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected 'v0.3.2' -Description 'launch-as version'
         }
     }
     catch {

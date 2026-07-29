@@ -6,7 +6,7 @@
 # Opens a VS Developer Shell in the configured sandbox workspace. Run AS ClaudeSandbox.
 # Uses -VsInstanceId (more reliable than -VsInstallPath discovery under a
 # different user profile). Errors loudly if VS isn't found.
-$Version = '0.5.1'
+$Version = '0.5.2'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $CheckScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'

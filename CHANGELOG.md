@@ -4,6 +4,12 @@ All notable user-facing changes are documented here. Versions before 0.4.0 were
 developed without explicit release versions; their history remains available in
 the Git log.
 
+## 0.5.2 - 2026-07-30
+
+### Changed
+
+- Updated the pinned version of `launch-as.exe` to v0.3.2.
+
 ## 0.5.1 — 2026-07-29
 
 ### User-facing features
