@@ -249,9 +249,13 @@ optional and scoped to the regular Windows user who starts the launcher.
   The setup blocks common Windows sharing and remote-admin outbound ports for
   `ClaudeSandbox`, but still allows normal web/HTTPS traffic so Claude Code,
   git, installers, package managers, and internal web services keep working. It
-  does not stop exfiltration over allowed protocols such as HTTPS. Use a managed
-  local proxy, network firewall, or VM if you need destination allowlisting or
-  full egress isolation.
+  does not stop exfiltration over allowed protocols such as HTTPS. Proxy
+  environment variables are routing hints and can be bypassed; strict egress
+  also requires firewall/WFP enforcement and an audit of local brokers such as
+  localhost proxies, BITS, WebClient, Docker, and WSL/Hyper-V networking. Use a
+  controlled VM/network route when "cannot bypass" is a requirement. See the
+  [threat model](threat-model.md#proxy-settings-and-strict-egress) for the
+  detailed findings.
 - **Mapped-drive checks are hints, not complete access proofs.** The bootstrap
   warns at launch about mapped-drive and Network Shortcut hints visible to the
   `ClaudeSandbox` session. It does not enumerate another user's Credential

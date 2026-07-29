@@ -1,6 +1,6 @@
 # claude-win-sandbox Threat Model
 
-Date: 2026-06-28
+Date: 2026-07-30
 
 ## Scope
 
@@ -233,6 +233,93 @@ Limitations:
 - They do not block all domain protocols, all RPC dynamic ports, package feeds,
   source-control remotes, or arbitrary internal web services.
 
+### Proxy settings and strict egress
+
+`HTTP_PROXY` and `HTTPS_PROXY` are cooperative application configuration, not a
+security boundary. A process running as `ClaudeSandbox` can unset them, configure
+a proxy bypass, invoke a client that ignores them, or open a socket directly.
+Putting proxy variables in protected managed settings keeps that file from being
+edited, but it does not constrain other programs or child processes running as
+the sandbox user.
+
+A meaningful same-host proxy design would require all of the following:
+
+- Run the proxy as a service outside the `ClaudeSandbox` identity.
+- Keep the proxy binary and configuration admin-write-only.
+- Bind only to the intended local address and port.
+- Allow exact destination hostnames and ports and deny everything else. A small
+  native Windows proxy such as
+  [3proxy](https://3proxy.org/doc/man5/3proxy.cfg.5.html) can enforce HTTP
+  `CONNECT` hostname/port ACLs; Squid in a small VM is a heavier alternative.
+- Force `ClaudeSandbox` traffic to that proxy with firewall/WFP policy, covering
+  IPv4, IPv6, UDP/QUIC, and direct DNS. Proxy variables alone are insufficient.
+- Resolve destination names at the trusted proxy rather than through a resolver
+  controlled by the sandbox session.
+
+Windows Firewall explicit block rules override conflicting allow rules. A broad
+explicit "block everything" rule cannot be paired with an overlapping allow rule
+and expected to restore proxy access. The policy must structurally exclude the
+proxy path from the block, or use a separate network/VM boundary. See
+[Microsoft's firewall rule precedence](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/rules).
+
+The smallest Claude allowlist depends on authentication and enabled features.
+Current core candidates are `api.anthropic.com`, `claude.ai`, `claude.com`, and
+`platform.claude.com`. Updates, connectors, documentation, release notes, and
+older installers can require additional destinations such as
+`downloads.claude.ai`, `mcp-proxy.anthropic.com`, `code.claude.com`,
+`storage.googleapis.com`, or `raw.githubusercontent.com`. Prefer disabling
+unneeded features over broadly allowing shared hosting domains, and revalidate
+the list against the
+[Claude Code network requirements](https://code.claude.com/docs/en/network-config)
+before deployment.
+
+Even an enforced hostname allowlist still permits communication with the allowed
+service. It limits destinations; it cannot prevent misuse of an allowed Claude
+credential or distinguish legitimate prompts from data intentionally sent to an
+allowed endpoint without deeper application-aware controls.
+
+### Brokered and local-service egress
+
+Blocking sockets attributed directly to `ClaudeSandbox` may not cover a local
+broker that accepts a request from the sandbox user and creates the external
+connection under another process, service, or VM identity.
+
+The clearest practical case is an unauthenticated localhost proxy or tunnel, such
+as a debugging proxy, corporate proxy agent, or SSH dynamic-forward listener.
+Other installed privileged agents may expose localhost ports or named pipes that
+can fetch arbitrary URLs.
+
+The following built-in or commonly installed components are audit candidates:
+
+- [BITS](https://learn.microsoft.com/en-us/windows/win32/bits/about-bits) can
+  perform HTTP/HTTPS downloads and uploads through the Background Intelligent
+  Transfer Service.
+- [WebClient](https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/credentials-prompt-access-webdav-fqdn-sites)
+  performs WebDAV network I/O through WinHTTP.
+- [DNS Client](https://learn.microsoft.com/en-us/windows-server/networking/dns/queries-lookups)
+  can issue externally visible queries and therefore provides at least a
+  possible low-bandwidth DNS exfiltration channel.
+- [Docker daemon access](https://docs.docker.com/desktop/setup/install/windows-permission-requirements/)
+  can move networking into Docker's backend or VM and is highly privileged.
+  `ClaudeSandbox` must not be a member of `docker-users`.
+- [WSL2 and Hyper-V](https://learn.microsoft.com/en-us/windows/wsl/networking)
+  use a separate filtering plane. Check Hyper-V firewall policy and accessible
+  WSL distributions instead of assuming an ordinary host `LocalUser` rule
+  covers guest traffic.
+
+BITS, WebClient, and DNS are not asserted here as universal bypasses. Windows
+Filtering Platform attribution can depend on service impersonation, the broker,
+and the Windows version. Validate the actual process and user associated with
+connections on the target host, using Windows Filtering Platform/Security events
+5156 and 5157 where available. See Microsoft's
+[Application Layer Enforcement](https://learn.microsoft.com/en-us/windows/win32/fwp/application-layer-enforcement--ale-)
+overview for the application/user filtering boundary.
+
+For a hard "cannot bypass" requirement, prefer a VM or isolated host whose only
+network route is a controlled proxy or firewall. The same-host standard-user
+design remains a pragmatic blast-radius control rather than a formal egress
+boundary.
+
 ### Claude Code managed settings
 
 `managed-settings.json` disables bypass-permissions and auto mode, locks down
@@ -412,6 +499,10 @@ Accepted residual risks in the current implementation:
 - Any credential stored in the `ClaudeSandbox` profile can be abused by code
   running as `ClaudeSandbox`.
 - Allowed HTTPS egress can be used for exfiltration.
+- Proxy environment variables can be bypassed unless a separate firewall/WFP or
+  VM boundary makes the proxy the only network path.
+- A reachable local proxy, broker service, container daemon, or VM networking
+  path may create connections under an identity other than `ClaudeSandbox`.
 - Machine-wide tools, extensions, and build systems are trusted to the extent
   that normal Users can execute them.
 - There is no restricted token, capability SID, per-command ACL refresh, network
@@ -466,6 +557,14 @@ Manual checks to perform periodically:
 - Confirm no secrets have been copied into the sandbox workspace.
 - Confirm local or domain firewall policy has not disabled the account-scoped
   block rules.
+- Inventory localhost listeners and confirm no unintended proxy or tunnel is
+  reachable by `ClaudeSandbox`.
+- Confirm `ClaudeSandbox` is not in `docker-users`, `Hyper-V Administrators`, or
+  another group that grants access to a privileged broker.
+- Review accessible WSL distributions and Hyper-V firewall policy.
+- If strict proxy enforcement is being evaluated, test BITS, WebClient/WebDAV,
+  DNS, and other brokers while recording Security events 5156/5157; do not infer
+  their effective firewall identity from the service name alone.
 
 ## Security Posture Summary
 

@@ -104,6 +104,10 @@ for example `C:\dev\ClaudeSandbox`.
   workspace and anything otherwise readable by normal Windows users.
 - HTTPS/web egress remains available for Claude Code, git, package managers, and
   internal services.
+- Proxy environment variables alone do not enforce egress: the sandbox user can
+  bypass them, and local services or VM/container networking may relay traffic
+  under another identity. See the [threat model](docs/threat-model.md#proxy-settings-and-strict-egress)
+  before designing a strict destination allowlist.
 
 ## More Detail
 

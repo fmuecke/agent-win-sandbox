@@ -4,7 +4,7 @@ Running log to update the project step by step. Captures decisions already made
 (with rationale) and open items still to action. Personal/career discussions are
 deliberately excluded.
 
-_Last updated: 2026-07-09_
+_Last updated: 2026-07-30_
 
 ---
 
@@ -44,7 +44,12 @@ _Last updated: 2026-07-09_
 - **Outbound firewall protection is account-scoped and operational.** Setup
   blocks `ClaudeSandbox` outbound SMB/NetBIOS/RDP/WinRM-style ports while
   leaving HTTP/HTTPS and internal web services usable. Strict destination
-  allowlisting is deferred because it needs a managed proxy or network policy.
+  allowlisting is deferred because it needs a managed proxy plus firewall/WFP
+  enforcement or a controlled VM/network route. `HTTP_PROXY`/`HTTPS_PROXY`
+  settings alone are bypassable and are not an isolation boundary. Any
+  same-host design must also audit localhost proxies, BITS, WebClient, DNS,
+  Docker access, and WSL/Hyper-V networking; broker attribution requires
+  host-specific WFP evidence.
 
 ### Filesystem layout
 - **Config/launcher/launch-as/checker/bootstrap → ProgramData; Claude managed settings
@@ -182,6 +187,11 @@ _Last updated: 2026-07-09_
 - [x] Operational outbound firewall rules for the sandbox account
       (SMB/NetBIOS/RDP/WinRM blocked; web remains available).
 - [ ] Strict egress allowlist for the sandbox process (e.g. `api.anthropic.com`,
-      `dev.azure.com`) via managed local proxy, network firewall, or VM.
+      `dev.azure.com`) via a protected proxy and non-bypassable firewall/WFP
+      policy, or a VM with a controlled route. Do not count proxy environment
+      variables alone as enforcement.
+- [ ] Audit potential local network brokers: localhost listeners, BITS,
+      WebClient/WebDAV, DNS Client, Docker permissions, accessible WSL
+      distributions, Hyper-V firewall policy, and Security events 5156/5157.
 - [ ] Pre-commit secrets scanning (`gitleaks` / `detect-secrets`) as an active
       layer beyond content exclusions.
