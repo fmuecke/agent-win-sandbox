@@ -46,6 +46,84 @@ function Stop-LauncherError {
     exit 1
 }
 
+function Enable-CtrlBreakGuard {
+    if (-not ('ClaudeSandboxCtrlBreakGuard' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class ClaudeSandboxCtrlBreakGuard
+{
+    private const uint CtrlBreakEvent = 1;
+    private const int StandardInput = -10;
+    private const int StandardOutput = -11;
+    private delegate bool HandlerRoutine(uint controlType);
+    private static readonly HandlerRoutine Handler = Handle;
+    private static uint originalInputMode;
+    private static uint originalOutputMode;
+    private static bool hasOriginalModes;
+    private static bool installed;
+
+    [DllImport("Kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetConsoleCtrlHandler(HandlerRoutine handler, bool add);
+
+    [DllImport("Kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int standardHandle);
+
+    [DllImport("Kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+
+    [DllImport("Kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetConsoleMode(IntPtr handle, uint mode);
+
+    public static void Install()
+    {
+        IntPtr input = GetStdHandle(StandardInput);
+        IntPtr output = GetStdHandle(StandardOutput);
+        if (!GetConsoleMode(input, out originalInputMode) ||
+            !GetConsoleMode(output, out originalOutputMode))
+        {
+            return;
+        }
+        hasOriginalModes = true;
+
+        if (!SetConsoleCtrlHandler(Handler, true))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        installed = true;
+    }
+
+    public static void Remove()
+    {
+        if (installed)
+        {
+            SetConsoleCtrlHandler(Handler, false);
+            installed = false;
+        }
+        if (hasOriginalModes)
+        {
+            SetConsoleMode(GetStdHandle(StandardInput), originalInputMode);
+            SetConsoleMode(GetStdHandle(StandardOutput), originalOutputMode);
+            hasOriginalModes = false;
+        }
+    }
+
+    private static bool Handle(uint controlType)
+    {
+        return controlType == CtrlBreakEvent;
+    }
+}
+'@
+    }
+
+    [ClaudeSandboxCtrlBreakGuard]::Install()
+}
+
 trap {
     Stop-LauncherError "Unexpected launcher error: $($_.Exception.Message)"
 }
@@ -83,14 +161,21 @@ $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
 Write-Host "Launching as '$UserName' in $sandboxPath ..." -ForegroundColor Green
 Write-Host '(Windows Credential UI appears if launch-as needs a credential.)' -ForegroundColor DarkGray
 
-& $LaunchAsExe `
-    --user $UserName `
-    --working-directory $sandboxPath `
-    --terminal `
-    -- $powershellExe -NoExit -ExecutionPolicy Bypass -File $BootstrapScript
+Enable-CtrlBreakGuard
+try {
+    & $LaunchAsExe `
+        --user $UserName `
+        --working-directory $sandboxPath `
+        --terminal `
+        -- $powershellExe -NoExit -ExecutionPolicy Bypass -File $BootstrapScript
+    $launchAsExitCode = $LASTEXITCODE
+}
+finally {
+    [ClaudeSandboxCtrlBreakGuard]::Remove()
+}
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "launch-as returned exit code $LASTEXITCODE. The credential may be missing or incorrect, or the account may lack interactive logon."
+if ($launchAsExitCode -ne 0) {
+    Write-Warning "The interactive shell launcher returned exit code $launchAsExitCode."
     if (Test-Path $CheckerScript) {
         Write-Host "Verify setup with: & '$CheckerScript'" -ForegroundColor Yellow
     }
