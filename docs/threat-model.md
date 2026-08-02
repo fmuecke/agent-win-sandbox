@@ -23,18 +23,15 @@ production domain administration.
 
 ## Security Objective
 
-The objective is blast-radius reduction for agentic coding on a trusted Windows
-machine.
+Reduce the blast radius of agentic coding on a trusted Windows machine. The
+sandbox should keep a compromised or confused Claude Code session from the
+developer's profile, credentials, private keys, browser state, unrelated source
+trees, and most local machine state, while reducing common Windows
+lateral-movement traffic.
 
-The sandbox should make a compromised or confused Claude Code session unable to
-read the developer's primary Windows profile, personal credentials, private SSH
-keys, browser state, unrelated source trees, and most local machine state. It
-should also reduce accidental lateral movement through common Windows sharing
-and remote-admin protocols.
-
-This is not a hard isolation boundary. A VM, disposable host, or remote sandbox
-is still required for adversarial code, malware analysis, production secrets, or
-workloads where full host compromise must be assumed.
+It is not hard isolation. Use a VM, disposable host, or remote sandbox for
+adversarial code, malware analysis, production secrets, or assumed host
+compromise.
 
 ## Deployment Assumptions
 
@@ -84,41 +81,17 @@ Assets intentionally exposed to the agent:
 
 ## Trust Boundaries
 
-### Developer account to sandbox account
-
-The primary boundary is the Windows user boundary between the developer account
-and `ClaudeSandbox`. NTFS profile ACLs enforce that `ClaudeSandbox` cannot read
-the developer's profile on a correctly configured system.
-
-### Trusted control plane to writable workspace
-
-Trusted launch/configuration artifacts live under ProgramData and should be
-admin-write / Users-read-execute:
-
-- `C:\ProgramData\claude-win-sandbox\config.json`
-- `C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1`
-- `C:\ProgramData\claude-win-sandbox\launch-as.exe`
-- `C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1`
-- `C:\ProgramData\claude-win-sandbox\bootstrap\Enter-ClaudeDevShell.ps1`
-
-File-based Claude Code managed policy lives under Program Files and should be
-admin-write / Users-read:
-
-- `C:\Program Files\ClaudeCode\managed-settings.json`
-
-The writable workspace must not be the source of trusted launcher code.
-
-### Local machine to developer network
-
-The workstation is allowed onto a developer VLAN. Account-scoped Windows
-Firewall rules block common Windows lateral-movement protocols from
-`ClaudeSandbox`, but ordinary web/HTTPS traffic remains available.
-
-### Human approval to agent action
-
-Claude Code permission prompts and managed settings are a policy boundary around
-tool use. They are defense in depth and should not be treated as equivalent to
-OS isolation.
+- **Developer to sandbox account:** Default NTFS profile ACLs prevent
+  `ClaudeSandbox` from reading the developer profile on a correctly configured
+  system.
+- **Trusted control plane to workspace:** ProgramData launcher/configuration
+  files are admin-write / Users-read-execute; managed policy in Program Files is
+  admin-write / Users-read. The writable workspace is never trusted launcher
+  code.
+- **Workstation to developer network:** Account-scoped firewall rules block
+  common lateral-movement protocols but allow ordinary web/HTTPS traffic.
+- **Human approval to agent action:** Claude Code prompts and managed settings
+  constrain tool use but are defense in depth, not OS isolation.
 
 ## Threat Actors
 
@@ -352,123 +325,14 @@ Limitations:
 
 ## Key Attack Scenarios
 
-### 1. Poisoned repository reads developer SSH keys
-
-Attack:
-
-1. Developer clones a malicious repo into the sandbox workspace.
-2. Claude reads project instructions or runs a build script.
-3. Malicious content tries to read `C:\Users\<developer>\.ssh`.
-
-Expected result:
-
-- OS ACLs should block direct reads from the developer profile.
-- Claude Code deny rules should also block obvious `.ssh` read attempts.
-
-Residual risk:
-
-- If the developer profile ACL is misconfigured, this can fail.
-- SSH keys copied into the workspace or another broad-read path are exposed.
-
-### 2. Poisoned build steals sandbox git credentials
-
-Attack:
-
-1. Repo build script runs under `ClaudeSandbox`.
-2. Script reads `ClaudeSandbox` git credential material or uses an existing
-   authenticated remote.
-3. Script pushes, fetches private repos, or exfiltrates over HTTPS.
-
-Expected result:
-
-- Developer credentials are separated from sandbox credentials.
-- `git push` should require Claude Code approval when invoked through Claude's
-  tool policy.
-
-Residual risk:
-
-- A build tool or child process can use credentials available to
-  `ClaudeSandbox`.
-- HTTPS egress is allowed.
-- Tokens assigned to `ClaudeSandbox` must be scoped as if compromised.
-
-### 3. Agent attempts lateral movement over Windows protocols
-
-Attack:
-
-1. Prompt injection tells Claude to enumerate or mount domain file shares.
-2. The agent tries SMB, NetBIOS, WinRM, RDP, or RPC endpoint mapper traffic.
-
-Expected result:
-
-- Account-scoped firewall rules should block the listed outbound ports for
-  `ClaudeSandbox`.
-- Deny network logon reduces the usefulness of the account as a network logon
-  identity.
-
-Residual risk:
-
-- HTTPS, package feeds, source hosting, and internal web apps remain reachable.
-- Not all domain or RPC traffic is covered.
-- Firewall policy may drift or be overridden.
-
-### 4. Agent rewrites its next-session bootstrap
-
-Attack:
-
-1. Agent tries to edit the bootstrap script so future launches run attacker
-   commands.
-2. Agent tries to change config so the launcher starts somewhere else.
-
-Expected result:
-
-- ProgramData files should be readable but not writable by `ClaudeSandbox`.
-- `Check-ClaudeSandbox.ps1` should report failures if broad write ACLs appear.
-
-Residual risk:
-
-- If setup was not run elevated, ACLs were later changed, or an admin account is
-  compromised, this control can fail.
-
-### 5. Prompt injection causes destructive workspace changes
-
-Attack:
-
-1. Malicious text instructs the agent to delete files or rewrite source.
-2. Claude executes commands inside the sandbox workspace.
-
-Expected result:
-
-- Damage is contained to the workspace and resources available to
-  `ClaudeSandbox`.
-
-Residual risk:
-
-- Repos in the workspace can be damaged.
-- Generated artifacts, local branches, and uncommitted work can be lost.
-- This repo does not provide snapshots, copy-on-write isolation, or automatic
-  rollback.
-
-### 6. Domain SSO or mapped drive exposure
-
-Attack:
-
-1. `ClaudeSandbox` has mapped drives, saved network shortcuts, or default domain
-   access that reaches developer resources.
-2. Agent follows prompt-injected instructions to access those resources.
-
-Expected result:
-
-- Bootstrap warns about mapped drives, persistent mappings, and network
-  shortcuts visible in the sandbox profile.
-- Firewall blocks common Windows sharing ports.
-
-Residual risk:
-
-- Web-based SSO and internal HTTPS applications are still reachable.
-- The warning is not a complete proof of domain access.
-- Saved credentials in `ClaudeSandbox` remain usable by processes running as
-  that user.
+| Scenario | Current control | Residual risk |
+|---|---|---|
+| Poisoned repo reads `C:\Users\<developer>\.ssh` | Default profile ACLs block direct reads; Claude deny rules block obvious `.ssh` reads. | Misconfigured profile ACLs or keys copied to the workspace/broad-read paths expose them. |
+| Poisoned build uses sandbox Git credentials or authenticated remotes | Developer and sandbox credentials are separate; `git push` should require Claude approval. | Build tools can use sandbox credentials and HTTPS. Scope sandbox tokens as compromised. |
+| Prompt injection attempts SMB, NetBIOS, WinRM, RDP, or RPC traffic | SID-scoped firewall blocks and deny-network-logon reduce access. | HTTPS, package feeds, source hosting, and internal web apps remain; RPC/domain coverage is incomplete and policy can drift. |
+| Agent rewrites bootstrap or launch configuration | ProgramData files are readable but not writable by `ClaudeSandbox`; checker detects broad write ACLs. | Fails if setup was not elevated, ACLs drift, or an administrator is compromised. |
+| Prompt injection changes or deletes workspace files | Damage stays within the workspace and sandbox-accessible resources. | Repositories, artifacts, local branches, and uncommitted work can be lost; no snapshots, copy-on-write isolation, or rollback. |
+| Domain SSO, mapped drives, or network shortcuts expose resources | Bootstrap warns about visible mappings and shortcuts; firewall blocks common sharing ports. | Web SSO and internal HTTPS remain, warnings are not access proofs, and sandbox credentials remain usable by its processes. |
 
 ## Domain and VLAN Considerations
 
@@ -490,43 +354,25 @@ Recommended operating model:
 - Do not use this setup from a workstation that also performs production
   administration.
 
-## Residual Risks
+## Not Protected: Use Stronger Isolation
 
-Accepted residual risks in the current implementation:
+The sandbox user can fully control its workspace and use every credential in its
+profile. Allowed HTTPS can exfiltrate data, and proxy variables remain bypassable
+until firewall/WFP or a VM makes the proxy the only route. A reachable local
+proxy, broker, container daemon, or VM network path may connect under another
+identity.
 
-- A malicious process running as `ClaudeSandbox` can fully control the sandbox
-  workspace.
-- Any credential stored in the `ClaudeSandbox` profile can be abused by code
-  running as `ClaudeSandbox`.
-- Allowed HTTPS egress can be used for exfiltration.
-- Proxy environment variables can be bypassed unless a separate firewall/WFP or
-  VM boundary makes the proxy the only network path.
-- A reachable local proxy, broker service, container daemon, or VM networking
-  path may create connections under an identity other than `ClaudeSandbox`.
-- Machine-wide tools, extensions, and build systems are trusted to the extent
-  that normal Users can execute them.
-- There is no restricted token, capability SID, per-command ACL refresh, network
-  allowlist, process supervisor, job-object cleanup, memory limit, or automatic
-  rollback.
-- A local administrator, kernel exploit, endpoint security bypass, or host
-  compromise defeats the model.
-- Supply-chain attacks in compilers, package managers, build scripts, or test
-  runners execute inside the sandbox user's authority.
-
-## Misuse Cases
-
-Do not rely on this implementation for:
-
-- Running malware or intentionally adversarial binaries.
-- Opening untrusted attachments that may exploit local applications.
-- Handling production secrets.
-- Production-domain administration.
-- Reviewing highly sensitive third-party code without stronger isolation.
-- Multi-tenant workstations where other local users are not trusted.
-- Regulatory isolation requirements that call for a formal security boundary.
+Machine-wide tools, extensions, compilers, package managers, build scripts, and
+test runners are trusted to the extent normal Users can run them. This project
+does not provide a restricted token, capability SID, per-command ACL refresh,
+network allowlist, process supervisor, job-object cleanup, memory limit, or
+automatic rollback. Local administrators, kernel exploits, endpoint-security
+bypasses, and host compromise defeat the model.
 
 Use a disposable VM, isolated build host, devcontainer, or remote sandbox for
-those cases.
+malware or adversarial binaries, untrusted attachments, production secrets or
+administration, highly sensitive third-party code, multi-tenant workstations,
+or formal regulatory isolation requirements.
 
 ## Validation Checklist
 
@@ -565,19 +411,3 @@ Manual checks to perform periodically:
 - If strict proxy enforcement is being evaluated, test BITS, WebClient/WebDAV,
   DNS, and other brokers while recording Security events 5156/5157; do not infer
   their effective firewall identity from the service name alone.
-
-## Security Posture Summary
-
-This implementation is appropriate for a trusted developer machine on a
-segmented developer network when the goal is to keep an agent's mistakes or
-prompt-injection failures away from the developer's primary identity and local
-secrets.
-
-The strongest controls are Windows identity separation, default profile ACLs,
-protected ProgramData launch files, per-user Claude installation, and scoped
-blocking of common Windows lateral-movement protocols.
-
-The main remaining risk is that the sandbox is still an online development user
-with a writable workspace, build tools, package managers, and HTTPS egress. Keep
-the sandbox's credentials narrow and assume that anything reachable by
-`ClaudeSandbox` can eventually be reached by a compromised agent session.
