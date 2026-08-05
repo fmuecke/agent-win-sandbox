@@ -96,6 +96,7 @@ function Set-ClaudeCodeSettings {
     }
 
     $settings.env | Add-Member -MemberType NoteProperty -Name 'CLAUDE_CODE_USE_POWERSHELL_TOOL' -Value '1' -Force
+    $settings.env | Add-Member -MemberType NoteProperty -Name 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC' -Value '1' -Force
     $settings | Add-Member -MemberType NoteProperty -Name 'defaultShell' -Value 'powershell' -Force
     $settings | Add-Member -MemberType NoteProperty -Name 'autoUpdatesChannel' -Value 'stable' -Force
 
