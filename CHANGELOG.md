@@ -3,6 +3,21 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
+## 0.6.0 — 2026-08-05
+
+- Changed: The launcher now opens a plain PowerShell 7 Agent Sandbox terminal;
+  `devshell` activates the Visual Studio Developer Shell only when requested.
+- Added: Protected `claude`, `copilot`, `sandbox-check`, and `sandbox-help`
+  commands in every sandbox session.
+- Added: Support for GitHub Copilot CLI: The Copilot wrapper downloads and
+  verifies the official latest Windows x64 release in `~\.local\bin`, updates
+  it through `copilot update`, and manages a Copilot-Requests-scoped fine-
+  grained PAT.
+- Changed: Renamed the Public Desktop shortcut to `Agent Sandbox`.
+- Security: The Copilot PAT is currently stored in the sandbox user's plaintext
+  environment. Every process running as `ClaudeSandbox` can read it; protected
+  at-rest storage remains an open item.
+
 ## 0.5.2 — 2026-08-01
 
 - Changed: Applied Redpen to documentation for better readability.

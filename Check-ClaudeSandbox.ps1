@@ -11,8 +11,17 @@
 .PARAMETER UserName
     Low-privilege sandbox user. Default: ClaudeSandbox.
 
-.PARAMETER BootstrapScript
-    Dev Shell bootstrap written by Setup-ClaudeSandbox.ps1.
+.PARAMETER ShellInitScript
+    Shell initializer written by Setup-ClaudeSandbox.ps1.
+
+.PARAMETER DevShellScript
+    Developer Shell command written by Setup-ClaudeSandbox.ps1.
+
+.PARAMETER ClaudeWrapperScript
+    Claude Code command wrapper written by Setup-ClaudeSandbox.ps1.
+
+.PARAMETER CopilotWrapperScript
+    GitHub Copilot CLI command wrapper written by Setup-ClaudeSandbox.ps1.
 
 .PARAMETER LauncherScript
     Installed launcher written by Setup-ClaudeSandbox.ps1.
@@ -46,7 +55,10 @@
 [CmdletBinding()]
 param(
     [string]$UserName = 'ClaudeSandbox',
-    [string]$BootstrapScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'Enter-ClaudeDevShell.ps1'),
+    [string]$ShellInitScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'Initialize-ClaudeSandboxShell.ps1'),
+    [string]$DevShellScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'Enter-ClaudeDevShell.ps1'),
+    [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
+    [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
     [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Start-ClaudeSandbox.ps1'),
     [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'launch-as.exe'),
     [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Check-ClaudeSandbox.ps1'),
@@ -56,7 +68,7 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'config.json')
 )
 
-$Version = '0.5.2'
+$Version = '0.6.0'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -561,19 +573,26 @@ else {
     Fail "Installed checker missing: $InstalledCheckScript - run setup."
 }
 
-if (Test-Path $BootstrapScript) {
-    Pass "Bootstrap present: $BootstrapScript"
+$bootstrapDir = Split-Path $ShellInitScript -Parent
+Test-AdminWriteOnlyPath -Path $bootstrapDir -Description 'Bootstrap directory' -UserName $UserName
+foreach ($scriptArtifact in @(
+        [pscustomobject]@{ Description = 'Shell initializer'; Path = $ShellInitScript },
+        [pscustomobject]@{ Description = 'Developer Shell command'; Path = $DevShellScript },
+        [pscustomobject]@{ Description = 'Claude command wrapper'; Path = $ClaudeWrapperScript },
+        [pscustomobject]@{ Description = 'Copilot command wrapper'; Path = $CopilotWrapperScript }
+    )) {
+    if (Test-Path $scriptArtifact.Path) {
+        Pass "$($scriptArtifact.Description) present: $($scriptArtifact.Path)"
+        Test-AdminWriteOnlyPath -Path $scriptArtifact.Path -Description $scriptArtifact.Description -UserName $UserName
+    }
+    else {
+        Fail "$($scriptArtifact.Description) missing: $($scriptArtifact.Path) - run setup."
+    }
+}
 
-    # The bootstrap must be runnable by ClaudeSandbox but NOT writable by it -
-    # otherwise the agent could rewrite what runs at next launch. Verify the
-    # bootstrap dir and script are admin-write only.
-    $bootstrapDir = Split-Path $BootstrapScript -Parent
-    Test-AdminWriteOnlyPath -Path $bootstrapDir -Description 'Bootstrap directory' -UserName $UserName
-    Test-AdminWriteOnlyPath -Path $BootstrapScript -Description 'Bootstrap script' -UserName $UserName
-}
-else {
-    Fail "Bootstrap missing: $BootstrapScript - run setup."
-}
+$pwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+if (Test-Path $pwshExe -PathType Leaf) { Pass "PowerShell 7 found: $pwshExe" }
+else { Fail "PowerShell 7 not found at $pwshExe." }
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (Test-Path $vswhere) {
@@ -604,7 +623,7 @@ catch {
     Warn "Could not verify per-user Claude for ${UserName}: $expected ($($_.Exception.Message))"
 }
 if ($expectedExists) { Pass "Claude Code installed for ${UserName}: $expected" }
-elseif (-not $expectedCheckFailed) { Warn "No per-user Claude for $UserName at $expected - install AS $UserName (irm https://claude.ai/install.ps1 | iex)." }
+elseif (-not $expectedCheckFailed) { Warn "No per-user Claude for $UserName at $expected - run 'claude' inside Agent Sandbox." }
 
 # Flag installs OUTSIDE the sandbox user that could leak in via machine PATH.
 $leaks = @()
@@ -646,7 +665,22 @@ else {
     Pass "No Claude installs outside $UserName."
 }
 
-# --- 8. Claude Code managed policy -------------------------------------------
+# --- 8. GitHub Copilot CLI install location ---------------------------------
+Section "GitHub Copilot CLI install"
+$expectedCopilot = "C:\Users\$UserName\.local\bin\copilot.exe"
+try {
+    if (Test-Path -LiteralPath $expectedCopilot -ErrorAction Stop) {
+        Pass "GitHub Copilot CLI installed for ${UserName}: $expectedCopilot"
+    }
+    else {
+        Warn "No per-user GitHub Copilot CLI for $UserName at $expectedCopilot - run 'copilot' inside Agent Sandbox."
+    }
+}
+catch {
+    Warn "Could not verify per-user GitHub Copilot CLI for ${UserName}: $expectedCopilot ($($_.Exception.Message))"
+}
+
+# --- 9. Claude Code managed policy -------------------------------------------
 Section "Claude Code managed policy"
 if (-not (Test-Path $ManagedSettings)) {
     Warn "File-based managed settings not found: $ManagedSettings - run setup and choose managed settings deployment."

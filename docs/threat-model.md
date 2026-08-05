@@ -1,6 +1,6 @@
 # claude-win-sandbox Threat Model
 
-Date: 2026-07-30
+Date: 2026-08-05
 
 ## Scope
 
@@ -10,10 +10,13 @@ This threat model covers the current `claude-win-sandbox` implementation:
 - `Start-ClaudeSandbox.ps1`
 - `Check-ClaudeSandbox.ps1`
 - `Remove-ClaudeSandbox.ps1`
+- `bootstrap/Initialize-ClaudeSandboxShell.ps1`
 - `bootstrap/Enter-ClaudeDevShell.ps1`
+- `scripts/claude-wrapper.ps1`
+- `scripts/copilot-wrapper.ps1`
 - `managed-settings.json`
 - generated state under `C:\ProgramData\claude-win-sandbox`
-- Claude Code installed per-user under `C:\Users\ClaudeSandbox`
+- agent CLIs installed per-user under `C:\Users\ClaudeSandbox`
 - the shared sandbox workspace, normally `C:\dev\ClaudeSandbox`
 
 The target scenario is a trusted Windows developer workstation on a dedicated
@@ -24,7 +27,7 @@ production domain administration.
 ## Security Objective
 
 Reduce the blast radius of agentic coding on a trusted Windows machine. The
-sandbox should keep a compromised or confused Claude Code session from the
+sandbox should keep a compromised or confused agent session from the
 developer's profile, credentials, private keys, browser state, unrelated source
 trees, and most local machine state, while reducing common Windows
 lateral-movement traffic.
@@ -46,14 +49,14 @@ compromise.
 - `ClaudeSandbox` is a local standard user and is not a domain administrator,
   local administrator, Backup Operator, Remote Desktop user, or member of other
   privileged groups.
-- Claude Code is installed per-user as `ClaudeSandbox`, not machine-wide and not
+- Agent CLIs are installed per-user as `ClaudeSandbox`, not machine-wide and not
   from the developer's own profile.
 - The developer's own profile ACL follows the Windows default model where other
   standard users cannot read it.
 - Repositories placed in the sandbox workspace are considered shareable with the
   agent. Anything placed there may be read, modified, built, or deleted by the
   agent.
-- Normal HTTPS/web egress remains available because Claude Code, git, package
+- Normal HTTPS/web egress remains available because agents, git, package
   managers, installers, and internal web services need it.
 
 ## Assets
@@ -69,7 +72,7 @@ Primary assets to protect:
 - Source trees outside `C:\dev\ClaudeSandbox`.
 - Trusted launcher files under ProgramData and Claude Code policy under
   Program Files.
-- Claude Code configuration and credentials scoped to `ClaudeSandbox`.
+- Agent configuration and credentials scoped to `ClaudeSandbox`.
 
 Assets intentionally exposed to the agent:
 
@@ -90,7 +93,7 @@ Assets intentionally exposed to the agent:
   code.
 - **Workstation to developer network:** Account-scoped firewall rules block
   common lateral-movement protocols but allow ordinary web/HTTPS traffic.
-- **Human approval to agent action:** Claude Code prompts and managed settings
+- **Human approval to agent action:** Agent prompts and product-specific policy
   constrain tool use but are defense in depth, not OS isolation.
 
 ## Threat Actors
@@ -110,9 +113,9 @@ Assets intentionally exposed to the agent:
 
 ### Separate Windows identity
 
-`ClaudeSandbox` runs as a local standard user. It has its own profile, Credential
-Manager, Claude Code install, Claude configuration, and git credentials. The
-agent is not running with the developer's OS identity.
+`ClaudeSandbox` runs as a local standard user. It has its own profile,
+Credential Manager, agent installs, agent configuration, and git credentials.
+The agent is not running with the developer's OS identity.
 
 Security effect:
 
@@ -147,16 +150,17 @@ Limitations:
 
 ### Protected control plane
 
-Setup downloads and verifies launch-as, copies the launcher, checker, and bootstrap, and writes configuration
-under `C:\ProgramData\claude-win-sandbox`, then locks the directory admin-write /
-Users-read-execute. The managed Claude Code policy is also intended to live under
-`C:\Program Files\ClaudeCode\managed-settings.json` with admin-write
+Setup downloads and verifies launch-as, copies the launcher, checker, shell
+initializer, and agent command wrappers, and writes configuration under
+`C:\ProgramData\claude-win-sandbox`, then locks the directory admin-write /
+Users-read-execute. The managed Claude Code policy is also intended to live
+under `C:\Program Files\ClaudeCode\managed-settings.json` with admin-write
 permissions.
 
 Security effect:
 
-- Prevents `ClaudeSandbox` from rewriting launch-as, the launcher/checker/bootstrap, or
-  changing the configured sandbox path.
+- Prevents `ClaudeSandbox` from rewriting launch-as, the launcher, checker,
+  shell initializer, command wrappers, or configured sandbox path.
 - Keeps trusted launch scripts out of the agent-writable workspace.
 
 Limitations:
@@ -311,12 +315,35 @@ Limitations:
 - This is defense in depth, not a kernel boundary.
 - Path and command policies are intentionally narrow and incomplete.
 - Agent bugs or future Claude Code behavior changes can affect enforcement.
+- These settings do not govern GitHub Copilot CLI. Its permissions and
+  organization policy must be configured independently.
+
+### GitHub Copilot CLI token
+
+The Copilot wrapper accepts only a user-owned fine-grained PAT whose value
+begins with `github_pat_`; the documented scope uses `Copilot Requests` as its
+only added permission and minimizes repository access. It stores that PAT as
+the sandbox user's persistent `COPILOT_GITHUB_TOKEN`.
+
+Security effect:
+
+- Keeps the Copilot credential separate from the developer's Windows identity.
+- Avoids reusing a broader `GH_TOKEN` or classic PAT.
+
+Limitations:
+
+- Windows user environment variables are plaintext. Every process running as
+  `ClaudeSandbox` can read and exfiltrate the PAT.
+- The PAT must be treated as compromised if an agent, build, or dependency
+  running under that identity is compromised.
+- Protected token storage remains an open item; even protected-at-rest storage
+  cannot hide a token from Copilot while it is in use.
 
 ## STRIDE Summary
 
 | Category | Relevant threats | Current controls | Residual risk |
 |----------|------------------|------------------|---------------|
-| Spoofing | Agent uses developer identity or domain credentials | Separate local user, separate Credential Manager, per-user Claude install | `ClaudeSandbox` may still receive its own git/PAT credentials |
+| Spoofing | Agent uses developer identity or domain credentials | Separate local user, separate Credential Manager, per-user agent installs | `ClaudeSandbox` may still receive its own git/PAT credentials |
 | Tampering | Agent rewrites launcher, policy, or config | ProgramData admin-write locks, checker coverage | Admin compromise or ACL drift defeats this |
 | Repudiation | Hard to know what the agent did | Claude Code transcript/history, git history, manual review | No centralized audit trail in this repo |
 | Information disclosure | Agent reads secrets, profile data, repo secrets, network shares | Separate user, profile ACL check, managed deny rules, firewall blocks | Secrets in workspace or broad ACL locations remain exposed |
@@ -328,7 +355,8 @@ Limitations:
 | Scenario | Current control | Residual risk |
 |---|---|---|
 | Poisoned repo reads `C:\Users\<developer>\.ssh` | Default profile ACLs block direct reads; Claude deny rules block obvious `.ssh` reads. | Misconfigured profile ACLs or keys copied to the workspace/broad-read paths expose them. |
-| Poisoned build uses sandbox Git credentials or authenticated remotes | Developer and sandbox credentials are separate; `git push` should require Claude approval. | Build tools can use sandbox credentials and HTTPS. Scope sandbox tokens as compromised. |
+| Poisoned build uses sandbox Git credentials or authenticated remotes | Developer and sandbox credentials are separate; `git push` should require agent approval. | Build tools can use sandbox credentials and HTTPS. Scope sandbox tokens as compromised. |
+| Poisoned build reads the Copilot PAT | The PAT is scoped to the sandbox identity and Copilot Requests. | The persistent environment value is readable by every sandbox process; use minimal scope and expiry. |
 | Prompt injection attempts SMB, NetBIOS, WinRM, RDP, or RPC traffic | SID-scoped firewall blocks and deny-network-logon reduce access. | HTTPS, package feeds, source hosting, and internal web apps remain; RPC/domain coverage is incomplete and policy can drift. |
 | Agent rewrites bootstrap or launch configuration | ProgramData files are readable but not writable by `ClaudeSandbox`; checker detects broad write ACLs. | Fails if setup was not elevated, ACLs drift, or an administrator is compromised. |
 | Prompt injection changes or deletes workspace files | Damage stays within the workspace and sandbox-accessible resources. | Repositories, artifacts, local branches, and uncommitted work can be lost; no snapshots, copy-on-write isolation, or rollback. |
@@ -387,12 +415,12 @@ For full coverage, run it elevated. Review every WARN and FAIL, especially:
 - `ClaudeSandbox` is not an administrator and has no risky group memberships.
 - Network and RDP logon deny rights are present.
 - Interactive logon is still allowed.
-- ProgramData config, launcher/launch-as/checker, bootstrap, and the Program Files Claude
-  policy file are admin-write-only.
+- ProgramData config, launcher/launch-as/checker, shell initializer, command
+  wrappers, and the Program Files Claude policy file are admin-write-only.
 - The sandbox workspace exists and grants `ClaudeSandbox` write access.
 - The developer profile is not readable by Users, Everyone, or Authenticated
   Users.
-- Claude Code is installed only under `C:\Users\ClaudeSandbox\.local\bin`.
+- Agent CLIs are installed only under `C:\Users\ClaudeSandbox\.local\bin`.
 - Account-scoped firewall rules exist and apply.
 
 Manual checks to perform periodically:

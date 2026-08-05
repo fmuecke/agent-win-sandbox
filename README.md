@@ -1,7 +1,8 @@
 # claude-win-sandbox
 
-Run Claude Code on Windows as a dedicated standard user in a fixed workspace
-from a Visual Studio Developer Shell.
+Run AI coding agents on Windows as a dedicated standard user in a fixed
+workspace. Start with a plain PowerShell terminal and enter the Visual Studio
+Developer Shell only when needed.
 
 This reduces the blast radius of Windows-native development; it is not hard
 containment. Use a VM for adversarial code or strong isolation.
@@ -11,7 +12,7 @@ containment. Use a VM for adversarial code or strong isolation.
 
 ## What it does
 
-- Separates Claude Code, its credentials, configuration, and installation into
+- Separates agent credentials, configuration, and installation into
   `C:\Users\ClaudeSandbox`.
 - Limits expected agent writes to the sandbox workspace.
 - Protects the launcher, `launch-as`, bootstrap, checker, and managed-settings
@@ -29,7 +30,7 @@ containment. Use a VM for adversarial code or strong isolation.
 
 ## Requirements
 
-- Windows 10 or 11
+- Windows 10 or 11 with machine-wide PowerShell 7
 - Machine-wide Visual Studio and Git for Windows
 - Administrator rights for setup, removal, and policy installation
 
@@ -43,7 +44,7 @@ Run once from an elevated PowerShell:
 
 Setup optionally deploys the Claude Code managed settings to
 `C:\Program Files\ClaudeCode\managed-settings.json`; it asks before replacing an
-existing file. It also creates the `Claude (sandboxed)` Public Desktop shortcut.
+existing file. It also creates the `Agent Sandbox` Public Desktop shortcut.
 
 Start the sandbox with that shortcut, or run:
 
@@ -51,26 +52,38 @@ Start the sandbox with that shortcut, or run:
 & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
 ```
 
-Install Claude Code in the sandbox shell:
+The terminal provides:
 
 ```powershell
-irm https://claude.ai/install.ps1 | iex
+devshell       # Enter the Visual Studio Developer Shell
+claude         # Install, update, or launch Claude Code
+copilot        # Install, update, or launch GitHub Copilot CLI
+sandbox-check  # Check the sandbox configuration
+sandbox-help   # Show these commands
 ```
 
-Then verify the installation:
+`claude` installs Claude Code per-user through Anthropic's native installer.
+`copilot` downloads GitHub's latest Windows x64 release into `~\.local\bin` and
+verifies it against the release's `SHA256SUMS.txt`. No npm or WinGet is used.
+
+On first Copilot launch, enter a user-owned fine-grained PAT with
+`Copilot Requests` as its only added permission and minimal repository access.
+The wrapper stores it as the sandbox user's persistent
+`COPILOT_GITHUB_TOKEN`. Every process running as `ClaudeSandbox` can read it;
+scope and expire it accordingly.
+
+Rotate or remove that token with:
 
 ```powershell
-Check-ClaudeSandbox
+copilot -SetToken
+copilot -ClearToken
 ```
 
 ## Daily use
 
-Open `Claude (sandboxed)`. On first launch, Windows Credential UI asks for the
-`ClaudeSandbox` password and can save it for later starts. Run:
-
-```powershell
-claude
-```
+Open `Agent Sandbox`. On first launch, Windows Credential UI asks for the
+`ClaudeSandbox` password and can save it for later starts. Run `sandbox-help`,
+then start the agent or Developer Shell you need.
 
 ## Removal
 
@@ -86,11 +99,13 @@ firewall rules, and shortcut. It keeps the workspace, such as
 
 ## Important notes
 
-- Install Claude Code per-user under `C:\Users\ClaudeSandbox`, not machine-wide
+- Install agent CLIs per-user under `C:\Users\ClaudeSandbox`, not machine-wide
   or in your main profile.
 - The sandbox user can access anything in its workspace and anything readable
   by ordinary Windows users.
-- HTTPS/web egress remains available to Claude Code, git, package managers, and
+- Claude managed settings do not govern Copilot CLI. Configure each agent's
+  permissions independently.
+- HTTPS/web egress remains available to agents, git, package managers, and
   internal services.
 - Proxy environment variables do not enforce egress. Local services and
   VM/container networking can relay traffic under another identity; read the

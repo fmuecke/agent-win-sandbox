@@ -4,22 +4,22 @@
 
 <#
 .SYNOPSIS
-    Launches Claude Code as a low-privilege user inside a Visual Studio Developer
-    Shell, scoped to the ClaudeSandbox workspace stored in ProgramData config.
-    Prompts for the password each launch.
+    Launches a PowerShell 7 terminal as the low-privilege ClaudeSandbox user,
+    scoped to the workspace stored in ProgramData config.
 
 .DESCRIPTION
     Part of claude-win-sandbox. Assumes Setup-ClaudeSandbox.ps1 has provisioned
-    the low-priv user, sandbox ACLs, config, and the Dev Shell bootstrap.
+    the low-priv user, sandbox ACLs, config, and shell initializer.
 
     Launch uses the bundled launch-as.exe helper. It starts an interactive
     console with the target user's token and uses Windows Credential UI to
-    obtain or update the target account credential when required.
+    obtain or update the target account credential when required. The shell
+    exposes commands for the Developer Shell, Claude Code, Copilot CLI, and the
+    sandbox checker.
 
 .EXAMPLE
     & "$env:ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1"
-    Prompts for the password, launches a sandboxed Dev Shell in the workspace
-    stored in the ProgramData config by setup.
+    Launches an Agent Sandbox PowerShell terminal.
 #>
 
 [CmdletBinding()]
@@ -29,10 +29,11 @@ $ErrorActionPreference = 'Stop'
 
 $UserName = 'ClaudeSandbox'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
-$BootstrapScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Enter-ClaudeDevShell.ps1'
+$ShellInitScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Initialize-ClaudeSandboxShell.ps1'
 $LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
 
 function Stop-LauncherError {
     param([string]$Message)
@@ -132,11 +133,14 @@ trap {
 if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
     Stop-LauncherError "User '$UserName' does not exist. Run Setup-ClaudeSandbox.ps1 first."
 }
-if (-not (Test-Path $BootstrapScript)) {
-    Stop-LauncherError "Bootstrap not found at $BootstrapScript. Run Setup-ClaudeSandbox.ps1 first."
+if (-not (Test-Path $ShellInitScript)) {
+    Stop-LauncherError "Shell initializer not found at $ShellInitScript. Run Setup-ClaudeSandbox.ps1 first."
 }
 if (-not (Test-Path $LaunchAsExe)) {
     Stop-LauncherError "launch-as not found at $LaunchAsExe. Run Setup-ClaudeSandbox.ps1 first."
+}
+if (-not (Test-Path $PwshExe -PathType Leaf)) {
+    Stop-LauncherError "PowerShell 7 not found at $PwshExe. Install it machine-wide, then run setup again."
 }
 if (-not (Test-Path $ConfigFile)) {
     Stop-LauncherError "Config not found at $ConfigFile. Run Setup-ClaudeSandbox.ps1 first."
@@ -157,8 +161,7 @@ if (-not (Test-Path $sandboxPath)) {
 Write-Host "Configured sandbox path: $sandboxPath" -ForegroundColor Cyan
 
 # --- Launch -------------------------------------------------------------------
-$powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
-Write-Host "Launching as '$UserName' in $sandboxPath ..." -ForegroundColor Green
+Write-Host "Launching Agent Sandbox as '$UserName' in $sandboxPath ..." -ForegroundColor Green
 Write-Host '(Windows Credential UI appears if launch-as needs a credential.)' -ForegroundColor DarkGray
 
 Enable-CtrlBreakGuard
@@ -167,7 +170,7 @@ try {
         --user $UserName `
         --working-directory $sandboxPath `
         --terminal `
-        -- $powershellExe -NoExit -ExecutionPolicy Bypass -File $BootstrapScript
+        -- $PwshExe -NoLogo -NoExit -NoProfile -ExecutionPolicy Bypass -File $ShellInitScript
     $launchAsExitCode = $LASTEXITCODE
 }
 finally {
@@ -184,5 +187,5 @@ if ($launchAsExitCode -ne 0) {
     exit 1
 }
 else {
-    Write-Host 'Sandbox session ended.' -ForegroundColor Cyan
+    Write-Host 'Agent Sandbox session ended.' -ForegroundColor Cyan
 }

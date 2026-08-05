@@ -8,10 +8,14 @@ Windows PowerShell tooling that runs Claude Code as the standard local user
 - `Setup-ClaudeSandbox.ps1`: elevated provisioning, ACLs, hardening, bootstrap.
 - `Remove-ClaudeSandbox.ps1`: elevated removal of the account, firewall rules,
   login-screen registry value, and generated ProgramData state.
-- `Start-ClaudeSandbox.ps1`: normal daily launcher using `launch-as`.
+- `Start-ClaudeSandbox.ps1`: normal daily PowerShell 7 launcher using
+  `launch-as`.
 - `Check-ClaudeSandbox.ps1`: read-only verifier.
-- `bootstrap/`: source copied to locked ProgramData; `managed-settings.json`:
-  policy template for `C:\Program Files\ClaudeCode\managed-settings.json`.
+- `bootstrap/`: shell initialization and Developer Shell command copied to
+  locked ProgramData.
+- `scripts/*-wrapper.ps1`: protected per-agent install/update/launch commands.
+- `managed-settings.json`: policy template for
+  `C:\Program Files\ClaudeCode\managed-settings.json`.
 - `README.md`: user guide and threat model; `discovery/`: non-executable
   research.
 
@@ -21,7 +25,7 @@ Windows PowerShell tooling that runs Claude Code as the standard local user
   script and run `git diff --check`:
 
   ```powershell
-  $files = 'Setup-ClaudeSandbox.ps1','Remove-ClaudeSandbox.ps1','Start-ClaudeSandbox.ps1','Check-ClaudeSandbox.ps1','bootstrap\Enter-ClaudeDevShell.ps1'
+  $files = 'Setup-ClaudeSandbox.ps1','Remove-ClaudeSandbox.ps1','Start-ClaudeSandbox.ps1','Check-ClaudeSandbox.ps1','bootstrap\Initialize-ClaudeSandboxShell.ps1','bootstrap\Enter-ClaudeDevShell.ps1','scripts\claude-wrapper.ps1','scripts\copilot-wrapper.ps1'
   foreach ($file in $files) { $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors); $errors }
   git diff --check
   ```

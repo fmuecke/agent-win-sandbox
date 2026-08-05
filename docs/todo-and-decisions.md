@@ -2,7 +2,7 @@
 
 Current decisions and open work. Personal and career discussions are excluded.
 
-_Last updated: 2026-07-30_
+_Last updated: 2026-08-05_
 
 ## Decisions
 
@@ -55,16 +55,20 @@ _Last updated: 2026-07-30_
   user/profile is gone adds little value; the workspace is left for review or
   manual deletion.
 
-### Bootstrap and Claude Code
+### Shell and agent commands
 
-- **Lock the bootstrap admin-write / Users-RX** and refuse to run it unless
+- **Lock shell initialization and command wrappers admin-write / Users-RX** and
+  refuse to run them unless
   `$env:USERNAME` is the sandbox user.
-- Print `Running as <user>` before Developer Shell output and use
+- Launch a plain PowerShell 7 terminal. Enter the Developer Shell only through
+  `devshell`, using
   `Enter-VsDevShell -VsInstanceId` from `vswhere -format json`; install-path
   discovery can hang under a different profile.
-- **Install Claude Code per-user under `ClaudeSandbox`.** The bootstrap adds
-  `~\.local\bin` to `PATH` every launch, enabling same-shell installation and
-  other CLI agents without a restart.
+- **Install agent CLIs per-user under `ClaudeSandbox`.** Shell initialization
+  adds `~\.local\bin` to `PATH` every launch.
+- Use the protected Claude wrapper for its native installer and the protected
+  Copilot wrapper for the official latest ZIP plus published checksum. npm and
+  WinGet are out of scope.
 
 ### Launch UX
 
@@ -81,9 +85,11 @@ _Last updated: 2026-07-30_
 - Use PSGallery rather than winget: the goal is easy setup and updates, not
   silent provisioning; keep this personal, public MIT hobby project
   (© Florian Mücke 2026).
-- PowerShell 5.1 lacks `?.`; parse `secedit` by index instead of fragile
-  `Select-String .LineNumber`; never use `$input` as a variable; and match both
-  `*SID` and bare account-name forms because `secedit` can normalize names.
+- Keep elevated setup/removal compatible with PowerShell 5.1, but require
+  machine-wide PowerShell 7 for Agent Sandbox sessions. PowerShell 5.1 lacks
+  `?.`; parse `secedit` by index instead of fragile `Select-String .LineNumber`;
+  never use `$input` as a variable; and match both `*SID` and bare account-name
+  forms because `secedit` can normalize names.
 
 ## Todo / open items
 
@@ -120,10 +126,14 @@ _Last updated: 2026-07-30_
 
 ### Tool-agnostic generalization
 
-- [ ] Consider `-Agent Claude|Copilot`: the NTFS boundary generalizes, but the
-  defense-in-depth layer differs. Copilot CLI relies on server-side organization
-  policy, has no local `managed-settings.json` equivalent, and needs a
-  Copilot-Requests-scoped PAT and seat.
+- [x] Exposed Claude Code and Copilot CLI from the same plain PowerShell
+  sandbox; Claude managed settings remain Claude-only.
+- [ ] Remove script needs to check if a sandbox is currently running and ask the user to close it first (or terminate running processes)
+- [ ] does the setup script really need to check for the VS dev environment? This should be the wrappers responsibility only.
+- [ ] Encrypt/protect the Copilot PAT at rest with DPAPI or Windows Credential
+  Manager instead of storing `COPILOT_GITHUB_TOKEN` in the sandbox user's
+  plaintext environment. Any replacement must still acknowledge that Copilot
+  and processes it starts can read the token while it is in use.
 - [ ] Verify whether Copilot CLI needs the same operational firewall profile or
   stricter proxy/network egress control.
 

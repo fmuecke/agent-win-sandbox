@@ -35,7 +35,10 @@ $ErrorActionPreference = 'Stop'
 $UserName = 'ClaudeSandbox'   # baked in; not configurable
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
-$ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
+$ShortcutPaths = @(
+    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'),
+    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk')
+)
 $FirewallRuleGroup = 'claude-win-sandbox'
 
 function Write-Step { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
@@ -95,14 +98,16 @@ function Remove-SandboxLoginScreenEntry {
 }
 
 function Remove-SandboxShortcut {
-    if (-not (Test-Path $ShortcutPath)) {
-        Write-Skipped "desktop shortcut ($ShortcutPath not found)"
-        return
-    }
+    foreach ($shortcutPath in $ShortcutPaths) {
+        if (-not (Test-Path $shortcutPath)) {
+            Write-Skipped "desktop shortcut ($shortcutPath not found)"
+            continue
+        }
 
-    if ($PSCmdlet.ShouldProcess($ShortcutPath, 'Remove desktop shortcut')) {
-        Remove-Item -LiteralPath $ShortcutPath -Force
-        Write-Removed "desktop shortcut: $ShortcutPath"
+        if ($PSCmdlet.ShouldProcess($shortcutPath, 'Remove desktop shortcut')) {
+            Remove-Item -LiteralPath $shortcutPath -Force
+            Write-Removed "desktop shortcut: $shortcutPath"
+        }
     }
 }
 
@@ -126,7 +131,7 @@ else {
     Write-Host "  profile: not found" -ForegroundColor Yellow
 }
 Write-Host "  ProgramData: $ProgramDataRoot"
-Write-Host "  shortcut: $ShortcutPath"
+Write-Host "  shortcuts: $($ShortcutPaths -join ', ')"
 if ([string]::IsNullOrWhiteSpace($ResolvedSandboxPath)) {
     Write-Host "  workspace: unknown (not modified by this script)" -ForegroundColor Yellow
 }
@@ -136,7 +141,7 @@ else {
 
 if (-not $Force -and -not $WhatIfPreference) {
     Write-Host ''
-    Write-Host 'This removes the sandbox user, its Windows profile, per-user Claude install/settings, ProgramData state, and shortcut.' -ForegroundColor Yellow
+    Write-Host 'This removes the sandbox user, its Windows profile, per-user agent installs/settings, ProgramData state, and shortcuts.' -ForegroundColor Yellow
     Write-Host 'The shared workspace directory and its ACLs are left intact for manual review.' -ForegroundColor Yellow
     Write-Host ''
     $answer = Read-Host "Type REMOVE to continue"

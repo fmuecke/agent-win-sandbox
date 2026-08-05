@@ -1,8 +1,8 @@
 # claude-win-sandbox full guide
 
-Run Claude Code as a dedicated standard Windows user in a fixed workspace from
-a Visual Studio Developer Shell—without Docker or WSL. It is for Windows-native
-toolchains such as MSVC, classic `.vcxproj`, and on-prem builds.
+Run AI coding agents as a dedicated standard Windows user in a fixed workspace
+without Docker or WSL. The launcher opens a plain PowerShell 7 terminal;
+activate the Visual Studio Developer Shell only when a task needs it.
 
 > **Threat model:** This reduces blast radius for a generally trusted machine;
 > it is not hard containment against a determined attacker with your
@@ -20,11 +20,11 @@ toolchains such as MSVC, classic `.vcxproj`, and on-prem builds.
    and agent-control-file surfaces, and pre-approves routine read-only Git and
    build verbs.
 3. **`Start-ClaudeSandbox.ps1`** (normal privilege, per session) uses
-   `launch-as` to start the sandbox user's Developer Shell, applies managed
-   Claude settings, and keeps launch errors visible.
+   `launch-as` to start a plain PowerShell 7 terminal as the sandbox user and
+   keeps launch errors visible.
 4. **`Check-ClaudeSandbox.ps1`** (read-only) verifies account, ACL, firewall,
-   bootstrap, policy, workspace, and toolchain state. It prints PASS/WARN/FAIL
-   and exits non-zero on FAIL.
+   shell commands, policy, workspace, and toolchain state. It prints
+   PASS/WARN/FAIL and exits non-zero on FAIL.
 5. **`Remove-ClaudeSandbox.ps1`** (elevated) removes generated sandbox state.
    It never removes the shared workspace or changes its ACLs.
 
@@ -39,11 +39,12 @@ Setup creates `ClaudeSandbox` when absent and:
   `C:\dev\ClaudeSandbox`, and grants that user Modify access to the tree.
 - Warns if your profile is readable by Users or Everyone.
 - Blocks sandbox-account outbound ports `137-139`, `445`, `135`, `3389`, and
-  `5985-5986`, while leaving web/HTTPS available for Claude, Git, and internal
+  `5985-5986`, while leaving web/HTTPS available for agents, Git, and internal
   services.
 - Records configuration in `C:\ProgramData\claude-win-sandbox\config.json`;
-  installs the launcher, checker, bootstrap, and verified `launch-as.exe` under
-  `C:\ProgramData\claude-win-sandbox`; and makes them admin-write / Users-RX.
+  installs the launcher, checker, shell commands, and verified `launch-as.exe`
+  under `C:\ProgramData\claude-win-sandbox`; and makes them admin-write /
+  Users-RX.
 
 Optional policy deployment writes
 `C:\Program Files\ClaudeCode\managed-settings.json`, makes it admin-write /
@@ -68,40 +69,39 @@ and managed-settings rules.
 ## Prerequisites
 
 - Windows 10 or 11 on a dedicated or trusted development machine
+- Machine-wide PowerShell 7
 - Machine-wide Visual Studio Pro or later and Git for Windows
 - Administrator rights for setup, removal, and policy installation
-- Claude Code installed per-user as `ClaudeSandbox`, not machine-wide; see
-  [Installing Claude Code](#installing-claude-code)
 
-## Installing Claude Code
+## Agent commands
 
-Install Claude Code in `C:\Users\ClaudeSandbox`, not machine-wide or in your
-profile. A machine-wide or main-profile installation can be found on `PATH`,
-bringing the binary or `~/.claude` configuration from outside the boundary.
-
-Start the sandbox via its desktop shortcut and run:
+Every Agent Sandbox terminal provides:
 
 ```powershell
-irm https://claude.ai/install.ps1 | iex
+devshell       # Activate the Visual Studio Developer Shell in this terminal
+claude         # Install, update, or launch Claude Code
+copilot        # Install, update, or launch GitHub Copilot CLI
+sandbox-check  # Run the read-only checker
+sandbox-help   # Show this list
 ```
 
-This installs `C:\Users\ClaudeSandbox\.local\bin\claude.exe`. The bootstrap
-prepends that directory to `PATH` on every launch, and the checker warns about
-other Claude installations.
+The `claude` wrapper uses Anthropic's native Windows installer and prefers
+`C:\Users\ClaudeSandbox\.local\bin\claude.exe`. Its PowerShell and
+nonessential-traffic environment settings apply only to Claude and its child
+processes.
 
-The bootstrap creates or updates
-`C:\Users\ClaudeSandbox\.claude\settings.json`. When valid JSON already exists,
-unmanaged settings remain; these managed values are replaced each launch:
+The `copilot` wrapper downloads
+`https://github.com/github/copilot-cli/releases/latest/download/copilot-win32-x64.zip`,
+verifies it against the same release's `SHA256SUMS.txt`, and installs
+`C:\Users\ClaudeSandbox\.local\bin\copilot.exe`. No npm or WinGet is used.
+Installed Copilot versions use `copilot update`.
 
-```json
-{
-  "env": {
-    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"
-  },
-  "defaultShell": "powershell",
-  "autoUpdatesChannel": "stable"
-}
-```
+On first launch, the wrapper asks for a user-owned fine-grained GitHub PAT
+beginning with `github_pat_`, `Copilot Requests` as its only added permission,
+and minimal repository access. It stores the PAT as the sandbox user's
+persistent `COPILOT_GITHUB_TOKEN`; every process running as `ClaudeSandbox` can
+read it. Use `copilot -SetToken` to replace it and `copilot -ClearToken` to
+remove it.
 
 ## Setup
 
@@ -116,25 +116,26 @@ reuse an existing workspace, a password twice when creating the user, and
 optional managed-settings deployment. The password must meet the local or
 domain Windows password policy.
 
-Start the sandbox, then install Claude Code as shown above:
+Start the sandbox:
 
 ```powershell
 & 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
 ```
 
-The `Claude (sandboxed)` desktop shortcut does the same. Verify with:
+The `Agent Sandbox` desktop shortcut does the same. Verify inside it with:
 
 ```powershell
-& 'C:\ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1'
+sandbox-check
 ```
 
 Run the checker elevated for full user-rights, HKLM, and other-profile checks.
-On first use, configure the sandbox user's Git/Azure DevOps credential with a
-minimal, scoped PAT kept separate from your own.
+On first use, configure each agent and source-control credential separately
+with minimal scopes and expiry.
 
 For daily use, start the shortcut or the launcher above from a normal PowerShell
 session. Windows Credential UI requests the `ClaudeSandbox` password when no
-usable stored credential exists; then run `claude` in the sandbox shell.
+usable stored credential exists; then run the agent or `devshell` command you
+need.
 
 ## Removal
 
@@ -144,11 +145,11 @@ Run from an elevated PowerShell:
 .\Remove-ClaudeSandbox.ps1
 ```
 
-This removes the sandbox account and profile (including its per-user Claude
-install and settings), generated ProgramData state, account-scoped firewall
-rules, hidden-login registry value, and desktop shortcut. It keeps the
-workspace—for example, `C:\dev\ClaudeSandbox`—and its ACLs. Delete it manually
-after review if no longer needed.
+This removes the sandbox account and profile, including its per-user agent
+installs, settings, and Copilot PAT environment variable. It also removes
+generated ProgramData state, account-scoped firewall rules, hidden-login
+registry value, and desktop shortcuts. It keeps the workspace—for example,
+`C:\dev\ClaudeSandbox`—and its ACLs.
 
 ## Credential handling
 
@@ -162,19 +163,25 @@ randomize it on each start: that would require elevation for daily use, turn the
 launcher into a privileged broker, and create more failure modes. Keeping setup
 elevated and launches non-elevated is intentional.
 
+The Copilot PAT is currently stored as plaintext in the sandbox user's
+environment. This separates it from the developer's identity but does not hide
+it from agents or build processes running as `ClaudeSandbox`. Use only the
+user-owned fine-grained `Copilot Requests` permission and set a short expiry.
+
 ## Limitations
 
 - The boundary is the default Windows profile ACL. A correctly configured
   standard user cannot read your profile; setup verifies this rather than adding
   brittle deny ACEs. Protect secrets outside your profile with separate ACLs.
-- Install Claude Code only under `ClaudeSandbox`; the checker warns when it
-  finds another copy.
+- Install agent CLIs only under `ClaudeSandbox`; the checker verifies the
+  expected per-user locations.
 - Native Windows has no bubblewrap sandbox. Prefer or layer native sandboxing
   when Anthropic provides it.
 - Managed settings add defense in depth, not a guarantee; keep Claude Code
   updated against permission-bypass vulnerabilities.
-- `ClaudeSandbox` has a writable profile for `~/.claude`; it contains none of
-  your secrets.
+- `ClaudeSandbox` has a writable profile for agent configuration and its own
+  scoped credentials; treat everything in that profile as agent-accessible.
+- Claude Code managed settings do not apply to GitHub Copilot CLI.
 - Debugging system processes requires elevation. Keep it separate from this
   low-privilege agent session—for example, use elevated Visual Studio with
   agent mode off.

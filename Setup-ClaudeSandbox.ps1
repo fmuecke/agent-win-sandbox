@@ -5,9 +5,9 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Provisions a low-privilege local 'ClaudeSandbox' for running Claude Code with
-    scoped access to a fixed workspace directory, while denying access to the calling
-    user's secrets.
+    Provisions a low-privilege local 'ClaudeSandbox' for running AI coding
+    agents with scoped access to a fixed workspace directory, while denying
+    access to the calling user's secrets.
 
 .NOTES
     - Run from an ELEVATED PowerShell session.
@@ -15,10 +15,10 @@
       access to other users' profiles and admin areas. We GRANT the few extra
       paths it needs (sandbox workspace, its own profile) and add EXPLICIT DENY only on the
       current user's sensitive dirs as belt-and-suspenders.
-    - VS + Git are assumed installed machine-wide (default). A Standard user can
-      run them already; no extra grants needed for Program Files.
+    - PowerShell 7, VS, and Git are assumed installed machine-wide. A Standard
+      user can run them already; no extra grants needed for Program Files.
     - DENY ACEs override ALLOW. Review every Deny path before running.
-    - The workspace config, launcher/check scripts, and Dev Shell bootstrap are
+    - The workspace config, launcher/check scripts, and shell commands are
       written into ProgramData (Users-traversable by default) and locked
       admin-write/Users-RX, so ClaudeSandbox can read/run them but not modify
       them.
@@ -37,24 +37,33 @@ $ErrorActionPreference = 'Stop'
 
 $UserName = 'ClaudeSandbox'   # baked in; not configurable
 $SandboxDirectoryName = 'ClaudeSandbox'   # baked in; not configurable
-$Version = '0.5.2'
+$Version = '0.6.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
 $LauncherSource = Join-Path $PSScriptRoot 'Start-ClaudeSandbox.ps1'
 $CheckerSource = Join-Path $PSScriptRoot 'Check-ClaudeSandbox.ps1'
-$BootstrapSource = Join-Path $PSScriptRoot 'bootstrap\Enter-ClaudeDevShell.ps1'
+$ShellInitSource = Join-Path $PSScriptRoot 'bootstrap\Initialize-ClaudeSandboxShell.ps1'
+$DevShellSource = Join-Path $PSScriptRoot 'bootstrap\Enter-ClaudeDevShell.ps1'
+$ClaudeWrapperSource = Join-Path $PSScriptRoot 'scripts\claude-wrapper.ps1'
+$CopilotWrapperSource = Join-Path $PSScriptRoot 'scripts\copilot-wrapper.ps1'
 $ManagedSettingsSource = Join-Path $PSScriptRoot 'managed-settings.json'
 $LauncherScript = Join-Path $ProgramDataRoot 'Start-ClaudeSandbox.ps1'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
-$BootstrapScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Enter-ClaudeDevShell.ps1'    # baked in; not configurable
+$BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
+$ShellInitScript = Join-Path $BootstrapRoot 'Initialize-ClaudeSandboxShell.ps1'
+$DevShellScript = Join-Path $BootstrapRoot 'Enter-ClaudeDevShell.ps1'
+$ClaudeWrapperScript = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
+$CopilotWrapperScript = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $LaunchAsVersion = 'v0.3.2'
 $LaunchAsDownloadUri = "https://github.com/fmuecke/launch-as/releases/download/$LaunchAsVersion/launch-as-$LaunchAsVersion-win64.zip"
 $LaunchAsSha256 = '329EEE7D05563A686D39A7EF0B291B21A433BECCC0CA4A4A3B8D0AD29878CBAA'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
-$ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
+$ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
+$LegacyShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
+$PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $FirewallRuleGroup = 'claude-win-sandbox'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
@@ -287,8 +296,17 @@ function Install-LaunchAs {
     }
 }
 # --- 0. Sanity ----------------------------------------------------------------
+if (-not (Test-Path $PwshExe -PathType Leaf)) {
+    throw "PowerShell 7 is required but was not found at $PwshExe. Install it machine-wide before setup."
+}
+$pwshVersion = & $PwshExe -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+if ($LASTEXITCODE -ne 0) {
+    throw "PowerShell 7 at $PwshExe could not be started."
+}
+
 $callingUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name  # DOMAIN\user
 $callingProfile = $env:USERPROFILE
+Write-Step "PowerShell 7: $pwshVersion"
 Write-Step "Calling user: $callingUser"
 Write-Step "Protecting profile: $callingProfile"
 
@@ -318,8 +336,8 @@ if (-not $existing) {
         }
         try {
             New-LocalUser -Name $UserName -Password $Password `
-                -FullName 'Claude Code Sandbox User' `
-                -Description 'Low-privilege user for running Claude Code' `
+                -FullName 'Agent Sandbox User' `
+                -Description 'Low-privilege user for running AI coding agents' `
                 -PasswordNeverExpires:$true | Out-Null
             break
         }
@@ -516,8 +534,10 @@ else {
 
 Write-Warning "Optional hardening note: if you keep secrets OUTSIDE your profile (e.g. a KeePass vault under C:\, a shared drive), verify those paths separately - the profile-default protection does not extend to them."
 
-# --- 5. Verify VS Developer Shell + Git availability for the user ------------
-Write-Step "Locating Visual Studio Developer Shell + Git (machine-wide)"
+# --- 5. Verify shell and toolchain availability for the user -----------------
+Write-Step "Locating PowerShell 7, Visual Studio Developer Shell, and Git (machine-wide)"
+
+Write-Host "  pwsh: $PwshExe ($pwshVersion)" -ForegroundColor Green
 
 # vswhere is the supported way to find the VS install + dev shell module.
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -544,7 +564,7 @@ else {
     Write-Warning "  git not on machine PATH. Install Git for Windows machine-wide."
 }
 
-# A standard user can execute both already. No grants needed because they live
+# A standard user can execute these already. No grants needed because they live
 # in Program Files (readable+executable by Users by default).
 
 # --- 6. Copy trusted launch artifacts into ProgramData -----------------------
@@ -554,12 +574,15 @@ else {
 # so the sandbox user can run them but cannot rewrite what executes at launch.
 Write-Step "Copying trusted launch artifacts to ProgramData"
 
-$bootstrapDir = Split-Path $BootstrapScript -Parent
+$bootstrapDir = $BootstrapRoot
 if (-not (Test-Path $bootstrapDir)) { New-Item -ItemType Directory -Path $bootstrapDir -Force | Out-Null }
 $launchArtifacts = @(
     [pscustomobject]@{ Name = 'launcher'; Source = $LauncherSource; Destination = $LauncherScript },
     [pscustomobject]@{ Name = 'checker'; Source = $CheckerSource; Destination = $CheckerScript },
-    [pscustomobject]@{ Name = 'bootstrap'; Source = $BootstrapSource; Destination = $BootstrapScript }
+    [pscustomobject]@{ Name = 'shell initializer'; Source = $ShellInitSource; Destination = $ShellInitScript },
+    [pscustomobject]@{ Name = 'Developer Shell command'; Source = $DevShellSource; Destination = $DevShellScript },
+    [pscustomobject]@{ Name = 'Claude command'; Source = $ClaudeWrapperSource; Destination = $ClaudeWrapperScript },
+    [pscustomobject]@{ Name = 'Copilot command'; Source = $CopilotWrapperSource; Destination = $CopilotWrapperScript }
 )
 foreach ($artifact in $launchArtifacts) {
     if (-not (Test-Path $artifact.Source)) {
@@ -581,7 +604,16 @@ icacls $bootstrapDir /inheritance:r /grant $adminFullInheritAce $systemFullInher
 $adminFullAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F'
 $systemFullAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F'
 $usersReadExecuteAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'RX'
-foreach ($protectedFile in @($ConfigFile, $LauncherScript, $CheckerScript, $BootstrapScript, $LaunchAsExe)) {
+foreach ($protectedFile in @(
+        $ConfigFile,
+        $LauncherScript,
+        $CheckerScript,
+        $ShellInitScript,
+        $DevShellScript,
+        $ClaudeWrapperScript,
+        $CopilotWrapperScript,
+        $LaunchAsExe
+    )) {
     icacls $protectedFile /inheritance:r /grant $adminFullAce $systemFullAce $usersReadExecuteAce | Out-Null
 }
 Write-Host "  locked ProgramData artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
@@ -594,13 +626,17 @@ if (-not (Test-Path $LauncherScript)) {
 }
 try {
     $powershellExe = (Get-Command powershell.exe).Source
+    if (Test-Path $LegacyShortcutPath) {
+        Remove-Item -LiteralPath $LegacyShortcutPath -Force
+        Write-Host "  removed legacy shortcut: $LegacyShortcutPath" -ForegroundColor Yellow
+    }
     $wsh = New-Object -ComObject WScript.Shell
     $sc = $wsh.CreateShortcut($ShortcutPath)
     $sc.TargetPath = $powershellExe
     $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$LauncherScript`""
     $sc.WorkingDirectory = $SandboxPath
     $sc.IconLocation = "$powershellExe,0"
-    $sc.Description = 'Launch Claude Code as the low-privilege sandbox user'
+    $sc.Description = 'Launch a PowerShell terminal for low-privilege coding agents'
     $sc.Save()
 
     Write-Host "  created $ShortcutPath" -ForegroundColor Green
@@ -612,7 +648,7 @@ catch {
 # --- 7. Done ------------------------------------------------------------------
 Write-Step "Setup complete" -ForegroundColor Cyan
 Write-Host @"
-To start a Claude Code session, use the desktop shortcut:
+To start an Agent Sandbox terminal, use the desktop shortcut:
 
   $ShortcutPath
 
@@ -620,11 +656,16 @@ Or run the launcher directly:
 
   & '$LauncherScript'
 
+Inside the sandbox, run 'sandbox-help' to list the available commands.
+
 NOTE:
   - Keep secrets in your own Windows profile or another location ClaudeSandbox
     cannot read. Shared folders, drives, and vaults outside your profile need
     separate review.
   - ClaudeSandbox has its own Windows Credential Manager and profile. Set up its
     ADO PAT/git credential separately, scoped minimally.
+  - COPILOT_GITHUB_TOKEN is stored for ClaudeSandbox when the Copilot wrapper
+    first prompts for its fine-grained PAT. Every process running as that user
+    can read it.
 
 "@
