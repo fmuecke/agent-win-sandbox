@@ -5,6 +5,10 @@ Git log.
 
 ## 0.6.0 — 2026-08-05
 
+- Changed: Renamed the project to `agent-win-sandbox`, the local user to
+  `AgentSandbox`, and the setup, launcher, checker, removal, ProgramData, and
+  firewall identifiers accordingly. Existing `claude-win-sandbox`
+  installations are not migrated.
 - Changed: The launcher now opens a plain PowerShell 7 Agent Sandbox terminal;
   `devshell` activates the Visual Studio Developer Shell only when requested.
 - Added: Protected `claude`, `copilot`, `sandbox-check`, and `sandbox-help`
@@ -15,7 +19,7 @@ Git log.
   grained PAT.
 - Changed: Renamed the Public Desktop shortcut to `Agent Sandbox`.
 - Security: The Copilot PAT is currently stored in the sandbox user's plaintext
-  environment. Every process running as `ClaudeSandbox` can read it; protected
+  environment. Every process running as `AgentSandbox` can read it; protected
   at-rest storage remains an open item.
 
 ## 0.5.2 — 2026-08-01
@@ -43,11 +47,11 @@ Git log.
   auto-update settings at bootstrap.
 - Changed: Added the sandbox user's Claude binary directory to `PATH` without a
   new session, kept launch failures visible, required the desktop shortcut, and
-  made `Check-ClaudeSandbox` available inside the sandbox.
+  made `Check-AgentSandbox` available inside the sandbox.
 - Changed: Reduced hard-coded runtime paths.
 
 ## Earlier development
 
-- Added: The standard-user `ClaudeSandbox` model, protected ProgramData control
+- Added: The standard-user `AgentSandbox` model, protected ProgramData control
   plane, workspace ACLs, account-scoped firewall blocks, teardown script, and
   optional Claude Code managed-policy deployment.

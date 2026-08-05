@@ -1,4 +1,4 @@
-# claude-win-sandbox
+# agent-win-sandbox
 
 Run AI coding agents on Windows as a dedicated standard user in a fixed
 workspace. Start with a plain PowerShell terminal and enter the Visual Studio
@@ -13,7 +13,7 @@ containment. Use a VM for adversarial code or strong isolation.
 ## What it does
 
 - Separates agent credentials, configuration, and installation into
-  `C:\Users\ClaudeSandbox`.
+  `C:\Users\AgentSandbox`.
 - Limits expected agent writes to the sandbox workspace.
 - Protects the launcher, `launch-as`, bootstrap, checker, and managed-settings
   files in admin-write locations.
@@ -23,7 +23,7 @@ containment. Use a VM for adversarial code or strong isolation.
 
 - Malicious code, prompt injection, or hard isolation failures.
 - Exfiltration through allowed HTTPS, git, package feeds, or internal services.
-- Data readable by `ClaudeSandbox`, including its workspace, credentials, and
+- Data readable by `AgentSandbox`, including its workspace, credentials, and
   broadly readable local files.
 - Snapshots, resource limits, centralized audit logs, or automatic kill
   switches.
@@ -39,17 +39,18 @@ containment. Use a VM for adversarial code or strong isolation.
 Run once from an elevated PowerShell:
 
 ```powershell
-.\Setup-ClaudeSandbox.ps1
+.\Setup-AgentSandbox.ps1
 ```
 
 Setup optionally deploys the Claude Code managed settings to
 `C:\Program Files\ClaudeCode\managed-settings.json`; it asks before replacing an
-existing file. It also creates the `Agent Sandbox` Public Desktop shortcut.
+existing file because this policy is machine-wide and shared by every Claude
+Code user. It also creates the `Agent Sandbox` Public Desktop shortcut.
 
 Start the sandbox with that shortcut, or run:
 
 ```powershell
-& 'C:\ProgramData\claude-win-sandbox\Start-ClaudeSandbox.ps1'
+& 'C:\ProgramData\agent-win-sandbox\Start-AgentSandbox.ps1'
 ```
 
 The terminal provides:
@@ -69,7 +70,7 @@ verifies it against the release's `SHA256SUMS.txt`. No npm or WinGet is used.
 On first Copilot launch, enter a user-owned fine-grained PAT with
 `Copilot Requests` as its only added permission and minimal repository access.
 The wrapper stores it as the sandbox user's persistent
-`COPILOT_GITHUB_TOKEN`. Every process running as `ClaudeSandbox` can read it;
+`COPILOT_GITHUB_TOKEN`. Every process running as `AgentSandbox` can read it;
 scope and expire it accordingly.
 
 Rotate or remove that token with:
@@ -82,7 +83,7 @@ copilot -ClearToken
 ## Daily use
 
 Open `Agent Sandbox`. On first launch, Windows Credential UI asks for the
-`ClaudeSandbox` password and can save it for later starts. Run `sandbox-help`,
+`AgentSandbox` password and can save it for later starts. Run `sandbox-help`,
 then start the agent or Developer Shell you need.
 
 ## Removal
@@ -90,21 +91,25 @@ then start the agent or Developer Shell you need.
 Run from an elevated PowerShell:
 
 ```powershell
-.\Remove-ClaudeSandbox.ps1
+.\Remove-AgentSandbox.ps1
 ```
 
 This removes the sandbox user and profile, generated ProgramData state,
 firewall rules, and shortcut. It keeps the workspace, such as
-`C:\dev\ClaudeSandbox`.
+`C:\dev\AgentSandbox`.
 
 ## Important notes
 
-- Install agent CLIs per-user under `C:\Users\ClaudeSandbox`, not machine-wide
+- Install agent CLIs per-user under `C:\Users\AgentSandbox`, not machine-wide
   or in your main profile.
 - The sandbox user can access anything in its workspace and anything readable
   by ordinary Windows users.
 - Claude managed settings do not govern Copilot CLI. Configure each agent's
   permissions independently.
+- A legacy `ClaudeSandbox` installation can coexist with this project because
+  its user, workspace, ProgramData, firewall, and shortcut names are separate.
+  Its optional machine-wide Claude managed settings are shared; decline the
+  overwrite prompt unless one policy is intentionally used for both.
 - HTTPS/web egress remains available to agents, git, package managers, and
   internal services.
 - Proxy environment variables do not enforce egress. Local services and

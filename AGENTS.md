@@ -1,16 +1,16 @@
-# claude-win-sandbox
+# agent-win-sandbox
 
-Windows PowerShell tooling that runs Claude Code as the standard local user
-`ClaudeSandbox`.
+Windows PowerShell tooling that runs AI coding agents as the standard local
+user `AgentSandbox`.
 
 ## Repository map
 
-- `Setup-ClaudeSandbox.ps1`: elevated provisioning, ACLs, hardening, bootstrap.
-- `Remove-ClaudeSandbox.ps1`: elevated removal of the account, firewall rules,
+- `Setup-AgentSandbox.ps1`: elevated provisioning, ACLs, hardening, bootstrap.
+- `Remove-AgentSandbox.ps1`: elevated removal of the account, firewall rules,
   login-screen registry value, and generated ProgramData state.
-- `Start-ClaudeSandbox.ps1`: normal daily PowerShell 7 launcher using
+- `Start-AgentSandbox.ps1`: normal daily PowerShell 7 launcher using
   `launch-as`.
-- `Check-ClaudeSandbox.ps1`: read-only verifier.
+- `Check-AgentSandbox.ps1`: read-only verifier.
 - `bootstrap/`: shell initialization and Developer Shell command copied to
   locked ProgramData.
 - `scripts/*-wrapper.ps1`: protected per-agent install/update/launch commands.
@@ -25,7 +25,7 @@ Windows PowerShell tooling that runs Claude Code as the standard local user
   script and run `git diff --check`:
 
   ```powershell
-  $files = 'Setup-ClaudeSandbox.ps1','Remove-ClaudeSandbox.ps1','Start-ClaudeSandbox.ps1','Check-ClaudeSandbox.ps1','bootstrap\Initialize-ClaudeSandboxShell.ps1','bootstrap\Enter-ClaudeDevShell.ps1','scripts\claude-wrapper.ps1','scripts\copilot-wrapper.ps1'
+  $files = 'Setup-AgentSandbox.ps1','Remove-AgentSandbox.ps1','Start-AgentSandbox.ps1','Check-AgentSandbox.ps1','bootstrap\Initialize-AgentSandboxShell.ps1','bootstrap\Enter-DevShell.ps1','scripts\claude-wrapper.ps1','scripts\copilot-wrapper.ps1'
   foreach ($file in $files) { $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors); $errors }
   git diff --check
   ```
@@ -33,7 +33,7 @@ Windows PowerShell tooling that runs Claude Code as the standard local user
 - Do not run setup or removal casually: they change local users, ACLs, registry,
   policy, and ProgramData. Prefer parser checks and review; test real changes on
   a disposable VM or dedicated development machine.
-- Use the repository `Check-ClaudeSandbox.ps1` only for explicit installed-state
+- Use the repository `Check-AgentSandbox.ps1` only for explicit installed-state
   verification. Do not elevate it or use the ProgramData copy unless explicitly
   requested.
 
@@ -45,9 +45,9 @@ Windows PowerShell tooling that runs Claude Code as the standard local user
   example, `` `$RepoPath ``).
 - Prefer the smallest clear implementation, especially in setup, ACL, firewall,
   and teardown paths.
-- Keep `ClaudeSandbox` a standard user; keep bootstrap files admin-write /
+- Keep `AgentSandbox` a standard user; keep bootstrap files admin-write /
   Users-read-execute; install Claude per-user in
-  `C:\Users\ClaudeSandbox`. Document any credential caching or access widening
+  `C:\Users\AgentSandbox`. Document any credential caching or access widening
   with its threat-model tradeoff.
 
 ## Commits and PRs

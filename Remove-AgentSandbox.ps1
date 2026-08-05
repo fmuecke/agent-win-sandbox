@@ -1,18 +1,18 @@
 # SPDX-FileCopyrightText: 2026 Florian Mücke
 # SPDX-License-Identifier: MIT
-# Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Removes the local ClaudeSandbox account and claude-win-sandbox ProgramData
+    Removes the local AgentSandbox account and agent-win-sandbox ProgramData
     state.
 
 .DESCRIPTION
-    This is the teardown counterpart to Setup-ClaudeSandbox.ps1. It removes the
-    fixed ClaudeSandbox local user, that user's Windows profile, account-scoped
+    This is the teardown counterpart to Setup-AgentSandbox.ps1. It removes the
+    fixed AgentSandbox local user, that user's Windows profile, account-scoped
     firewall rules, the hidden-login-screen registry value, generated
-    ProgramData files under the claude-win-sandbox ProgramData directory, and the
+    ProgramData files under the agent-win-sandbox ProgramData directory, and the
     Public Desktop shortcut.
 
     It deliberately does NOT delete or modify the shared sandbox workspace
@@ -22,7 +22,7 @@
     Skip the interactive confirmation prompt.
 
 .EXAMPLE
-    .\Remove-ClaudeSandbox.ps1
+    .\Remove-AgentSandbox.ps1
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -32,14 +32,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$UserName = 'ClaudeSandbox'   # baked in; not configurable
-$ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'    # baked in; not configurable
+$UserName = 'AgentSandbox'   # baked in; not configurable
+$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $ShortcutPaths = @(
-    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'),
-    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk')
+    (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
-$FirewallRuleGroup = 'claude-win-sandbox'
+$FirewallRuleGroup = 'agent-win-sandbox'
 
 function Write-Step { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Write-Removed { param($m) Write-Host "  removed $m" -ForegroundColor Green }

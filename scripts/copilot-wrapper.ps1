@@ -104,8 +104,8 @@ function Get-CopilotToken {
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'GitHub Copilot CLI requires PowerShell 7 or later on Windows.'
 }
-if ($env:USERNAME -ne 'ClaudeSandbox') {
-    throw "Refusing to run: expected user 'ClaudeSandbox' but running as '$env:USERNAME'."
+if ($env:USERNAME -ne 'AgentSandbox') {
+    throw "Refusing to run: expected user 'AgentSandbox' but running as '$env:USERNAME'."
 }
 if ($SetToken -and $ClearToken) {
     throw 'Use either -SetToken or -ClearToken, not both.'

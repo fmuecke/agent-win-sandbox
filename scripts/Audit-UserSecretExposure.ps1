@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Florian Mücke
 # SPDX-License-Identifier: MIT
-# Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 # Audit-UserSecretExposure.ps1
 # Demonstrates which secret-bearing resources are accessible to the current user.

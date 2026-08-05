@@ -1,4 +1,4 @@
-# claude-win-sandbox — Todo & Decisions
+# agent-win-sandbox — Todo & Decisions
 
 Current decisions and open work. Personal and career discussions are excluded.
 
@@ -8,7 +8,7 @@ _Last updated: 2026-08-05_
 
 ### Boundary and account
 
-- **`ClaudeSandbox` is the boundary.** Windows ACLs enforce access; Docker/WSL2
+- **`AgentSandbox` is the boundary.** Windows ACLs enforce access; Docker/WSL2
   do not suit this native Windows, MSVC, and on-prem toolchain.
 - **Threat model:** blast-radius reduction on a trusted machine, not hard
   containment against an attacker with your privileges. Managed settings are
@@ -18,7 +18,7 @@ _Last updated: 2026-08-05_
   before resuming the child.
 - **Credential storage is optional.** Credential UI may store the generic
   credential only for the regular user who launches the sandbox, never for
-  `ClaudeSandbox`.
+  `AgentSandbox`.
 - **Use a stable, policy-compliant password.** Per-launch random resets require
   elevation, make daily launch a privileged broker, add failure points, and may
   disrupt password-tied user state. Setup is elevated; daily launch is not.
@@ -35,13 +35,13 @@ _Last updated: 2026-08-05_
 ### Filesystem and setup state
 
 - **Control plane:** keep config, launcher, `launch-as`, checker, and bootstrap
-  in `C:\ProgramData\claude-win-sandbox`; keep managed settings in
+  in `C:\ProgramData\agent-win-sandbox`; keep managed settings in
   `C:\Program Files\ClaudeCode\managed-settings.json`. These files are
   admin-write and Users-RX/read, preventing sandbox-user poisoning. Program
   Files is required because current Claude Code no longer supports the legacy
   ProgramData managed-settings location on Windows.
-- **Workspace:** default to `C:\dev\ClaudeSandbox`; ask only for its base
-  directory. `ClaudeSandbox` remains the fixed child name for awareness, not
+- **Workspace:** default to `C:\dev\AgentSandbox`; ask only for its base
+  directory. `AgentSandbox` remains the fixed child name for awareness, not
   security. The `repos\` subdirectory was unnecessary; the workspace README
   explains its purpose.
 - **Generated state:** setup copies ProgramData artifacts from the repository,
@@ -64,7 +64,7 @@ _Last updated: 2026-08-05_
   `devshell`, using
   `Enter-VsDevShell -VsInstanceId` from `vswhere -format json`; install-path
   discovery can hang under a different profile.
-- **Install agent CLIs per-user under `ClaudeSandbox`.** Shell initialization
+- **Install agent CLIs per-user under `AgentSandbox`.** Shell initialization
   adds `~\.local\bin` to `PATH` every launch.
 - Use the protected Claude wrapper for its native installer and the protected
   Copilot wrapper for the official latest ZIP plus published checksum. npm and
@@ -95,9 +95,9 @@ _Last updated: 2026-08-05_
 
 ### Completed filesystem migration
 
-- [x] Moved the bootstrap to `C:\ProgramData\claude-win-sandbox\bootstrap\`.
+- [x] Moved the bootstrap to `C:\ProgramData\agent-win-sandbox\bootstrap\`.
 - [x] Changed the workspace default from `C:\dev\repo` to
-  `C:\dev\ClaudeSandbox\`; setup now prompts for its base and grants Modify on
+  `C:\dev\AgentSandbox\`; setup now prompts for its base and grants Modify on
   the fixed child tree.
 - [x] Added the required Public Desktop shortcut and updated checker and README
   paths.
@@ -110,7 +110,7 @@ _Last updated: 2026-08-05_
 
 - [ ] Finalize the Windows Terminal profile after testing `launch-as`
   terminal-mode behavior.
-- [ ] Decide whether to launch VS Code as `ClaudeSandbox` for tighter IDE
+- [ ] Decide whether to launch VS Code as `AgentSandbox` for tighter IDE
   integration or keep the Windows Terminal-tab approach.
 
 ### Git collaboration hardening

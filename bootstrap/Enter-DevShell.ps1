@@ -1,16 +1,16 @@
 # SPDX-FileCopyrightText: 2026 Florian Mücke
 # SPDX-License-Identifier: MIT
-# Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 # Enters the Visual Studio Developer Shell in the current Agent Sandbox terminal.
-$ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
+$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'Agent Sandbox requires PowerShell 7 or later.'
 }
-if ($env:USERNAME -ne 'ClaudeSandbox') {
-    throw "Refusing to run: expected user 'ClaudeSandbox' but running as '$env:USERNAME'."
+if ($env:USERNAME -ne 'AgentSandbox') {
+    throw "Refusing to run: expected user 'AgentSandbox' but running as '$env:USERNAME'."
 }
 if (-not (Test-Path $ConfigFile)) {
     throw "Sandbox config missing: $ConfigFile"

@@ -20,7 +20,7 @@ The elevated Codex sandbox is a two-stage system:
    that sandbox user, and asks the runner to start the real child process with a
    further restricted token.
 
-For `claude-win-sandbox`, the closest useful concept is: keep Claude Code under
+For `agent-win-sandbox`, the closest useful concept is: keep coding agents under
 a dedicated Windows account, move trusted launch/control files outside the
 writable workspace, and let Windows enforce filesystem and network boundaries.
 Codex goes further by automating per-command ACL refresh and using a helper
@@ -92,7 +92,7 @@ At runtime, Codex decrypts the selected user's password and uses it to launch th
 command-runner helper under that account. If the login fails, it deletes the
 stored user file and reruns setup/refresh.
 
-Claude implication:
+Agent Sandbox implication:
 
 - launch-as can request the sandbox password through Windows Credential UI and
   optionally store it in the launching user's Credential Manager.
@@ -117,9 +117,9 @@ Even after provisioning is complete, Codex refreshes ACLs before each run:
 This matters because elevated mode is not just "create user once." It keeps
 filesystem policy synchronized with the current command's permission profile.
 
-Claude implication:
+Agent Sandbox implication:
 
-- A setup marker under `C:\ProgramData\claude-win-sandbox` would be useful even
+- A setup marker under `C:\ProgramData\agent-win-sandbox` would be useful even
   without porting the full runtime refresh system.
 - If we keep one fixed workspace grant, refresh can remain simple.
 - If we add per-repo/per-run permissions, we need Codex-like ACL reconciliation.
@@ -139,9 +139,9 @@ Codex translates its permission profile into Windows paths:
 The elevated setup helper grants read and write access to the sandbox users
 group and to the active capability SIDs. It applies deny ACEs where required.
 
-Claude implication:
+Agent Sandbox implication:
 
-- Today we permanently grant `ClaudeSandbox` Modify on `C:\dev\ClaudeSandbox`.
+- Today we permanently grant `AgentSandbox` Modify on `C:\dev\AgentSandbox`.
 - Codex's model is stricter: write access is computed and refreshed.
 - We can adapt this gradually by protecting launcher/config/control paths first,
   then later considering per-root grants.
@@ -163,7 +163,7 @@ current token also has the matching capability SID.
 This is the main reason elevated mode can keep durable ACLs without allowing
 every future sandbox run to use every previously allowed path.
 
-Claude implication:
+Agent Sandbox implication:
 
 - launch-as does not attach custom restricting capability SIDs.
 - To port this concept, we need a native helper or equivalent Windows API layer.
@@ -199,7 +199,7 @@ The runner:
 - Accepts stdin, resize, and terminate messages.
 - Uses a kill-on-close job object for process cleanup.
 
-Claude implication:
+Agent Sandbox implication:
 
 - launch-as gives us a real interactive terminal with much less machinery.
 - A Codex-style helper with a restricted-token runner would be needed for
@@ -224,9 +224,9 @@ The token helpers use:
 The result is narrower than a normal standard-user token. Access checks must
 satisfy both the sandbox user's normal ACLs and the restricting SID set.
 
-Claude implication:
+Agent Sandbox implication:
 
-- Our current process runs as a normal `ClaudeSandbox` standard user.
+- Our current process runs as a normal `AgentSandbox` standard user.
 - That is still useful blast-radius reduction, but it is weaker than Codex
   elevated mode.
 - Porting this exactly means building a launcher/runner helper.
@@ -252,12 +252,12 @@ WFP rules:
 - Block SMB on ports 445 and 139.
 - Treat WFP setup as best-effort and log failures.
 
-Claude implication:
+Agent Sandbox implication:
 
 - Our current `SeDenyNetworkLogonRight` blocks network logon, not outbound
   sockets.
 - The most direct Codex elevated-mode feature to adapt is account-scoped
-  outbound firewall blocking for `ClaudeSandbox`.
+  outbound firewall blocking for `AgentSandbox`.
 - If we later split online/offline users, firewall policy should attach only to
   the offline user.
 
@@ -271,20 +271,20 @@ Codex separates trusted control-plane files from writable workspaces:
 - Sandbox users can read/execute what they need, but cannot rewrite trusted
   launch artifacts.
 
-Claude implication:
+Agent Sandbox implication:
 
-- Keep `C:\ProgramData\claude-win-sandbox\config.json`, launcher/checker, and
+- Keep `C:\ProgramData\agent-win-sandbox\config.json`, launcher/checker, and
   bootstrap scripts admin-write / Users-RX.
 - Keep `C:\Program Files\ClaudeCode\managed-settings.json` admin-write.
 - Do not put trusted launch scripts under the writable workspace.
 - If we add a helper binary, install/copy it to an admin-controlled location,
-  not to `C:\dev\ClaudeSandbox`.
+  not to `C:\dev\AgentSandbox`.
 
 ## What We Can Adapt Soon
 
 1. Keep setup metadata in the ProgramData config.
 2. Keep checker coverage for ProgramData locks and setup metadata compatibility.
-3. Keep optional outbound firewall blocking scoped to `ClaudeSandbox`.
+3. Keep optional outbound firewall blocking scoped to `AgentSandbox`.
 4. Document clearly that deny-network-logon is not outbound network isolation.
 5. Keep trusted launcher/check/bootstrap/config/policy files out of the writable
    workspace.
@@ -309,11 +309,11 @@ PowerShell-plus-launch-as implementation:
 If we want exact Codex elevated-mode behavior, the right shape is a small native
 launcher/runner helper plus a PowerShell setup/check layer around it.
 
-## Recommended Claude Adaptation
+## Recommended Agent Sandbox Adaptation
 
 For this repository, the practical path is:
 
-1. Keep the current single `ClaudeSandbox` user for now.
+1. Keep the current single `AgentSandbox` user for now.
 2. Add Codex-style setup state/versioning under ProgramData.
 3. Add optional account-scoped outbound firewall blocking.
 4. Keep using launch-as until we need restricted tokens or per-run writable
@@ -323,8 +323,8 @@ For this repository, the practical path is:
 
 If we later want to mirror Codex elevated mode closely, split the design into:
 
-- `ClaudeSandboxOffline` and `ClaudeSandboxOnline`.
-- `ClaudeSandboxUsers` group.
+- `AgentSandboxOffline` and `AgentSandboxOnline`.
+- `AgentSandboxUsers` group.
 - Protected ProgramData helper/state/secrets directories.
 - DPAPI-protected credentials.
 - Native command runner launched under the selected sandbox user.

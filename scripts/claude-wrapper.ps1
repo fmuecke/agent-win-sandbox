@@ -41,8 +41,8 @@ function Get-ClaudeExecutable {
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'Agent Sandbox requires PowerShell 7 or later.'
 }
-if ($env:USERNAME -ne 'ClaudeSandbox') {
-    throw "Refusing to run: expected user 'ClaudeSandbox' but running as '$env:USERNAME'."
+if ($env:USERNAME -ne 'AgentSandbox') {
+    throw "Refusing to run: expected user 'AgentSandbox' but running as '$env:USERNAME'."
 }
 
 $claude = Get-ClaudeExecutable

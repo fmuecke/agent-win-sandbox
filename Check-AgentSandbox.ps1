@@ -1,36 +1,36 @@
 # SPDX-FileCopyrightText: 2026 Florian Mücke
 # SPDX-License-Identifier: MIT
-# Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 <#
 .SYNOPSIS
-    Verifies a claude-win-sandbox installation: user, hardening, ACLs, policy,
+    Verifies an agent-win-sandbox installation: user, hardening, ACLs, policy,
     toolchain, and the assumptions the boundary depends on. Read-only - makes no
     changes. Safe to run anytime, including as a post-launch diagnostic.
 
 .PARAMETER UserName
-    Low-privilege sandbox user. Default: ClaudeSandbox.
+    Low-privilege sandbox user. Default: AgentSandbox.
 
 .PARAMETER ShellInitScript
-    Shell initializer written by Setup-ClaudeSandbox.ps1.
+    Shell initializer written by Setup-AgentSandbox.ps1.
 
 .PARAMETER DevShellScript
-    Developer Shell command written by Setup-ClaudeSandbox.ps1.
+    Developer Shell command written by Setup-AgentSandbox.ps1.
 
 .PARAMETER ClaudeWrapperScript
-    Claude Code command wrapper written by Setup-ClaudeSandbox.ps1.
+    Claude Code command wrapper written by Setup-AgentSandbox.ps1.
 
 .PARAMETER CopilotWrapperScript
-    GitHub Copilot CLI command wrapper written by Setup-ClaudeSandbox.ps1.
+    GitHub Copilot CLI command wrapper written by Setup-AgentSandbox.ps1.
 
 .PARAMETER LauncherScript
-    Installed launcher written by Setup-ClaudeSandbox.ps1.
+    Installed launcher written by Setup-AgentSandbox.ps1.
 
 .PARAMETER LaunchAsExe
-    launch-as executable downloaded by Setup-ClaudeSandbox.ps1.
+    launch-as executable downloaded by Setup-AgentSandbox.ps1.
 
 .PARAMETER InstalledCheckScript
-    Installed checker written by Setup-ClaudeSandbox.ps1.
+    Installed checker written by Setup-AgentSandbox.ps1.
 
 .PARAMETER ManagedSettings
     Claude Code enterprise policy file.
@@ -39,10 +39,10 @@
     Machine-wide Claude Code policy registry key.
 
 .PARAMETER ConfigFile
-    claude-win-sandbox ProgramData config file.
+    agent-win-sandbox ProgramData config file.
 
 .EXAMPLE
-    & "$env:ProgramData\claude-win-sandbox\Check-ClaudeSandbox.ps1"
+    & "$env:ProgramData\agent-win-sandbox\Check-AgentSandbox.ps1"
     Runs all checks and prints a PASS/WARN/FAIL summary.
 
 .NOTES
@@ -54,18 +54,18 @@
 
 [CmdletBinding()]
 param(
-    [string]$UserName = 'ClaudeSandbox',
-    [string]$ShellInitScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'Initialize-ClaudeSandboxShell.ps1'),
-    [string]$DevShellScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'Enter-ClaudeDevShell.ps1'),
-    [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
-    [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
-    [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Start-ClaudeSandbox.ps1'),
-    [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'launch-as.exe'),
-    [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'Check-ClaudeSandbox.ps1'),
+    [string]$UserName = 'AgentSandbox',
+    [string]$ShellInitScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'Initialize-AgentSandboxShell.ps1'),
+    [string]$DevShellScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'Enter-DevShell.ps1'),
+    [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
+    [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
+    [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Start-AgentSandbox.ps1'),
+    [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'launch-as.exe'),
+    [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Check-AgentSandbox.ps1'),
     [string]$ManagedSettings = (Join-Path (Join-Path $env:ProgramFiles 'ClaudeCode') 'managed-settings.json'),
     [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
     [string]$ManagedSettingsRegistryValue = 'Settings',
-    [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'claude-win-sandbox') 'config.json')
+    [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'config.json')
 )
 
 $Version = '0.6.0'
@@ -88,20 +88,20 @@ $RiskyGroupChecks = @(
 )
 $FirewallRules = @(
     [pscustomobject]@{
-        Name        = 'claude_win_sandbox_block_smb_netbios_tcp'
-        DisplayName = 'Claude Sandbox - Block SMB and NetBIOS TCP'
+        Name        = 'agent_win_sandbox_block_smb_netbios_tcp'
+        DisplayName = 'Agent Sandbox - Block SMB and NetBIOS TCP'
         Protocol    = 'TCP'
         RemotePort  = @('139', '445')
     },
     [pscustomobject]@{
-        Name        = 'claude_win_sandbox_block_netbios_udp'
-        DisplayName = 'Claude Sandbox - Block NetBIOS UDP'
+        Name        = 'agent_win_sandbox_block_netbios_udp'
+        DisplayName = 'Agent Sandbox - Block NetBIOS UDP'
         Protocol    = 'UDP'
         RemotePort  = @('137', '138')
     },
     [pscustomobject]@{
-        Name        = 'claude_win_sandbox_block_remote_admin_tcp'
-        DisplayName = 'Claude Sandbox - Block remote admin TCP'
+        Name        = 'agent_win_sandbox_block_remote_admin_tcp'
+        DisplayName = 'Agent Sandbox - Block remote admin TCP'
         Protocol    = 'TCP'
         RemotePort  = @('135', '3389', '5985', '5986')
     }
@@ -374,8 +374,8 @@ else {
         if ([string]::IsNullOrWhiteSpace($SandboxPath)) {
             Fail "Config does not define sandboxPath."
         }
-        elseif ((Split-Path $SandboxPath -Leaf) -ne 'ClaudeSandbox') {
-            Fail "sandboxPath must end in the fixed directory name 'ClaudeSandbox': $SandboxPath"
+        elseif ((Split-Path $SandboxPath -Leaf) -ne 'AgentSandbox') {
+            Fail "sandboxPath must end in the fixed directory name 'AgentSandbox': $SandboxPath"
         }
         else {
             Pass "Configured sandbox path: $SandboxPath"
@@ -410,7 +410,7 @@ else {
     Test-AdminWriteOnlyPath -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
     Test-AdminWriteOnlyPath -Path $ConfigFile -Description 'Sandbox config file' -UserName $UserName
 
-    if ([string]::IsNullOrWhiteSpace($SandboxPath) -or ((Split-Path $SandboxPath -Leaf) -ne 'ClaudeSandbox')) {
+    if ([string]::IsNullOrWhiteSpace($SandboxPath) -or ((Split-Path $SandboxPath -Leaf) -ne 'AgentSandbox')) {
         Section "Summary"
         Write-Host "  $script:fails FAIL, $script:warns WARN." -ForegroundColor Red
         exit 1
@@ -422,7 +422,7 @@ else {
 Section "User account"
 $u = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
 if (-not $u) {
-    Fail "User '$UserName' does not exist. Run Setup-ClaudeSandbox.ps1."
+    Fail "User '$UserName' does not exist. Run Setup-AgentSandbox.ps1."
     # Nothing else is meaningful without the user; print summary and exit.
     Write-Host "`nAborting remaining checks." -ForegroundColor Red
     exit 1
@@ -457,7 +457,7 @@ else { Pass "User cannot change own password." }
 if ($isAdmin) {
     try {
         $sid = $u.SID.Value
-        $tmp = Join-Path $env:TEMP "claude_check_secpol.inf"
+        $tmp = Join-Path $env:TEMP "agent_win_sandbox_check_secpol.inf"
         secedit /export /cfg $tmp /areas USER_RIGHTS /quiet | Out-Null
         $pol = Get-Content $tmp
         Remove-Item $tmp -ErrorAction SilentlyContinue
@@ -608,7 +608,7 @@ if (Get-Command git.exe -ErrorAction SilentlyContinue) { Pass "git on machine PA
 else { Warn "git not on machine PATH." }
 
 # --- 7. Claude Code install location -----------------------------------------
-# The boundary depends on ClaudeSandbox running ITS OWN per-user copy, not one
+# The boundary depends on AgentSandbox running ITS OWN per-user copy, not one
 # from your profile or a machine-wide install: either of those could be picked
 # up off the machine PATH, pulling binary/config from outside the sandbox.
 Section "Claude Code install"
@@ -651,7 +651,7 @@ foreach ($m in @(
 }
 
 # Anything resolvable on the check process's PATH that isn't the sandbox copy.
-# (Resolves against you/admin, not ClaudeSandbox - catches machine/your-PATH leaks.)
+# (Resolves against you/admin, not AgentSandbox - catches machine/your-PATH leaks.)
 $onPath = (Get-Command claude.exe -All -ErrorAction SilentlyContinue).Source |
 Where-Object { $_ -and $_ -ne $expected }
 if ($onPath) { $leaks += $onPath }

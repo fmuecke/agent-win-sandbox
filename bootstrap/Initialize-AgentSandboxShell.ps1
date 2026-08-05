@@ -1,23 +1,23 @@
 # SPDX-FileCopyrightText: 2026 Florian Mücke
 # SPDX-License-Identifier: MIT
-# Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
-# Initializes a plain PowerShell session as ClaudeSandbox. It deliberately does
+# Initializes a plain PowerShell session as AgentSandbox. It deliberately does
 # not enter the Visual Studio Developer Shell or start an agent.
 $Version = '0.6.0'
-$ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'
+$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
-$DevShellScript = Join-Path $BootstrapRoot 'Enter-ClaudeDevShell.ps1'
+$DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapper = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapper = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
-$CheckScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
+$CheckScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
 
 function Stop-ShellInitialization {
     param([string]$Message)
 
     Write-Host $Message -ForegroundColor Red
-    Write-Host 'Run Setup-ClaudeSandbox.ps1 again.' -ForegroundColor Yellow
+    Write-Host 'Run Setup-AgentSandbox.ps1 again.' -ForegroundColor Yellow
     exit 1
 }
 
@@ -122,8 +122,8 @@ function Write-SandboxNetworkExposureWarning {
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     Stop-ShellInitialization 'Agent Sandbox requires PowerShell 7 or later.'
 }
-if ($env:USERNAME -ne 'ClaudeSandbox') {
-    Stop-ShellInitialization "Refusing to run: expected user 'ClaudeSandbox' but running as '$env:USERNAME'."
+if ($env:USERNAME -ne 'AgentSandbox') {
+    Stop-ShellInitialization "Refusing to run: expected user 'AgentSandbox' but running as '$env:USERNAME'."
 }
 if (-not (Test-Path $ConfigFile)) {
     Stop-ShellInitialization "Sandbox config missing: $ConfigFile"

@@ -1,17 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Florian Mücke
 # SPDX-License-Identifier: MIT
-# Part of claude-win-sandbox: https://github.com/fmuecke/claude-win-sandbox
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Provisions a low-privilege local 'ClaudeSandbox' for running AI coding
+    Provisions a low-privilege local 'AgentSandbox' for running AI coding
     agents with scoped access to a fixed workspace directory, while denying
     access to the calling user's secrets.
 
 .NOTES
     - Run from an ELEVATED PowerShell session.
-    - Model: ClaudeSandbox is a STANDARD user. Windows default ACLs already deny it
+    - Model: AgentSandbox is a STANDARD user. Windows default ACLs already deny it
       access to other users' profiles and admin areas. We GRANT the few extra
       paths it needs (sandbox workspace, its own profile) and add EXPLICIT DENY only on the
       current user's sensitive dirs as belt-and-suspenders.
@@ -20,10 +20,10 @@
     - DENY ACEs override ALLOW. Review every Deny path before running.
     - The workspace config, launcher/check scripts, and shell commands are
       written into ProgramData (Users-traversable by default) and locked
-      admin-write/Users-RX, so ClaudeSandbox can read/run them but not modify
+      admin-write/Users-RX, so AgentSandbox can read/run them but not modify
       them.
     - The sandbox username and workspace directory name are baked in
-      (ClaudeSandbox); they are not configurable.
+      (AgentSandbox); they are not configurable.
     - The workspace base directory is prompted for interactively if not passed.
 #>
 
@@ -35,24 +35,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$UserName = 'ClaudeSandbox'   # baked in; not configurable
-$SandboxDirectoryName = 'ClaudeSandbox'   # baked in; not configurable
+$UserName = 'AgentSandbox'   # baked in; not configurable
+$SandboxDirectoryName = 'AgentSandbox'   # baked in; not configurable
 $Version = '0.6.0'
-$ProgramDataRoot = Join-Path $env:ProgramData 'claude-win-sandbox'    # baked in; not configurable
+$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
-$LauncherSource = Join-Path $PSScriptRoot 'Start-ClaudeSandbox.ps1'
-$CheckerSource = Join-Path $PSScriptRoot 'Check-ClaudeSandbox.ps1'
-$ShellInitSource = Join-Path $PSScriptRoot 'bootstrap\Initialize-ClaudeSandboxShell.ps1'
-$DevShellSource = Join-Path $PSScriptRoot 'bootstrap\Enter-ClaudeDevShell.ps1'
+$LauncherSource = Join-Path $PSScriptRoot 'Start-AgentSandbox.ps1'
+$CheckerSource = Join-Path $PSScriptRoot 'Check-AgentSandbox.ps1'
+$ShellInitSource = Join-Path $PSScriptRoot 'bootstrap\Initialize-AgentSandboxShell.ps1'
+$DevShellSource = Join-Path $PSScriptRoot 'bootstrap\Enter-DevShell.ps1'
 $ClaudeWrapperSource = Join-Path $PSScriptRoot 'scripts\claude-wrapper.ps1'
 $CopilotWrapperSource = Join-Path $PSScriptRoot 'scripts\copilot-wrapper.ps1'
 $ManagedSettingsSource = Join-Path $PSScriptRoot 'managed-settings.json'
-$LauncherScript = Join-Path $ProgramDataRoot 'Start-ClaudeSandbox.ps1'
-$CheckerScript = Join-Path $ProgramDataRoot 'Check-ClaudeSandbox.ps1'
+$LauncherScript = Join-Path $ProgramDataRoot 'Start-AgentSandbox.ps1'
+$CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
 $BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
-$ShellInitScript = Join-Path $BootstrapRoot 'Initialize-ClaudeSandboxShell.ps1'
-$DevShellScript = Join-Path $BootstrapRoot 'Enter-ClaudeDevShell.ps1'
+$ShellInitScript = Join-Path $BootstrapRoot 'Initialize-AgentSandboxShell.ps1'
+$DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapperScript = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapperScript = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
@@ -62,10 +62,9 @@ $LaunchAsSha256 = '329EEE7D05563A686D39A7EF0B291B21A433BECCC0CA4A4A3B8D0AD29878C
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
-$LegacyShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Claude (sandboxed).lnk'
 $PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
 $FirewallMode = 'BlockWindowsLanProtocols'
-$FirewallRuleGroup = 'claude-win-sandbox'
+$FirewallRuleGroup = 'agent-win-sandbox'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
 $LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
@@ -74,23 +73,23 @@ $AuthenticatedUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-11'
 $BroadReadSidValues = @($BuiltinUsersSid.Value, $EveryoneSid.Value, $AuthenticatedUsersSid.Value)
 $FirewallRules = @(
     [pscustomobject]@{
-        Name        = 'claude_win_sandbox_block_smb_netbios_tcp'
-        DisplayName = 'Claude Sandbox - Block SMB and NetBIOS TCP'
-        Description = 'Blocks ClaudeSandbox outbound SMB and NetBIOS session traffic while leaving web traffic available.'
+        Name        = 'agent_win_sandbox_block_smb_netbios_tcp'
+        DisplayName = 'Agent Sandbox - Block SMB and NetBIOS TCP'
+        Description = 'Blocks AgentSandbox outbound SMB and NetBIOS session traffic while leaving web traffic available.'
         Protocol    = 'TCP'
         RemotePort  = @('139', '445')
     },
     [pscustomobject]@{
-        Name        = 'claude_win_sandbox_block_netbios_udp'
-        DisplayName = 'Claude Sandbox - Block NetBIOS UDP'
-        Description = 'Blocks ClaudeSandbox outbound NetBIOS name and datagram traffic while leaving web traffic available.'
+        Name        = 'agent_win_sandbox_block_netbios_udp'
+        DisplayName = 'Agent Sandbox - Block NetBIOS UDP'
+        Description = 'Blocks AgentSandbox outbound NetBIOS name and datagram traffic while leaving web traffic available.'
         Protocol    = 'UDP'
         RemotePort  = @('137', '138')
     },
     [pscustomobject]@{
-        Name        = 'claude_win_sandbox_block_remote_admin_tcp'
-        DisplayName = 'Claude Sandbox - Block remote admin TCP'
-        Description = 'Blocks ClaudeSandbox outbound RPC endpoint mapper, RDP, and WinRM traffic while leaving web traffic available.'
+        Name        = 'agent_win_sandbox_block_remote_admin_tcp'
+        DisplayName = 'Agent Sandbox - Block remote admin TCP'
+        Description = 'Blocks AgentSandbox outbound RPC endpoint mapper, RDP, and WinRM traffic while leaving web traffic available.'
         Protocol    = 'TCP'
         RemotePort  = @('135', '3389', '5985', '5986')
     }
@@ -224,7 +223,8 @@ function Install-ClaudeManagedSettings {
 
     $shouldInstall = $false
     if (Test-Path $Destination) {
-        $answer = Read-Host "Claude Code managed settings already exist at '$Destination'. Overwrite? [y/N]"
+        Write-Warning 'Claude Code managed settings are machine-wide and shared by all Windows users.'
+        $answer = Read-Host "Managed settings already exist at '$Destination'. Overwrite? [y/N]"
         $shouldInstall = ($answer -match '^(y|yes)$')
     }
     else {
@@ -237,8 +237,8 @@ function Install-ClaudeManagedSettings {
         return
     }
 
-    $claudeSandboxPath = ConvertTo-ClaudePermissionPath -Path $SandboxPath
-    $settingsText = (Get-Content $Source -Raw).Replace('$SANDBOXDIR', $claudeSandboxPath)
+    $agentSandboxPath = ConvertTo-ClaudePermissionPath -Path $SandboxPath
+    $settingsText = (Get-Content $Source -Raw).Replace('$SANDBOXDIR', $agentSandboxPath)
     try {
         $settingsText | ConvertFrom-Json | Out-Null
     }
@@ -257,7 +257,7 @@ function Install-ClaudeManagedSettings {
     (Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F') `
     (Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'R') | Out-Null
     Write-Host "  wrote $Destination" -ForegroundColor Green
-    Write-Host "  substituted `$SANDBOXDIR with $claudeSandboxPath" -ForegroundColor Green
+    Write-Host "  substituted `$SANDBOXDIR with $agentSandboxPath" -ForegroundColor Green
     Write-Host '  locked policy file: Administrators/SYSTEM full, Users read' -ForegroundColor Green
 }
 function Install-LaunchAs {
@@ -267,7 +267,7 @@ function Install-LaunchAs {
         [string]$ExpectedSha256
     )
 
-    $tempRoot = Join-Path $env:TEMP ("claude-win-sandbox-launch-as-" + [guid]::NewGuid().ToString('N'))
+    $tempRoot = Join-Path $env:TEMP ("agent-win-sandbox-launch-as-" + [guid]::NewGuid().ToString('N'))
     $archivePath = Join-Path $tempRoot 'launch-as.zip'
     $extractPath = Join-Path $tempRoot 'extracted'
 
@@ -468,7 +468,7 @@ if (-not (Test-Path $SandboxPath)) {
     New-Item -ItemType Directory -Path $SandboxPath -Force | Out-Null
     Write-Host "  created $SandboxPath" -ForegroundColor Green
 }
-# Grant calling user + ClaudeSandbox Modify on the workspace tree (inherited).
+# Grant calling user + AgentSandbox Modify on the workspace tree (inherited).
 # Repos beneath this dir are covered by inheritance.
 # Using icacls; (OI)(CI) = object + container inherit, M = Modify.
 icacls $SandboxPath /grant "${callingUser}:(OI)(CI)M" | Out-Null
@@ -477,7 +477,7 @@ Write-Host "  granted Modify to $callingUser and $UserName" -ForegroundColor Gre
 
 # --- 3. Write ProgramData configuration --------------------------------------
 # ProgramData config is the single source of truth for the sandbox path.
-# ClaudeSandbox can read it at launch but cannot alter where the bootstrap lands.
+# AgentSandbox can read it at launch but cannot alter where the bootstrap lands.
 Write-Step "Writing sandbox configuration to ProgramData"
 if (-not (Test-Path $ProgramDataRoot)) { New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null }
 $config = [ordered]@{
@@ -505,7 +505,7 @@ Install-ClaudeManagedSettings -Source $ManagedSettingsSource -Destination $Manag
 
 # --- 4. Verify the calling user's profile is not world/Users-readable --------
 # On a standard Windows config, C:\Users\<you> is accessible only to that user,
-# SYSTEM, and Administrators. A Standard user (ClaudeSandbox) is denied by default,
+# SYSTEM, and Administrators. A Standard user (AgentSandbox) is denied by default,
 # so NO explicit deny ACEs are needed - and explicit denies are brittle
 # (they override everything and are a classic source of lockouts). Instead we
 # VERIFY the assumption and warn loudly if the profile ACL is too permissive.
@@ -568,7 +568,7 @@ else {
 # in Program Files (readable+executable by Users by default).
 
 # --- 6. Copy trusted launch artifacts into ProgramData -----------------------
-# ProgramData is traversable by Users by default, so ClaudeSandbox can reach the
+# ProgramData is traversable by Users by default, so AgentSandbox can reach the
 # launcher/check/bootstrap regardless of where this repo was cloned (no
 # profile-traversal trap). We copy them here and LOCK them admin-write / Users-RX,
 # so the sandbox user can run them but cannot rewrite what executes at launch.
@@ -626,10 +626,6 @@ if (-not (Test-Path $LauncherScript)) {
 }
 try {
     $powershellExe = (Get-Command powershell.exe).Source
-    if (Test-Path $LegacyShortcutPath) {
-        Remove-Item -LiteralPath $LegacyShortcutPath -Force
-        Write-Host "  removed legacy shortcut: $LegacyShortcutPath" -ForegroundColor Yellow
-    }
     $wsh = New-Object -ComObject WScript.Shell
     $sc = $wsh.CreateShortcut($ShortcutPath)
     $sc.TargetPath = $powershellExe
@@ -659,12 +655,12 @@ Or run the launcher directly:
 Inside the sandbox, run 'sandbox-help' to list the available commands.
 
 NOTE:
-  - Keep secrets in your own Windows profile or another location ClaudeSandbox
+  - Keep secrets in your own Windows profile or another location AgentSandbox
     cannot read. Shared folders, drives, and vaults outside your profile need
     separate review.
-  - ClaudeSandbox has its own Windows Credential Manager and profile. Set up its
+  - AgentSandbox has its own Windows Credential Manager and profile. Set up its
     ADO PAT/git credential separately, scoped minimally.
-  - COPILOT_GITHUB_TOKEN is stored for ClaudeSandbox when the Copilot wrapper
+  - COPILOT_GITHUB_TOKEN is stored for AgentSandbox when the Copilot wrapper
     first prompts for its fine-grained PAT. Every process running as that user
     can read it.
 
