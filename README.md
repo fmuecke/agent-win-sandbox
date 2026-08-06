@@ -1,14 +1,20 @@
 # agent-win-sandbox
 
 Run AI coding agents on Windows as a dedicated standard user in a fixed
-workspace. Start with a plain PowerShell terminal and enter the Visual Studio
-Developer Shell only when needed.
+workspace. Start with a plain PowerShell terminal and start your coding agent.
 
 This reduces the blast radius of Windows-native development; it is not hard
 containment. Use a VM for adversarial code or strong isolation.
 
-> The CEO's assistant is not the CEO.
 > Give the agent delegated access, not your full Windows identity.
+> The CEO's assistant is not the CEO.
+
+Currently supported with built-in commands:
+- Claude Code
+- GitHub Copilot CLI
+- Visual Studio Dev Shell - to have the tools available for the agent
+
+Of course any other agent like OpenCode can be installed within the Agent Sandbox and run normally.
 
 ## What it does
 
@@ -31,8 +37,8 @@ containment. Use a VM for adversarial code or strong isolation.
 ## Requirements
 
 - Windows 10 or 11 with machine-wide PowerShell 7
-- Machine-wide Visual Studio and Git for Windows
 - Administrator rights for setup, removal, and policy installation
+- Highly recommended: machine-wide Visual Studio and Git for Windows
 
 ## Setup
 

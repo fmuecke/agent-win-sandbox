@@ -134,6 +134,7 @@ _Last updated: 2026-08-05_
   Manager instead of storing `COPILOT_GITHUB_TOKEN` in the sandbox user's
   plaintext environment. Any replacement must still acknowledge that Copilot
   and processes it starts can read the token while it is in use.
+- [ ] Add the managed settings pendant for copilot CLI
 - [ ] Verify whether Copilot CLI needs the same operational firewall profile or
   stricter proxy/network egress control.
 

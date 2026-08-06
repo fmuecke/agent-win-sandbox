@@ -2,7 +2,7 @@
 
 Run AI coding agents as a dedicated standard Windows user in a fixed workspace
 without Docker or WSL. The launcher opens a plain PowerShell 7 terminal;
-activate the Visual Studio Developer Shell only when a task needs it.
+start your coding agent as needed.
 
 > **Threat model:** This reduces blast radius for a generally trusted machine;
 > it is not hard containment against a determined attacker with your
@@ -85,6 +85,10 @@ copilot        # Install, update, or launch GitHub Copilot CLI
 sandbox-check  # Run the read-only checker
 sandbox-help   # Show this list
 ```
+
+Other native Windows agents, such as OpenCode, can be installed for
+`AgentSandbox` from inside the sandbox and run normally; they have no dedicated
+wrapper.
 
 The `claude` wrapper uses Anthropic's native Windows installer and prefers
 `C:\Users\AgentSandbox\.local\bin\claude.exe`. Its PowerShell and
