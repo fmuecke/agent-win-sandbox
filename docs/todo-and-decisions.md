@@ -128,8 +128,7 @@ _Last updated: 2026-08-05_
 
 - [x] Exposed Claude Code and Copilot CLI from the same plain PowerShell
   sandbox; Claude managed settings remain Claude-only.
-- [ ] Remove script needs to check if a sandbox is currently running and ask the user to close it first (or terminate running processes)
-- [ ] does the setup script really need to check for the VS dev environment? This should be the wrappers responsibility only.
+- [x] Removal stops before changing state when the sandbox profile is loaded.
 - [ ] Encrypt/protect the Copilot PAT at rest with DPAPI or Windows Credential
   Manager instead of storing `COPILOT_GITHUB_TOKEN` in the sandbox user's
   plaintext environment. Any replacement must still acknowledge that Copilot

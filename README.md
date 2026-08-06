@@ -102,7 +102,7 @@ Run from an elevated PowerShell:
 
 This removes the sandbox user and profile, generated ProgramData state,
 firewall rules, and shortcut. It keeps the workspace, such as
-`C:\dev\AgentSandbox`.
+`C:\dev\AgentSandbox`. 
 
 ## Important notes
 

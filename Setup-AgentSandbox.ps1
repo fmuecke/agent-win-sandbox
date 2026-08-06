@@ -15,8 +15,7 @@
       access to other users' profiles and admin areas. We GRANT the few extra
       paths it needs (sandbox workspace, its own profile) and add EXPLICIT DENY only on the
       current user's sensitive dirs as belt-and-suspenders.
-    - PowerShell 7, VS, and Git are assumed installed machine-wide. A Standard
-      user can run them already; no extra grants needed for Program Files.
+    - PowerShell 7 is required. standard users need no extra Program Files grants.
     - DENY ACEs override ALLOW. Review every Deny path before running.
     - The workspace config, launcher/check scripts, and shell commands are
       written into ProgramData (Users-traversable by default) and locked
@@ -534,26 +533,10 @@ else {
 
 Write-Warning "Optional hardening note: if you keep secrets OUTSIDE your profile (e.g. a KeePass vault under C:\, a shared drive), verify those paths separately - the profile-default protection does not extend to them."
 
-# --- 5. Verify shell and toolchain availability for the user -----------------
-Write-Step "Locating PowerShell 7, Visual Studio Developer Shell, and Git (machine-wide)"
+# --- 5. Report machine-wide PowerShell and Git -------------------------------
+Write-Step "PowerShell 7 and Git (machine-wide)"
 
 Write-Host "  pwsh: $PwshExe ($pwshVersion)" -ForegroundColor Green
-
-# vswhere is the supported way to find the VS install + dev shell module.
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-if (Test-Path $vswhere) {
-    $vsPath = & $vswhere -latest -property installationPath
-    $devShell = Join-Path $vsPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
-    if (Test-Path $devShell) {
-        Write-Host "  VS DevShell module: $devShell" -ForegroundColor Green
-    }
-    else {
-        Write-Warning "  DevShell module not found under $vsPath - check VS install."
-    }
-}
-else {
-    Write-Warning "  vswhere.exe not found. Is Visual Studio installed machine-wide?"
-}
 
 $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue
 $git = if ($gitCmd) { $gitCmd.Source } else { $null }
@@ -564,8 +547,7 @@ else {
     Write-Warning "  git not on machine PATH. Install Git for Windows machine-wide."
 }
 
-# A standard user can execute these already. No grants needed because they live
-# in Program Files (readable+executable by Users by default).
+# Standard users can run machine-wide tools without extra Program Files grants.
 
 # --- 6. Copy trusted launch artifacts into ProgramData -----------------------
 # ProgramData is traversable by Users by default, so AgentSandbox can reach the

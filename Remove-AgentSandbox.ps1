@@ -121,6 +121,12 @@ else {
     $null
 }
 
+if ($profile -and $profile.Loaded) {
+    Write-Host "Cannot remove '$UserName' while its profile is loaded: $($profile.LocalPath)" -ForegroundColor Red
+    Write-Host 'Close all Agent Sandbox terminals and retry.' -ForegroundColor Yellow
+    exit 1
+}
+
 Write-Step "Removal target summary"
 Write-Host "  user: $UserName"
 if ($profile) {
@@ -165,9 +171,6 @@ Remove-SandboxShortcut
 Write-Step "Removing user profile for '$UserName'"
 if (-not $profile) {
     Write-Skipped "user profile (not found)"
-}
-elseif ($profile.Loaded) {
-    Write-Warning "Skipping user profile removal because it is currently loaded: $($profile.LocalPath)"
 }
 elseif ($PSCmdlet.ShouldProcess("user profile '$($profile.LocalPath)'", 'Remove')) {
     $profile | Remove-CimInstance

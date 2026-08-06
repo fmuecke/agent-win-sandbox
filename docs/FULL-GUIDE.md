@@ -14,7 +14,7 @@ start your coding agent as needed.
 1. **`Setup-AgentSandbox.ps1`** (elevated, once) creates and hardens the
    `AgentSandbox` local user, creates its workspace, applies ACLs and
    account-scoped firewall blocks, installs and locks ProgramData control files,
-   locates the toolchain, and creates the Public Desktop shortcut.
+   checks PowerShell 7, and creates the Public Desktop shortcut.
 2. **`managed-settings.json`** (optional, elevated) deploys Claude Code policy
    that disables bypass/auto modes, restricts web, hooks, MCP, plugin-sideload,
    and agent-control-file surfaces, and pre-approves routine read-only Git and
@@ -71,7 +71,7 @@ and managed-settings rules.
 
 - Windows 10 or 11 on a dedicated or trusted development machine
 - Machine-wide PowerShell 7
-- Machine-wide Visual Studio Pro or later and Git for Windows
+- Visual Studio Pro or later and Git for Windows when needed
 - Administrator rights for setup, removal, and policy installation
 
 ## Agent commands
@@ -154,7 +154,9 @@ This removes the sandbox account and profile, including its per-user agent
 installs, settings, and Copilot PAT environment variable. It also removes
 generated ProgramData state, account-scoped firewall rules, hidden-login
 registry value, and desktop shortcuts. It keeps the workspace—for example,
-`C:\dev\AgentSandbox`—and its ACLs.
+`C:\dev\AgentSandbox`—and its ACLs. Close all Agent Sandbox terminals first;
+removal stops before changing state when the `AgentSandbox` profile is still
+loaded.
 
 ## Credential handling
 
