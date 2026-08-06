@@ -10,6 +10,7 @@ containment. Use a VM for adversarial code or strong isolation.
 > The CEO's assistant is not the CEO.
 
 Currently supported with built-in commands:
+
 - Claude Code
 - GitHub Copilot CLI
 - Visual Studio Dev Shell - to have the tools available for the agent
@@ -131,6 +132,31 @@ firewall rules, and shortcut. It keeps the workspace, such as
 - [Todo and decisions](docs/todo-and-decisions.md)
 - [Codex Windows sandbox concepts and notes](docs/codex-sandbox.md)
 - [The Shorthand Guide to Everything Agentic Security](docs/the-security-guide.md)
+- [Claude Code sandbox environments](https://code.claude.com/docs/en/sandbox-environments)
+
+## FAQ
+
+### Can I use other agents?
+
+Yes. Install any native Windows agent under `AgentSandbox` and run it there.
+Only Claude Code and Copilot CLI have built-in wrappers.
+
+### Should I run Codex agent inside Agent Sandbox?
+
+Usually no. Run Codex directly with its native Windows `elevated` sandbox. It
+already uses dedicated lower-privilege users, filesystem boundaries, firewall rules,
+local policy, and a private desktop. See [Windows
+sandbox](https://learn.chatgpt.com/docs/windows/windows-sandbox),
+[permissions and sandboxing](https://learn.chatgpt.com/docs/sandboxing).
+
+Use Agent Sandbox as an outer layer only when Codex needs broad access, cannot
+use `elevated`, or needs a separate credential/profile boundary. Verify the
+active sandbox mode before relying on it.
+
+### What else is it for?
+
+Use it as a low-trust automation identity, not a second desktop. It separates
+credentials, token caches, shell history, browser state, and per-user installs.
 
 ## License
 
