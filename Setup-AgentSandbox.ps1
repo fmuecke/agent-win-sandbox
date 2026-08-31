@@ -28,15 +28,14 @@
 
 [CmdletBinding()]
 param(
-    [string]$BasePath, # if omitted, you will be prompted
-    [securestring]$Password # if omitted, you will be prompted
+    [string]$BasePath # if omitted, you will be prompted
 )
 
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
 $SandboxDirectoryName = 'AgentSandbox'   # baked in; not configurable
-$Version = '0.6.0'
+$Version = '0.7.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
@@ -57,9 +56,10 @@ $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapperScript = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapperScript = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
-$LaunchAsVersion = 'v0.3.2'
+$LaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
+$LaunchAsVersion = 'v1.0.0-preview'
 $LaunchAsDownloadUri = "https://github.com/fmuecke/launch-as/releases/download/$LaunchAsVersion/launch-as-$LaunchAsVersion-win64.zip"
-$LaunchAsSha256 = '329EEE7D05563A686D39A7EF0B291B21A433BECCC0CA4A4A3B8D0AD29878CBAA'
+$LaunchAsSha256 = '6A97A0E3F71BC6458DCA13218188E7132513CF86E0D5EE24127A6CE66BCB97F5'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
@@ -131,26 +131,6 @@ function Test-IdentitySidIn {
 function Get-LocalUserFirewallSddl {
     param([string]$Sid)
     return "D:(A;;CC;;;$Sid)"
-}
-function Read-SandboxPassword {
-    param([string]$AccountName)
-
-    while ($true) {
-        $first = Read-Host "Set password for '$AccountName' (must satisfy Windows password policy)" -AsSecureString
-        $second = Read-Host "Confirm password for '$AccountName'" -AsSecureString
-        $firstText = [pscredential]::new('user', $first).GetNetworkCredential().Password
-        $secondText = [pscredential]::new('user', $second).GetNetworkCredential().Password
-
-        if ([string]::IsNullOrEmpty($firstText)) {
-            Write-Warning 'Password cannot be empty. Try again.'
-            continue
-        }
-        if ($firstText -ceq $secondText) {
-            return $first
-        }
-
-        Write-Warning 'Passwords did not match. Try again.'
-    }
 }
 function Test-LocalFirewallPolicyApplies {
     try {
@@ -263,7 +243,8 @@ function Install-ClaudeManagedSettings {
 }
 function Install-LaunchAs {
     param(
-        [string]$Destination,
+        [string]$ClientDestination,
+        [string]$AdminDestination,
         [string]$DownloadUri,
         [string]$ExpectedSha256
     )
@@ -282,18 +263,67 @@ function Install-LaunchAs {
         }
 
         Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
-        $executables = @(Get-ChildItem -LiteralPath $extractPath -Filter 'launch-as.exe' -File -Recurse)
-        if ($executables.Count -ne 1) {
-            throw "Expected exactly one launch-as.exe in the release archive; found $($executables.Count)."
+        $releaseFiles = @{}
+        foreach ($name in 'launch-as.exe', 'launch-as-admin.exe', 'launch-as-broker.exe', 'launch-as-conhost.exe') {
+            $matches = @(Get-ChildItem -LiteralPath $extractPath -Filter $name -File -Recurse)
+            if ($matches.Count -ne 1) {
+                throw "Expected exactly one $name in the release archive; found $($matches.Count)."
+            }
+            $releaseFiles[$name] = $matches[0]
         }
 
-        Copy-Item -LiteralPath $executables[0].FullName -Destination $Destination -Force
-        Write-Host "  downloaded and verified launch-as: $Destination" -ForegroundColor Green
+        Copy-Item -LiteralPath $releaseFiles['launch-as.exe'].FullName -Destination $ClientDestination -Force
+        Copy-Item -LiteralPath $releaseFiles['launch-as-admin.exe'].FullName -Destination $AdminDestination -Force
+
+        & $releaseFiles['launch-as-admin.exe'].FullName install
+        if ($LASTEXITCODE -ne 0) {
+            throw "launch-as broker installation failed with exit code $LASTEXITCODE."
+        }
+
+        $enrolledAccounts = @(& $releaseFiles['launch-as-admin.exe'].FullName list)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not list launch-as broker accounts (exit code $LASTEXITCODE)."
+        }
+        if ($UserName -notin $enrolledAccounts) {
+            & $releaseFiles['launch-as-admin.exe'].FullName enroll $UserName --force
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not enroll '$UserName' with launch-as (exit code $LASTEXITCODE)."
+            }
+        }
+
+        Write-Host "  downloaded and verified launch-as client: $ClientDestination" -ForegroundColor Green
+        Write-Host "  installed launch-as-broker and enrolled '$UserName'" -ForegroundColor Green
     }
     finally {
         if (Test-Path $tempRoot) {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+function Stop-IfLegacyInstallationPresent {
+    $hasConfig = Test-Path -LiteralPath $ConfigFile -PathType Leaf
+    $hasClient = Test-Path -LiteralPath $LaunchAsExe -PathType Leaf
+
+    if (-not $hasConfig -and -not $hasClient) {
+        if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
+            throw "The '$UserName' account exists without a launch-as $LaunchAsVersion installation. Treat it as a legacy or incomplete installation and uninstall it before running setup."
+        }
+        return
+    }
+    if (-not $hasConfig -or -not $hasClient) {
+        throw "An incomplete or legacy Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it before installing launch-as $LaunchAsVersion."
+    }
+
+    try {
+        $installedConfig = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
+        $installedVersion = [string]$installedConfig.setup.launchAsVersion
+    }
+    catch {
+        throw "An unreadable Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it before installing launch-as $LaunchAsVersion."
+    }
+
+    if ($installedVersion -ne $LaunchAsVersion) {
+        throw "Agent Sandbox uses launch-as '$installedVersion'. launch-as $LaunchAsVersion cannot share the AgentSandbox account with earlier versions. Uninstall the earlier Agent Sandbox version first, then run setup again."
     }
 }
 # --- 0. Sanity ----------------------------------------------------------------
@@ -304,6 +334,7 @@ $pwshVersion = & $PwshExe -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion
 if ($LASTEXITCODE -ne 0) {
     throw "PowerShell 7 at $PwshExe could not be started."
 }
+Stop-IfLegacyInstallationPresent
 
 $callingUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name  # DOMAIN\user
 $callingProfile = $env:USERPROFILE
@@ -327,41 +358,13 @@ if (Test-Path $SandboxPath) {
     Write-Host "  using existing shared workspace: $SandboxPath" -ForegroundColor Yellow
 }
 
-# --- 1. Create the low-priv user ---------------------------------------------
-Write-Step "Ensuring local user '$UserName' exists"
-$existing = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
-if (-not $existing) {
-    while ($true) {
-        if (-not $Password) {
-            $Password = Read-SandboxPassword -AccountName $UserName
-        }
-        try {
-            New-LocalUser -Name $UserName -Password $Password `
-                -FullName 'Agent Sandbox User' `
-                -Description 'Low-privilege user for running AI coding agents' `
-                -PasswordNeverExpires:$true | Out-Null
-            break
-        }
-        catch {
-            $errorId = $_.FullyQualifiedErrorId
-            $exceptionType = $_.Exception.GetType().FullName
-            if (($errorId -like 'InvalidPassword*') -or
-                ($exceptionType -eq 'Microsoft.PowerShell.Commands.InvalidPasswordException')) {
-                Write-Warning 'Windows rejected that password. It may not satisfy local/domain length, complexity, or history policy. Try another password.'
-                $Password = $null
-                continue
-            }
-            throw
-        }
-    }
-
-    # Ensure it is ONLY a standard user (member of Users, not Administrators)
-    Add-LocalGroupMember -SID $BuiltinUsersSid -Member $UserName -ErrorAction SilentlyContinue
-    Write-Host "  created." -ForegroundColor Green
+# --- 1. Install and enroll the broker-managed user ---------------------------
+Write-Step "Installing launch-as $LaunchAsVersion and enrolling '$UserName'"
+if (-not (Test-Path $ProgramDataRoot)) {
+    New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null
 }
-else {
-    Write-Host "  already exists - leaving membership as-is." -ForegroundColor Yellow
-}
+Install-LaunchAs -ClientDestination $LaunchAsExe -AdminDestination $LaunchAsAdminExe `
+    -DownloadUri $LaunchAsDownloadUri -ExpectedSha256 $LaunchAsSha256
 
 # Hard guard: make sure it is NOT an administrator
 $sandboxUser = Get-LocalUser -Name $UserName
@@ -373,11 +376,10 @@ if ($adminMembers | Where-Object { $_.SID -and ($_.SID.Value -eq $sandboxSid) })
 }
 
 # --- 1b. Harden the account ---------------------------------------------------
-# This account is only ever used via launch-as, which uses the INTERACTIVE logon
-# type. So we deliberately do NOT deny
-# interactive logon - doing so breaks the launcher (verified behavior). We deny
-# the logon types the account never needs (network, RDP), set sane password
-# flags, and hide it from the welcome screen.
+# The broker uses the INTERACTIVE logon type to create the account's independent
+# console session. Do not deny interactive logon; deny only the logon types the
+# account never needs (network, RDP), set sane password flags, and hide it from
+# the welcome screen.
 Write-Step "Hardening '$UserName'"
 
 # Password flags: never expires (avoid surprise launcher breakage), user can't
@@ -576,7 +578,6 @@ foreach ($artifact in $launchArtifacts) {
     Copy-Item -Path $artifact.Source -Destination $artifact.Destination -Force
     Write-Host "  wrote $($artifact.Destination)" -ForegroundColor Green
 }
-Install-LaunchAs -Destination $LaunchAsExe -DownloadUri $LaunchAsDownloadUri -ExpectedSha256 $LaunchAsSha256
 
 # Lock ProgramData artifacts down: admin-write only, Users get read+execute
 # (read/run but not modify). Mirrors the managed-settings.json lock so the
@@ -598,7 +599,8 @@ foreach ($protectedFile in @(
         $DevShellScript,
         $ClaudeWrapperScript,
         $CopilotWrapperScript,
-        $LaunchAsExe
+        $LaunchAsExe,
+        $LaunchAsAdminExe
     )) {
     icacls $protectedFile /inheritance:r /grant $adminFullAce $systemFullAce $usersReadExecuteAce | Out-Null
 }

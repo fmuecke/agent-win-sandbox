@@ -29,6 +29,9 @@
 .PARAMETER LaunchAsExe
     launch-as executable downloaded by Setup-AgentSandbox.ps1.
 
+.PARAMETER LaunchAsAdminExe
+    launch-as broker administration executable downloaded by Setup-AgentSandbox.ps1.
+
 .PARAMETER InstalledCheckScript
     Installed checker written by Setup-AgentSandbox.ps1.
 
@@ -61,6 +64,7 @@ param(
     [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
     [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Start-AgentSandbox.ps1'),
     [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'launch-as.exe'),
+    [string]$LaunchAsAdminExe = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'launch-as-admin.exe'),
     [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Check-AgentSandbox.ps1'),
     [string]$ManagedSettings = (Join-Path (Join-Path $env:ProgramFiles 'ClaudeCode') 'managed-settings.json'),
     [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
@@ -68,7 +72,8 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'config.json')
 )
 
-$Version = '0.6.0'
+$Version = '0.7.0'
+$LaunchAsVersion = 'v1.0.0-preview'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -351,6 +356,24 @@ function Test-SandboxFirewallRule {
         Pass "Firewall rule '$($RuleSpec.Name)' blocks $($RuleSpec.Protocol) ports $($RuleSpec.RemotePort -join ', ') for '$UserName'."
     }
 }
+function Test-LaunchAsBrokerService {
+    $scExe = Join-Path $env:SystemRoot 'System32\sc.exe'
+    $serviceOutput = @(& $scExe query 'launch-as-broker' 2>&1)
+    $serviceExitCode = $LASTEXITCODE
+
+    if ($serviceExitCode -eq 0) {
+        Pass 'launch-as-broker service is installed and queryable.'
+    }
+    elseif ($serviceExitCode -eq 1060) {
+        Fail 'launch-as-broker service is not installed. Run Setup-AgentSandbox.ps1.'
+    }
+    elseif ($serviceExitCode -eq 5) {
+        Warn 'launch-as-broker service query was denied. Its installation could not be confirmed from this token.'
+    }
+    else {
+        Warn "Could not query launch-as-broker service (exit code $serviceExitCode): $($serviceOutput -join ' ')"
+    }
+}
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
@@ -399,7 +422,7 @@ else {
             Test-ConfigSetupRequiredField -Setup $setup -Field 'installedByUser' -Description 'Installing user'
             Test-ConfigSetupField -Setup $setup -Field 'firewallMode' -Expected $FirewallMode -Description 'Firewall mode'
             Test-ConfigSetupStringList -Setup $setup -Field 'firewallRuleNames' -Expected @($FirewallRules | ForEach-Object { $_.Name }) -Description 'Firewall rule names'
-            Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected 'v0.3.2' -Description 'launch-as version'
+            Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected $LaunchAsVersion -Description 'launch-as version'
         }
     }
     catch {
@@ -564,6 +587,15 @@ if (Test-Path $LaunchAsExe) {
 else {
     Fail "launch-as missing: $LaunchAsExe - run setup."
 }
+
+if (Test-Path $LaunchAsAdminExe) {
+    Pass "launch-as administration tool present: $LaunchAsAdminExe"
+    Test-AdminWriteOnlyPath -Path $LaunchAsAdminExe -Description 'launch-as administration tool' -UserName $UserName
+}
+else {
+    Fail "launch-as administration tool missing: $LaunchAsAdminExe - run setup."
+}
+Test-LaunchAsBrokerService
 
 if (Test-Path $InstalledCheckScript) {
     Pass "Installed checker present: $InstalledCheckScript"

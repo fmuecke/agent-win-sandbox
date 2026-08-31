@@ -123,6 +123,13 @@ Security effect:
   intact.
 - Separates credential stores.
 - Limits accidental writes to unrelated user-owned files.
+- Verified broker boundary: the console-only `launch-as-broker` path creates an
+  independent logon session, so the child lacks the developer's shared logon
+  SID and cannot use that default-DACL grant for process-memory reads or
+  termination.
+- Verified desktop boundary: console I/O uses only ConPTY and named pipes; the
+  child never enters the developer's interactive window station or desktop, so
+  the former interactive-desktop attack surface is removed.
 
 Limitations:
 
@@ -131,12 +138,9 @@ Limitations:
   developer profile.
 - Does not stop a malicious build process from abusing any credential available
   to `AgentSandbox`.
-- A cross-user launcher can still put `AgentSandbox` in the developer's logon
-  session. If its token carries that logon SID, process-object DACLs that grant
-  the SID can permit memory-read or terminate-capable process handles.
-- A process with access to the interactive `Winsta0\Default` desktop can reach
-  UI objects outside its user profile. `sandbox-surfaces` reports the observable
-  process and desktop access, but does not remove it. Use a VM for this boundary.
+- This remains blast-radius reduction, not hard containment. Use a VM for
+  adversarial code, a local administrator, kernel malware, or a boundary that
+  must be independently enforced.
 
 ### Fixed writable workspace
 

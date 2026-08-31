@@ -19,9 +19,9 @@ start your coding agent as needed.
    that disables bypass/auto modes, restricts web, hooks, MCP, plugin-sideload,
    and agent-control-file surfaces, and pre-approves routine read-only Git and
    build verbs.
-3. **`Start-AgentSandbox.ps1`** (normal privilege, per session) uses
-   `launch-as` to start a plain PowerShell 7 terminal as the sandbox user and
-   keeps launch errors visible.
+3. **`Start-AgentSandbox.ps1`** (normal privilege, per session) uses the
+   installed `launch-as` broker to start a plain PowerShell 7 terminal as the
+   sandbox user in an independent logon session and keeps launch errors visible.
 4. **`Check-AgentSandbox.ps1`** (read-only) verifies account, ACL, firewall,
    shell commands, policy, workspace, and toolchain state. It prints
    PASS/WARN/FAIL and exits non-zero on FAIL.
@@ -32,9 +32,11 @@ start your coding agent as needed.
 
 Setup creates `AgentSandbox` when absent and:
 
+- Enrolls the account with `launch-as-broker`, which owns a temporary per-launch
+  password; the launcher and its caller never receive that password.
 - Denies network and RDP logon; sets password-never-expires and
   user-cannot-change-password; hides the user from the sign-in screen; leaves
-  interactive logon enabled because the launcher needs it.
+  interactive logon enabled because the broker needs it.
 - Prompts for a workspace base directory (default `C:\dev`), creates
   `C:\dev\AgentSandbox`, and grants that user Modify access to the tree.
 - Warns if your profile is readable by Users or Everyone.
@@ -42,9 +44,10 @@ Setup creates `AgentSandbox` when absent and:
   `5985-5986`, while leaving web/HTTPS available for agents, Git, and internal
   services.
 - Records configuration in `C:\ProgramData\agent-win-sandbox\config.json`;
-  installs the launcher, checker, shell commands, and verified `launch-as.exe`
-  under `C:\ProgramData\agent-win-sandbox`; and makes them admin-write /
-  Users-RX.
+  installs the launcher, checker, shell commands, and verified `launch-as`
+  client/admin tools under `C:\ProgramData\agent-win-sandbox`; installs the
+  protected broker service under Program Files; and makes its local artifacts
+  admin-write / Users-RX.
 
 Optional policy deployment writes
 `C:\Program Files\ClaudeCode\managed-settings.json`, makes it admin-write /
@@ -118,9 +121,11 @@ Run from an elevated PowerShell:
 ```
 
 Setup prompts for the workspace base (Enter accepts `C:\dev`), confirmation to
-reuse an existing workspace, a password twice when creating the user, and
-optional managed-settings deployment. The password must meet the local or
-domain Windows password policy.
+reuse an existing workspace, and optional managed-settings deployment. It
+installs and enrolls the broker-managed account without displaying its password.
+It refuses a legacy Agent Sandbox installation: uninstall the earlier Agent
+Sandbox version first, then run setup again. This version's removal script also
+refuses legacy state.
 
 Start the sandbox:
 
@@ -139,9 +144,9 @@ On first use, configure each agent and source-control credential separately
 with minimal scopes and expiry.
 
 For daily use, start the shortcut or the launcher above from a normal PowerShell
-session. Windows Credential UI requests the `AgentSandbox` password when no
-usable stored credential exists; then run the agent or `devshell` command you
-need.
+session. The broker starts the enrolled console in the same pane without a
+password prompt. An enrolled account permits one active session at a time; then
+run the agent or `devshell` command you need.
 
 ## Removal
 
@@ -153,23 +158,24 @@ Run from an elevated PowerShell:
 
 This removes the sandbox account and profile, including its per-user agent
 installs, settings, and Copilot PAT environment variable. It also removes
-generated ProgramData state, account-scoped firewall rules, hidden-login
+the broker enrollment, generated ProgramData state, account-scoped firewall rules, hidden-login
 registry value, and desktop shortcuts. It keeps the workspace—for example,
 `C:\dev\AgentSandbox`—and its ACLs. Close all Agent Sandbox terminals first;
 removal stops before changing state when the `AgentSandbox` profile is still
 loaded.
 
-## Credential handling
+## Broker-managed account
 
-`launch-as` starts an interactive console as `AgentSandbox` and opens Windows
-Credential UI for its password. If the initiating user chooses **Remember**,
-Windows Credential Manager stores it for that initiating user; the sandbox user
-cannot read it. Failed or cancelled launches print an error and wait for Enter.
+`launch-as-broker` owns the `AgentSandbox` password. For each console launch it
+generates a temporary password, uses it only to create an independent logon
+session, then discards it. The launcher never prompts for, reads, stores, or
+sends that password. The console remains in the caller's terminal pane through
+the broker's terminal bridge, but the child is not placed on the caller's
+interactive desktop.
 
-Use a stable password that meets local or domain policy. The launcher does not
-randomize it on each start: that would require elevation for daily use, turn the
-launcher into a privileged broker, and create more failure modes. Keeping setup
-elevated and launches non-elevated is intentional.
+The preview is console-only: GUI applications are not supported. The broker
+allows one active session for an enrolled account; a second launch fails rather
+than sharing its profile or credential lifecycle.
 
 The Copilot PAT is currently stored as plaintext in the sandbox user's
 environment. This separates it from the developer's identity but does not hide

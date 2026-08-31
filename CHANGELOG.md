@@ -3,9 +3,10 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
-## Unreleased
+## 0.7.0 — 2026-08-31
 
 - Added: `sandbox-surfaces`, a read-only diagnostic for interactive desktop and cross-user process-handle exposure, plus a controlled surface canary for evidence-bounded reproduction.
+- Changed: Replaced credential-based `launch-as` launches with the `v1.0.0-preview` broker. Setup enrolls `AgentSandbox`; daily console launches are passwordless, use an independent logon session, and permit one active session per account. Legacy installations must be removed before setup. This effectively reduces attack surfaces.
 
 ## 0.6.0 — 2026-08-06
 

@@ -11,11 +11,11 @@
     Part of agent-win-sandbox. Assumes Setup-AgentSandbox.ps1 has provisioned
     the low-priv user, sandbox ACLs, config, and shell initializer.
 
-    Launch uses the bundled launch-as.exe helper. It starts an interactive
-    console with the target user's token and uses Windows Credential UI to
-    obtain or update the target account credential when required. The shell
-    exposes commands for the Developer Shell, Claude Code, Copilot CLI, and the
-    sandbox checker.
+    Launch uses the bundled launch-as.exe client and the installed launch-as
+    broker service. The broker owns a short-lived account password and starts a
+    console in an independent logon session without exposing that credential to
+    this script or its caller. The shell exposes commands for the Developer
+    Shell, Claude Code, Copilot CLI, and the sandbox checker.
 
 .EXAMPLE
     & "$env:ProgramData\agent-win-sandbox\Start-AgentSandbox.ps1"
@@ -162,14 +162,13 @@ Write-Host "Configured sandbox path: $sandboxPath" -ForegroundColor Cyan
 
 # --- Launch -------------------------------------------------------------------
 Write-Host "Launching Agent Sandbox as '$UserName' in $sandboxPath ..." -ForegroundColor Green
-Write-Host '(Windows Credential UI appears if launch-as needs a credential.)' -ForegroundColor DarkGray
+Write-Host '(launch-as uses the installed broker; no password prompt is expected.)' -ForegroundColor DarkGray
 
 Enable-CtrlBreakGuard
 try {
     & $LaunchAsExe `
         --user $UserName `
         --working-directory $sandboxPath `
-        --terminal `
         -- $PwshExe -NoLogo -NoExit -NoProfile -ExecutionPolicy Bypass -File $ShellInitScript
     $launchAsExitCode = $LASTEXITCODE
 }

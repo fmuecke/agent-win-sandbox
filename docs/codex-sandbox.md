@@ -94,10 +94,11 @@ stored user file and reruns setup/refresh.
 
 Agent Sandbox implication:
 
-- launch-as can request the sandbox password through Windows Credential UI and
-  optionally store it in the launching user's Credential Manager.
-- A Codex-style launcher would need protected, machine-managed sandbox
-  credentials, plus careful ACL protection around that state.
+- The brokered `launch-as` preview keeps the sandbox password inside its
+  protected LocalSystem service. Its client never requests or stores that
+  password, and the broker creates a separate logon session for console tools.
+- A Codex-style launcher still needs protected, machine-managed sandbox
+  credentials and a separately verified broker/service boundary.
 
 ### 3. Setup Markers and Refresh
 

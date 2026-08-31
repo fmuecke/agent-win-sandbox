@@ -2,7 +2,7 @@
 
 Current decisions and open work. Personal and career discussions are excluded.
 
-_Last updated: 2026-08-05_
+_Last updated: 2026-08-31_
 
 ## Decisions
 
@@ -13,15 +13,15 @@ _Last updated: 2026-08-05_
 - **Threat model:** blast-radius reduction on a trusted machine, not hard
   containment against an attacker with your privileges. Managed settings are
   defense in depth; ACLs are the enforcement layer.
-- **Use `launch-as.exe`, not `runas.exe` or `Start-Process -Credential`.** It
-  launches an interactive target-user console and verifies the target token
-  before resuming the child.
-- **Credential storage is optional.** Credential UI may store the generic
-  credential only for the regular user who launches the sandbox, never for
-  `AgentSandbox`.
-- **Use a stable, policy-compliant password.** Per-launch random resets require
-  elevation, make daily launch a privileged broker, add failure points, and may
-  disrupt password-tied user state. Setup is elevated; daily launch is not.
+- **Use brokered `launch-as.exe`, not `runas.exe` or
+  `Start-Process -Credential`.** The LocalSystem broker starts a console child
+  in an independent logon session and noninteractive desktop.
+- **The broker owns the password.** It generates a per-launch password, uses it
+  only to log on the enrolled account, then discards it. Daily launch never
+  receives, stores, or prompts for that password.
+- **Console-only preview.** The broker keeps terminal I/O in the caller's pane,
+  permits one active session per enrolled account, and does not support GUI
+  applications.
 - **Keep interactive logon enabled** because the launcher needs it; deny network
   and RDP logon, hide the account from the sign-in screen, and set
   password-never-expires and user-cannot-change-password.
@@ -34,8 +34,9 @@ _Last updated: 2026-08-05_
 
 ### Filesystem and setup state
 
-- **Control plane:** keep config, launcher, `launch-as`, checker, and bootstrap
-  in `C:\ProgramData\agent-win-sandbox`; keep managed settings in
+- **Control plane:** keep config, launcher, `launch-as` client/admin tools,
+  checker, and bootstrap in `C:\ProgramData\agent-win-sandbox`; keep the
+  broker service in Program Files and managed settings in
   `C:\Program Files\ClaudeCode\managed-settings.json`. These files are
   admin-write and Users-RX/read, preventing sandbox-user poisoning. Program
   Files is required because current Claude Code no longer supports the legacy

@@ -35,6 +35,8 @@ $ErrorActionPreference = 'Stop'
 $UserName = 'AgentSandbox'   # baked in; not configurable
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$LaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
+$LaunchAsVersion = 'v1.0.0-preview'
 $ShortcutPaths = @(
     (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
@@ -60,6 +62,31 @@ function Get-ConfiguredSandboxPath {
     }
 
     return $null
+}
+
+function Stop-IfLegacyInstallationPresent {
+    $hasConfig = Test-Path -LiteralPath $ConfigFile -PathType Leaf
+    $hasClient = Test-Path -LiteralPath (Join-Path $ProgramDataRoot 'launch-as.exe') -PathType Leaf
+    $hasUser = $null -ne (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)
+
+    if (-not $hasConfig -and -not $hasClient -and -not $hasUser) {
+        return
+    }
+    if (-not $hasConfig -or -not $hasClient) {
+        throw "A legacy or incomplete Agent Sandbox installation was found. This removal script supports only launch-as $LaunchAsVersion and will not alter the account or files. Uninstall the matching earlier Agent Sandbox version first."
+    }
+
+    try {
+        $installedConfig = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
+        $installedVersion = [string]$installedConfig.setup.launchAsVersion
+    }
+    catch {
+        throw "An unreadable Agent Sandbox installation was found. This removal script will not alter it. Uninstall the matching earlier Agent Sandbox version first."
+    }
+
+    if ($installedVersion -ne $LaunchAsVersion) {
+        throw "Agent Sandbox uses launch-as '$installedVersion'. This removal script supports only launch-as $LaunchAsVersion and will not alter it. Uninstall the matching earlier Agent Sandbox version first."
+    }
 }
 
 function Remove-SandboxFirewallRules {
@@ -111,6 +138,7 @@ function Remove-SandboxShortcut {
 }
 
 # --- 0. Resolve current state -------------------------------------------------
+Stop-IfLegacyInstallationPresent
 $ResolvedSandboxPath = Get-ConfiguredSandboxPath
 $user = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
 $sid = if ($user) { $user.SID.Value } else { $null }
@@ -119,6 +147,38 @@ $profile = if ($sid) {
 }
 else {
     $null
+}
+
+function Test-BrokerManagedSandbox {
+    if (-not (Test-Path -LiteralPath $ConfigFile -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
+        return [string]$config.setup.launchAsVersion -eq $LaunchAsVersion
+    }
+    catch {
+        Write-Warning "Could not read launch-as version from ${ConfigFile}: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Unenroll-SandboxBrokerAccount {
+    if (-not (Test-BrokerManagedSandbox)) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $LaunchAsAdminExe -PathType Leaf)) {
+        throw "launch-as broker administration tool is missing: $LaunchAsAdminExe. Refusing to delete broker-managed '$UserName' without unenrolling it."
+    }
+
+    if ($PSCmdlet.ShouldProcess("broker-managed account '$UserName'", 'Unenroll')) {
+        & $LaunchAsAdminExe unenroll $UserName --force
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not unenroll broker-managed '$UserName' (exit code $LASTEXITCODE)."
+        }
+        Write-Removed "launch-as broker enrollment for '$UserName'"
+    }
 }
 
 if ($profile -and $profile.Loaded) {
@@ -156,18 +216,22 @@ if (-not $Force -and -not $WhatIfPreference) {
     }
 }
 
-# --- 1. Remove account-scoped hardening artifacts ----------------------------
+# --- 1. Unenroll the broker-managed account ----------------------------------
+Write-Step "Unenrolling broker-managed account '$UserName'"
+Unenroll-SandboxBrokerAccount
+
+# --- 2. Remove account-scoped hardening artifacts ----------------------------
 Write-Step "Removing account-scoped firewall rules"
 Remove-SandboxFirewallRules
 
 Write-Step "Removing login-screen hiding entry"
 Remove-SandboxLoginScreenEntry
 
-# --- 2. Remove launcher shortcut ---------------------------------------------
+# --- 3. Remove launcher shortcut ---------------------------------------------
 Write-Step "Removing desktop shortcut"
 Remove-SandboxShortcut
 
-# --- 3. Remove sandbox user profile ------------------------------------------
+# --- 4. Remove sandbox user profile ------------------------------------------
 Write-Step "Removing user profile for '$UserName'"
 if (-not $profile) {
     Write-Skipped "user profile (not found)"
@@ -177,7 +241,7 @@ elseif ($PSCmdlet.ShouldProcess("user profile '$($profile.LocalPath)'", 'Remove'
     Write-Removed "user profile: $($profile.LocalPath)"
 }
 
-# --- 4. Remove the local sandbox user ----------------------------------------
+# --- 5. Remove the local sandbox user ----------------------------------------
 Write-Step "Removing local user '$UserName'"
 if ($user) {
     if ($PSCmdlet.ShouldProcess("local user '$UserName'", 'Remove')) {
@@ -189,7 +253,7 @@ else {
     Write-Skipped "local user '$UserName' (not found)"
 }
 
-# --- 5. Remove generated ProgramData files -----------------------------------
+# --- 6. Remove generated ProgramData files -----------------------------------
 Write-Step "Removing ProgramData sandbox files"
 if (Test-Path $ProgramDataRoot) {
     if ($PSCmdlet.ShouldProcess($ProgramDataRoot, 'Remove generated ProgramData files recursively')) {
@@ -201,7 +265,7 @@ else {
     Write-Skipped "$ProgramDataRoot (not found)"
 }
 
-# --- 6. Done ------------------------------------------------------------------
+# --- 7. Done ------------------------------------------------------------------
 Write-Step "Removal complete"
 $workspaceMessage = if ([string]::IsNullOrWhiteSpace($ResolvedSandboxPath)) {
     '  (unknown - config was missing or unreadable before ProgramData cleanup)'

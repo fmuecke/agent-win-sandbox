@@ -21,6 +21,8 @@ Of course any other agent like OpenCode can be installed within the Agent Sandbo
 
 - Separates agent credentials, configuration, and installation into
   `C:\Users\AgentSandbox`.
+- Runs console agents through a passwordless broker in an independent logon
+  session and noninteractive desktop.
 - Limits expected agent writes to the sandbox workspace.
 - Protects the launcher, `launch-as`, bootstrap, checker, and managed-settings
   files in admin-write locations.
@@ -52,7 +54,13 @@ Run once from an elevated PowerShell:
 Setup optionally deploys the Claude Code managed settings to
 `C:\Program Files\ClaudeCode\managed-settings.json`; it asks before replacing an
 existing file because this policy is machine-wide and shared by every Claude
-Code user. It also creates the `Agent Sandbox` Public Desktop shortcut.
+Code user. It installs and enrolls the `launch-as` broker, then creates the
+`Agent Sandbox` Public Desktop shortcut.
+
+The broker preview cannot reuse an account from an earlier Agent Sandbox
+installation. Setup detects that state and stops; uninstall the earlier Agent
+Sandbox version first, then run setup again. This version's removal script also
+refuses legacy state. The shared workspace remains untouched by removal.
 
 Start the sandbox with that shortcut, or run:
 
@@ -92,8 +100,9 @@ copilot -ClearToken
 
 ## Daily use
 
-Open `Agent Sandbox`. On first launch, Windows Credential UI asks for the
-`AgentSandbox` password and can save it for later starts. Run `sandbox-help`,
+Open `Agent Sandbox`. The installed `launch-as-broker` starts an enrolled
+`AgentSandbox` console in the current terminal pane without a password prompt.
+One account supports one active sandbox session at a time. Run `sandbox-help`,
 then start the agent or Developer Shell you need.
 
 ## Removal
@@ -105,7 +114,7 @@ Run from an elevated PowerShell:
 ```
 
 This removes the sandbox user and profile, generated ProgramData state,
-firewall rules, and shortcut. It keeps the workspace, such as
+firewall rules, broker enrollment, and shortcut. It keeps the workspace, such as
 `C:\dev\AgentSandbox`. 
 
 ## Important notes
