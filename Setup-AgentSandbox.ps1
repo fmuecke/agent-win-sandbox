@@ -42,6 +42,7 @@ $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
 $LauncherSource = Join-Path $PSScriptRoot 'Start-AgentSandbox.ps1'
 $CheckerSource = Join-Path $PSScriptRoot 'Check-AgentSandbox.ps1'
+$SurfaceCheckSource = Join-Path $PSScriptRoot 'Test-AgentSandboxAttackSurfaces.ps1'
 $ShellInitSource = Join-Path $PSScriptRoot 'bootstrap\Initialize-AgentSandboxShell.ps1'
 $DevShellSource = Join-Path $PSScriptRoot 'bootstrap\Enter-DevShell.ps1'
 $ClaudeWrapperSource = Join-Path $PSScriptRoot 'scripts\claude-wrapper.ps1'
@@ -49,6 +50,7 @@ $CopilotWrapperSource = Join-Path $PSScriptRoot 'scripts\copilot-wrapper.ps1'
 $ManagedSettingsSource = Join-Path $PSScriptRoot 'managed-settings.json'
 $LauncherScript = Join-Path $ProgramDataRoot 'Start-AgentSandbox.ps1'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
+$SurfaceCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxAttackSurfaces.ps1'
 $BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
 $ShellInitScript = Join-Path $BootstrapRoot 'Initialize-AgentSandboxShell.ps1'
 $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
@@ -561,6 +563,7 @@ if (-not (Test-Path $bootstrapDir)) { New-Item -ItemType Directory -Path $bootst
 $launchArtifacts = @(
     [pscustomobject]@{ Name = 'launcher'; Source = $LauncherSource; Destination = $LauncherScript },
     [pscustomobject]@{ Name = 'checker'; Source = $CheckerSource; Destination = $CheckerScript },
+    [pscustomobject]@{ Name = 'attack-surface diagnostic'; Source = $SurfaceCheckSource; Destination = $SurfaceCheckScript },
     [pscustomobject]@{ Name = 'shell initializer'; Source = $ShellInitSource; Destination = $ShellInitScript },
     [pscustomobject]@{ Name = 'Developer Shell command'; Source = $DevShellSource; Destination = $DevShellScript },
     [pscustomobject]@{ Name = 'Claude command'; Source = $ClaudeWrapperSource; Destination = $ClaudeWrapperScript },
@@ -590,6 +593,7 @@ foreach ($protectedFile in @(
         $ConfigFile,
         $LauncherScript,
         $CheckerScript,
+        $SurfaceCheckScript,
         $ShellInitScript,
         $DevShellScript,
         $ClaudeWrapperScript,

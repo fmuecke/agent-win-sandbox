@@ -12,6 +12,7 @@ $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapper = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapper = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $CheckScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
+$SurfaceCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxAttackSurfaces.ps1'
 
 function Stop-ShellInitialization {
     param([string]$Message)
@@ -140,7 +141,7 @@ if ([string]::IsNullOrWhiteSpace($SandboxPath) -or -not (Test-Path $SandboxPath)
     Stop-ShellInitialization "Sandbox path is missing or does not exist: $SandboxPath"
 }
 
-foreach ($commandScript in @($DevShellScript, $ClaudeWrapper, $CopilotWrapper, $CheckScript)) {
+foreach ($commandScript in @($DevShellScript, $ClaudeWrapper, $CopilotWrapper, $CheckScript, $SurfaceCheckScript)) {
     if (-not (Test-Path $commandScript -PathType Leaf)) {
         Stop-ShellInitialization "Sandbox command missing: $commandScript"
     }
@@ -155,6 +156,7 @@ Set-Alias -Name devshell -Value $DevShellScript -Scope Global
 Set-Alias -Name claude -Value $ClaudeWrapper -Scope Global
 Set-Alias -Name copilot -Value $CopilotWrapper -Scope Global
 Set-Alias -Name sandbox-check -Value $CheckScript -Scope Global
+Set-Alias -Name sandbox-surfaces -Value $SurfaceCheckScript -Scope Global
 
 function global:sandbox-help {
     Write-Host @'
@@ -163,6 +165,7 @@ Agent Sandbox commands:
   claude         Install, update, or launch Claude Code
   copilot        Install, update, or launch GitHub Copilot CLI
   sandbox-check  Check the sandbox configuration
+  sandbox-surfaces  Check interactive process and desktop exposure
   sandbox-help   Show this help
 '@ -ForegroundColor Cyan
 }

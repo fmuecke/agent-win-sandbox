@@ -3,6 +3,10 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
+## Unreleased
+
+- Added: `sandbox-surfaces`, a read-only diagnostic for interactive desktop and cross-user process-handle exposure, plus a controlled surface canary for evidence-bounded reproduction.
+
 ## 0.6.0 — 2026-08-06
 
 - Changed: This is now called `agent-win-sandbox` respective `AgentSandbox` as

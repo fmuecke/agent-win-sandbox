@@ -67,12 +67,15 @@ devshell       # Enter the Visual Studio Developer Shell
 claude         # Install, update, or launch Claude Code
 copilot        # Install, update, or launch GitHub Copilot CLI
 sandbox-check  # Check the sandbox configuration
+sandbox-surfaces # Check interactive process and desktop exposure
 sandbox-help   # Show these commands
 ```
 
 `claude` installs Claude Code per-user through Anthropic's native installer.
 `copilot` downloads GitHub's latest Windows x64 release into `~\.local\bin` and
 verifies it against the release's `SHA256SUMS.txt`. No npm or WinGet is used.
+`sandbox-surfaces` is a non-destructive diagnostic, not a mitigation: it only
+reports process-handle and desktop access currently granted to the session.
 
 On first Copilot launch, enter a user-owned fine-grained PAT with
 `Copilot Requests` as its only added permission and minimal repository access.

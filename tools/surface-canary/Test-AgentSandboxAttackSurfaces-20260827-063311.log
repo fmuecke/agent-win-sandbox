@@ -1,0 +1,124 @@
+Read-only diagnostic: no memory is read, no process is terminated, and no input is sent.
+
+== Current token ==
+Token user: S-1-5-21-1058257194-2855242115-1266228386-1010
+Logon SID(s): S-1-5-5-0-792471810
+
+== Surface 1: desktop reach ==
+Current desktop: CodexSandboxDesktop-16c0ece1b634e77d74c482528621d5e8
+[INFO] The command did not start on a desktop named Default.
+[EXPOSED] The token can open the active input desktop for object enumeration.
+[EXPOSED] The token can open the active input desktop with DESKTOP_WRITEOBJECTS.
+
+== Surface 2: other-user process reach ==
+
+Target                                                               SharedLogonSid AllowedAccess
+------                                                               -------------- -------------
+WhatsApp.Root (572)                                                  yes            VM_READ, TERMINATE
+dllhost (2120)                                                       yes            VM_READ, TERMINATE
+CrossDeviceResume (2484)                                             yes            VM_READ, TERMINATE
+msedgewebview2 (2808)                                                yes            VM_READ, TERMINATE
+iCloudHome (2876)                                                    yes            VM_READ, TERMINATE
+msedgewebview2 (3440)                                                yes            VM_READ, TERMINATE
+PowerToys.FancyZones (3764)                                          yes            VM_READ, TERMINATE
+WindowsTerminal (4200)                                               yes            VM_READ, TERMINATE
+launch-as (4976)                                                     yes            VM_READ, TERMINATE
+PowerToys.AdvancedPaste (5744)                                       yes            VM_READ, TERMINATE
+SearchHost (6184)                                                    yes            VM_READ, TERMINATE
+Code (6384)                                                          yes            VM_READ, TERMINATE
+LockApp (6456)                                                       yes            VM_READ, TERMINATE
+dllhost (6672)                                                       yes            VM_READ, TERMINATE
+CodeSetup-stable-08d4889f9ec4a1685d257b9b95de036c8e1ce1e5.tmp (7660) yes            VM_READ, TERMINATE
+taskhostw (8932)                                                     yes            VM_READ, TERMINATE
+Microsoft.CmdPal.UI (9388)                                           yes            VM_READ, TERMINATE
+codex (9428)                                                         yes            VM_READ, TERMINATE
+pwsh (9800)                                                          yes            VM_READ, TERMINATE
+TOTALCMD64 (9904)                                                    yes            VM_READ, TERMINATE
+pwsh (9908)                                                          yes            VM_READ, TERMINATE
+Code (10036)                                                         yes            VM_READ, TERMINATE
+StartMenuExperienceHost (10420)                                      yes            VM_READ, TERMINATE
+Code (10888)                                                         yes            VM_READ, TERMINATE
+MicrosoftStartFeedProvider (11580)                                   yes            VM_READ, TERMINATE
+AppleMobileDeviceProcess (12336)                                     yes            VM_READ, TERMINATE
+Joplin (12476)                                                       yes            VM_READ, TERMINATE
+dllhost (12680)                                                      yes            VM_READ, TERMINATE
+sihost (13420)                                                       yes            VM_READ, TERMINATE
+conhost (13444)                                                      yes            VM_READ, TERMINATE
+OneDrive.Sync.Service (13640)                                        yes            VM_READ, TERMINATE
+MicrosoftSecurityApp (14180)                                         yes            VM_READ, TERMINATE
+iCloudCKKS (14236)                                                   yes            VM_READ, TERMINATE
+Joplin (14356)                                                       yes            VM_READ, TERMINATE
+msedge (14620)                                                       yes            VM_READ, TERMINATE
+SecurityHealthSystray (14808)                                        yes            VM_READ, TERMINATE
+launch-as (15376)                                                    yes            VM_READ, TERMINATE
+OpenConsole (15636)                                                  yes            TERMINATE
+msedgewebview2 (16192)                                               yes            VM_READ, TERMINATE
+AppActions (16456)                                                   yes            VM_READ, TERMINATE
+bvckup2 (16536)                                                      yes            TERMINATE
+powershell (17452)                                                   yes            VM_READ, TERMINATE
+nvcontainer (18000)                                                  yes            VM_READ, TERMINATE
+Joplin (18188)                                                       yes            VM_READ, TERMINATE
+OpenConsole (18424)                                                  yes            VM_READ, TERMINATE
+ONENOTEM (18644)                                                     yes            VM_READ, TERMINATE
+PowerToys (18872)                                                    yes            VM_READ, TERMINATE
+cmd (19656)                                                          yes            VM_READ, TERMINATE
+msedgewebview2 (20932)                                               yes            VM_READ, TERMINATE
+notepad++ (20988)                                                    yes            VM_READ, TERMINATE
+Joplin (21036)                                                       yes            VM_READ, TERMINATE
+Code (22104)                                                         yes            VM_READ, TERMINATE
+conhost (22152)                                                      yes            VM_READ, TERMINATE
+msedge (22276)                                                       yes            VM_READ, TERMINATE
+PowerToys.QuickAccess (22432)                                        yes            VM_READ, TERMINATE
+conhost (22792)                                                      yes            VM_READ, TERMINATE
+CodeSetup-stable-08d4889f9ec4a1685d257b9b95de036c8e1ce1e5 (23332)    yes            VM_READ, TERMINATE
+PowerToys.Awake (24204)                                              yes            VM_READ, TERMINATE
+APSDaemon (24924)                                                    yes            VM_READ, TERMINATE
+msedge (25756)                                                       yes            VM_READ, TERMINATE
+ShellHost (27144)                                                    yes            VM_READ, TERMINATE
+msedgewebview2 (27208)                                               yes            VM_READ, TERMINATE
+OneDrive (27276)                                                     yes            VM_READ, TERMINATE
+msedge (27600)                                                       yes            VM_READ, TERMINATE
+explorer (28084)                                                     yes            VM_READ, TERMINATE
+PowerToys.Peek.UI (28440)                                            yes            VM_READ, TERMINATE
+Code (28476)                                                         yes            VM_READ, TERMINATE
+dllhost (28504)                                                      yes            VM_READ, TERMINATE
+Joplin (28700)                                                       yes            VM_READ, TERMINATE
+WidgetService (28728)                                                yes            VM_READ, TERMINATE
+dllhost (29032)                                                      yes            VM_READ, TERMINATE
+WindowsTerminal (29076)                                              yes            TERMINATE
+ApplePhotoStreams (29332)                                            yes            VM_READ, TERMINATE
+codex-code-mode-host (29596)                                         yes            VM_READ, TERMINATE
+ctfmon (29988)                                                       yes            TERMINATE
+OpenConsole (30132)                                                  yes            VM_READ, TERMINATE
+conhost (30836)                                                      yes            VM_READ, TERMINATE
+Microsoft.CmdPal.Ext.PowerToys (30944)                               yes            VM_READ, TERMINATE
+powershell (31340)                                                   yes            TERMINATE
+Code (31756)                                                         yes            VM_READ, TERMINATE
+iCloudOutlookConfig64 (31772)                                        yes            VM_READ, TERMINATE
+WidgetBoard (31880)                                                  yes            VM_READ, TERMINATE
+OpenConsole (32004)                                                  yes            VM_READ, TERMINATE
+SystemSettings (32556)                                               yes            VM_READ, TERMINATE
+dllhost (33224)                                                      yes            VM_READ, TERMINATE
+dllhost (33980)                                                      yes            VM_READ, TERMINATE
+iCloudDrive (34016)                                                  yes            VM_READ, TERMINATE
+TextInputHost (34420)                                                yes            VM_READ, TERMINATE
+secd (34576)                                                         yes            VM_READ, TERMINATE
+pwsh (34588)                                                         yes            VM_READ, TERMINATE
+Code (35012)                                                         yes            VM_READ, TERMINATE
+PowerToys.LightSwitchService (35652)                                 yes            VM_READ, TERMINATE
+Code (35972)                                                         yes            VM_READ, TERMINATE
+Code (36496)                                                         yes            VM_READ, TERMINATE
+OpenConsole (36552)                                                  yes            VM_READ, TERMINATE
+msedgewebview2 (36840)                                               yes            VM_READ, TERMINATE
+AppVShNotify (36960)                                                 yes            VM_READ, TERMINATE
+conhost (38472)                                                      yes            VM_READ, TERMINATE
+
+[EXPOSED] A different user in this session shares the logon SID and accepted a VM-read and/or terminate-capable handle.
+
+== Risk interpretation ==
+[RISK] Desktop reach can expose on-screen/UI information and may enable actions through interactive-user applications.
+       It does not prove a successful screen capture or input injection; UIPI and the UAC secure desktop can restrict some paths.
+[RISK] VM_READ can disclose plaintext in another process; TERMINATE can cause data loss or disrupt tools.
+       The result does not prove code injection or privilege escalation, which require additional process rights.
+
+A successful handle only proves authorization. This diagnostic does not use the handle to read memory or terminate a process.

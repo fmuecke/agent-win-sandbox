@@ -131,6 +131,12 @@ Limitations:
   developer profile.
 - Does not stop a malicious build process from abusing any credential available
   to `AgentSandbox`.
+- A cross-user launcher can still put `AgentSandbox` in the developer's logon
+  session. If its token carries that logon SID, process-object DACLs that grant
+  the SID can permit memory-read or terminate-capable process handles.
+- A process with access to the interactive `Winsta0\Default` desktop can reach
+  UI objects outside its user profile. `sandbox-surfaces` reports the observable
+  process and desktop access, but does not remove it. Use a VM for this boundary.
 
 ### Fixed writable workspace
 

@@ -83,6 +83,7 @@ devshell       # Activate the Visual Studio Developer Shell in this terminal
 claude         # Install, update, or launch Claude Code
 copilot        # Install, update, or launch GitHub Copilot CLI
 sandbox-check  # Run the read-only checker
+sandbox-surfaces # Run the read-only interactive-exposure diagnostic
 sandbox-help   # Show this list
 ```
 
