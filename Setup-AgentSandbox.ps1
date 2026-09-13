@@ -35,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
 $SandboxDirectoryName = 'AgentSandbox'   # baked in; not configurable
-$Version = '0.7.0'
+$Version = '0.8.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
@@ -57,9 +57,9 @@ $ClaudeWrapperScript = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapperScript = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $LaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
-$LaunchAsVersion = 'v1.0.0-preview'
-$LaunchAsDownloadUri = "https://github.com/fmuecke/launch-as/releases/download/$LaunchAsVersion/launch-as-$LaunchAsVersion-win64.zip"
-$LaunchAsSha256 = '6A97A0E3F71BC6458DCA13218188E7132513CF86E0D5EE24127A6CE66BCB97F5'
+$LaunchAsVersion = 'v1.1.0-preview'
+$LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v1.1.0-preview/launch-as-v1.1.0-preview-win64.zip'
+$LaunchAsSha256 = 'C0ACC919FB8D45E09B0F00B6EAE61CDC674120C2A2CBF7C57FD52ECC17FA237A'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
@@ -285,14 +285,14 @@ function Install-LaunchAs {
             throw "Could not list launch-as broker accounts (exit code $LASTEXITCODE)."
         }
         if ($UserName -notin $enrolledAccounts) {
-            & $releaseFiles['launch-as-admin.exe'].FullName enroll $UserName --force
+            & $releaseFiles['launch-as-admin.exe'].FullName create --takeover $UserName --force
             if ($LASTEXITCODE -ne 0) {
                 throw "Could not enroll '$UserName' with launch-as (exit code $LASTEXITCODE)."
             }
         }
 
         Write-Host "  downloaded and verified launch-as client: $ClientDestination" -ForegroundColor Green
-        Write-Host "  installed launch-as-broker and enrolled '$UserName'" -ForegroundColor Green
+        Write-Host "  installed launch-as-broker and configured '$UserName'" -ForegroundColor Green
     }
     finally {
         if (Test-Path $tempRoot) {
@@ -322,7 +322,7 @@ function Stop-IfLegacyInstallationPresent {
         throw "An unreadable Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it before installing launch-as $LaunchAsVersion."
     }
 
-    if ($installedVersion -ne $LaunchAsVersion) {
+    if ($installedVersion -ne $LaunchAsVersion -and $installedVersion -ne "v1.0.0-preview") {
         throw "Agent Sandbox uses launch-as '$installedVersion'. launch-as $LaunchAsVersion cannot share the AgentSandbox account with earlier versions. Uninstall the earlier Agent Sandbox version first, then run setup again."
     }
 }
@@ -359,7 +359,7 @@ if (Test-Path $SandboxPath) {
 }
 
 # --- 1. Install and enroll the broker-managed user ---------------------------
-Write-Step "Installing launch-as $LaunchAsVersion and enrolling '$UserName'"
+Write-Step "Installing launch-as $LaunchAsVersion and creating '$UserName'"
 if (-not (Test-Path $ProgramDataRoot)) {
     New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null
 }

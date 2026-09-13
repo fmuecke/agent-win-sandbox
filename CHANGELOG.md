@@ -3,6 +3,10 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
+## 0.7.1 — 2026-09-13
+
+- Changed: Updated the pinned `launch-as` release to `v1.1.0-preview`. Remove existing v0.6. installs before running setup. Update from 0.7.0 will work.
+
 ## 0.7.0 — 2026-08-31
 
 - Added: `sandbox-surfaces`, a read-only diagnostic for interactive desktop and cross-user process-handle exposure, plus a controlled surface canary for evidence-bounded reproduction.

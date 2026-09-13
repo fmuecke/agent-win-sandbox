@@ -72,8 +72,8 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'config.json')
 )
 
-$Version = '0.7.0'
-$LaunchAsVersion = 'v1.0.0-preview'
+$Version = '0.8.0'
+$LaunchAsVersion = 'v1.1.0-preview'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')

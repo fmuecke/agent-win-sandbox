@@ -36,7 +36,7 @@ $UserName = 'AgentSandbox'   # baked in; not configurable
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
-$LaunchAsVersion = 'v1.0.0-preview'
+$LaunchAsVersion = 'v1.1.0-preview'
 $ShortcutPaths = @(
     (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
@@ -84,7 +84,7 @@ function Stop-IfLegacyInstallationPresent {
         throw "An unreadable Agent Sandbox installation was found. This removal script will not alter it. Uninstall the matching earlier Agent Sandbox version first."
     }
 
-    if ($installedVersion -ne $LaunchAsVersion) {
+    if ($installedVersion -ne $LaunchAsVersion -and $installedVersion -ne "v1.0.0-preview" ) {
         throw "Agent Sandbox uses launch-as '$installedVersion'. This removal script supports only launch-as $LaunchAsVersion and will not alter it. Uninstall the matching earlier Agent Sandbox version first."
     }
 }

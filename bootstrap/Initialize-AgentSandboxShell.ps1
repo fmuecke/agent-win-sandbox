@@ -4,7 +4,7 @@
 
 # Initializes a plain PowerShell session as AgentSandbox. It deliberately does
 # not enter the Visual Studio Developer Shell or start an agent.
-$Version = '0.6.0'
+$Version = '0.8.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
