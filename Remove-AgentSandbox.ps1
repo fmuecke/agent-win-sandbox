@@ -35,8 +35,11 @@ $ErrorActionPreference = 'Stop'
 $UserName = 'AgentSandbox'   # baked in; not configurable
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
-$LaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
-$LaunchAsVersion = 'v1.1.0-preview'
+$LaunchAsAdminExe = Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as-admin.exe'
+$LegacyLaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
+$LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
+$LaunchAsVersion = 'v1.2.0-preview'
+$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview')
 $ShortcutPaths = @(
     (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
@@ -66,13 +69,14 @@ function Get-ConfiguredSandboxPath {
 
 function Stop-IfLegacyInstallationPresent {
     $hasConfig = Test-Path -LiteralPath $ConfigFile -PathType Leaf
-    $hasClient = Test-Path -LiteralPath (Join-Path $ProgramDataRoot 'launch-as.exe') -PathType Leaf
+    $hasInstalledClient = Test-Path -LiteralPath (Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as.exe') -PathType Leaf
+    $hasLegacyClient = Test-Path -LiteralPath $LegacyLaunchAsExe -PathType Leaf
     $hasUser = $null -ne (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)
 
-    if (-not $hasConfig -and -not $hasClient -and -not $hasUser) {
+    if (-not $hasConfig -and -not $hasLegacyClient -and -not $hasUser) {
         return
     }
-    if (-not $hasConfig -or -not $hasClient) {
+    if (-not $hasConfig -or (-not $hasInstalledClient -and -not $hasLegacyClient)) {
         throw "A legacy or incomplete Agent Sandbox installation was found. This removal script supports only launch-as $LaunchAsVersion and will not alter the account or files. Uninstall the matching earlier Agent Sandbox version first."
     }
 
@@ -84,7 +88,7 @@ function Stop-IfLegacyInstallationPresent {
         throw "An unreadable Agent Sandbox installation was found. This removal script will not alter it. Uninstall the matching earlier Agent Sandbox version first."
     }
 
-    if ($installedVersion -ne $LaunchAsVersion -and $installedVersion -ne "v1.0.0-preview" ) {
+    if ($installedVersion -notin $SupportedLaunchAsVersions) {
         throw "Agent Sandbox uses launch-as '$installedVersion'. This removal script supports only launch-as $LaunchAsVersion and will not alter it. Uninstall the matching earlier Agent Sandbox version first."
     }
 }
@@ -156,7 +160,7 @@ function Test-BrokerManagedSandbox {
 
     try {
         $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
-        return [string]$config.setup.launchAsVersion -eq $LaunchAsVersion
+        return [string]$config.setup.launchAsVersion -in $SupportedLaunchAsVersions
     }
     catch {
         Write-Warning "Could not read launch-as version from ${ConfigFile}: $($_.Exception.Message)"
@@ -164,16 +168,36 @@ function Test-BrokerManagedSandbox {
     }
 }
 
+function Get-ConfiguredLaunchAsVersion {
+    $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
+    return [string]$config.setup.launchAsVersion
+}
+
+function Get-LaunchAsAdminExecutable {
+    if (Test-Path -LiteralPath $LaunchAsAdminExe -PathType Leaf) {
+        return $LaunchAsAdminExe
+    }
+    if (Test-Path -LiteralPath $LegacyLaunchAsAdminExe -PathType Leaf) {
+        return $LegacyLaunchAsAdminExe
+    }
+
+    throw "launch-as broker administration tool is missing: $LaunchAsAdminExe. Refusing to delete broker-managed '$UserName' without unenrolling it."
+}
+
 function Unenroll-SandboxBrokerAccount {
     if (-not (Test-BrokerManagedSandbox)) {
         return
     }
-    if (-not (Test-Path -LiteralPath $LaunchAsAdminExe -PathType Leaf)) {
-        throw "launch-as broker administration tool is missing: $LaunchAsAdminExe. Refusing to delete broker-managed '$UserName' without unenrolling it."
-    }
+    $launchAsAdmin = Get-LaunchAsAdminExecutable
+    $installedVersion = Get-ConfiguredLaunchAsVersion
 
     if ($PSCmdlet.ShouldProcess("broker-managed account '$UserName'", 'Unenroll')) {
-        & $LaunchAsAdminExe unenroll $UserName --force
+        if ($installedVersion -eq 'v1.0.0-preview') {
+            & $launchAsAdmin unenroll $UserName --force
+        }
+        else {
+            & $launchAsAdmin forget $UserName
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "Could not unenroll broker-managed '$UserName' (exit code $LASTEXITCODE)."
         }

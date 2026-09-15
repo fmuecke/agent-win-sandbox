@@ -54,13 +54,18 @@ Run once from an elevated PowerShell:
 Setup optionally deploys the Claude Code managed settings to
 `C:\Program Files\ClaudeCode\managed-settings.json`; it asks before replacing an
 existing file because this policy is machine-wide and shared by every Claude
-Code user. It installs and enrolls the `launch-as` broker, then creates the
-`Agent Sandbox` Public Desktop shortcut.
+Code user. It downloads and hash-verifies the `launch-as` package, then lets
+`launch-as-admin` install the broker and all command-line tools together under
+`C:\Program Files\launch-as`. It enrolls `AgentSandbox` and creates the `Agent
+Sandbox` Public Desktop shortcut. The component directory is not added to
+`PATH`; the installed launcher uses its explicit client path.
 
-The broker preview cannot reuse an account from an earlier Agent Sandbox
-installation. Setup detects that state and stops; uninstall the earlier Agent
-Sandbox version first, then run setup again. This version's removal script also
-refuses legacy state. The shared workspace remains untouched by removal.
+Setup upgrades supported brokered installations from `v1.0.0-preview`,
+`v1.1.0-preview`, and `v1.1.0`; after a successful component installation, it
+deploys the new ProgramData launcher and then removes the obsolete ProgramData
+client/admin copies. Unknown or incomplete
+installations still require removal with their matching Agent Sandbox version.
+The shared workspace remains untouched by removal.
 
 Start the sandbox with that shortcut, or run:
 
@@ -115,7 +120,8 @@ Run from an elevated PowerShell:
 
 This removes the sandbox user and profile, generated ProgramData state,
 firewall rules, broker enrollment, and shortcut. It keeps the workspace, such as
-`C:\dev\AgentSandbox`. 
+`C:\AgentSandbox`, and leaves the shared `launch-as` component installed
+because it may manage other accounts.
 
 ## Important notes
 

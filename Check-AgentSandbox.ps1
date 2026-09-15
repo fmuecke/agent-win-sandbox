@@ -27,10 +27,10 @@
     Installed launcher written by Setup-AgentSandbox.ps1.
 
 .PARAMETER LaunchAsExe
-    launch-as executable downloaded by Setup-AgentSandbox.ps1.
+    launch-as executable installed by Setup-AgentSandbox.ps1.
 
 .PARAMETER LaunchAsAdminExe
-    launch-as broker administration executable downloaded by Setup-AgentSandbox.ps1.
+    launch-as broker administration executable installed by Setup-AgentSandbox.ps1.
 
 .PARAMETER InstalledCheckScript
     Installed checker written by Setup-AgentSandbox.ps1.
@@ -63,8 +63,8 @@ param(
     [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
     [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
     [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Start-AgentSandbox.ps1'),
-    [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'launch-as.exe'),
-    [string]$LaunchAsAdminExe = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'launch-as-admin.exe'),
+    [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as.exe'),
+    [string]$LaunchAsAdminExe = (Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as-admin.exe'),
     [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Check-AgentSandbox.ps1'),
     [string]$ManagedSettings = (Join-Path (Join-Path $env:ProgramFiles 'ClaudeCode') 'managed-settings.json'),
     [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
@@ -73,7 +73,7 @@ param(
 )
 
 $Version = '0.8.0'
-$LaunchAsVersion = 'v1.1.0-preview'
+$LaunchAsVersion = 'v1.2.0-preview'
 $FirewallMode = 'BlockWindowsLanProtocols'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
@@ -582,6 +582,7 @@ else {
 
 if (Test-Path $LaunchAsExe) {
     Pass "launch-as present: $LaunchAsExe"
+    Test-AdminWriteOnlyPath -Path (Split-Path -Path $LaunchAsExe -Parent) -Description 'launch-as installation directory' -UserName $UserName
     Test-AdminWriteOnlyPath -Path $LaunchAsExe -Description 'launch-as executable' -UserName $UserName
 }
 else {
