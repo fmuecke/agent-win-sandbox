@@ -837,7 +837,7 @@ $AllCheckAreas = @('IDENTITY', 'FILES', 'SECRETS', 'PROCESSES', 'DESKTOP', 'INDI
 function Write-Diag {
     param([string]$Message)
 
-    [Console]::Error.WriteLine($Message)
+    [Console]::Error.WriteLine((Protect-Text $Message))
 }
 
 # --- Progress spinner ---------------------------------------------------------
@@ -887,17 +887,47 @@ function Stop-ProgressSpinner {
 }
 
 function Protect-Text {
-    # Final sanitizing pass. Redacts credentials embedded as URL userinfo (for
-    # example in a git remote) and the local-part of e-mail addresses (PII that
-    # can appear in resolved account names and credential targets), keeping the
-    # domain for context. v1 does not emit file contents or environment values.
+    # Redact credential-shaped metadata, including URLs, paths and parse errors.
     param([string]$Text)
 
     if ([string]::IsNullOrEmpty($Text)) {
         return $Text
     }
     $value = [regex]::Replace($Text, '(?i)([a-z][a-z0-9+.-]*://)[^/@\s:]+(?::[^/@\s]+)?@', '$1<redacted>@')
+    $value = [regex]::Replace($value,
+        '(?i)(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret|sig|signature|credential)["'']?\s*[:=]\s*)(["''])(?:\\.|(?!\2)[^\\])*\2',
+        '$1$2<redacted>$2')
+    $value = [regex]::Replace($value,
+        '(?i)((?:[?&;]|\b)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret|sig|signature|credential)\s*["'']?\s*[:=]\s*["'']?)[^\s"''&;<>]+',
+        '$1<redacted>')
+    $value = [regex]::Replace($value, '(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+', '$1 <redacted>')
+    $value = [regex]::Replace($value,
+        '\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})',
+        '<redacted>')
+    $value = [regex]::Replace($value, '(?<![A-Za-z0-9_])[A-Za-z0-9_]{32,}(?![A-Za-z0-9_])', '<redacted>')
     return [regex]::Replace($value, '[A-Za-z0-9._%+\-]+@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})', '<redacted>@$1')
+}
+
+function Protect-Report {
+    # Sanitize every string at the output boundary, including inventory fields.
+    param($Value)
+
+    if ($Value -is [string]) { return (Protect-Text $Value) }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $safe = [ordered]@{}
+        foreach ($key in $Value.Keys) { $safe[(Protect-Text ([string]$key))] = Protect-Report $Value[$key] }
+        return $safe
+    }
+    if ($Value -is [pscustomobject]) {
+        $safe = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) { $safe[$property.Name] = Protect-Report $property.Value }
+        return [pscustomobject]$safe
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $safe = @($Value | ForEach-Object { Protect-Report $_ })
+        return ,$safe
+    }
+    return $Value
 }
 
 function Format-SafePath {
@@ -1045,8 +1075,12 @@ function Get-PathAccess {
         ChangeAcl = 'unknown'; TakeOwnership = 'unknown'
     }
     if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) {
-        # Absent, or the parent denies traversal; either way it is not reachable.
-        $result.ErrorCategory = 'not-found'
+        # Test-Path cannot distinguish absence from an inaccessible parent.
+        $read = [AgentSandboxAssessmentNative]::ProbeFile($Path, 0x1)
+        $result.ErrorCategory = Get-ErrorCategory $read
+        $result.Method = 'access-request'
+        $result.Exists = ($read -eq 0)
+        $result.Read = switch ($read) { 0 { 'granted' }; 5 { 'denied' }; default { 'unknown' } }
         return [pscustomobject]$result
     }
     $result.Exists = $true
@@ -1077,7 +1111,8 @@ function Get-PathAccess {
         $result.ErrorCategory = Get-ErrorCategory $check.Error
         $result.Method = 'access-request'
         $read = [AgentSandboxAssessmentNative]::ProbeFile($Path, 0x1)
-        $result.Read = if ($read -eq 0) { 'granted' } else { 'denied' }
+        $result.Read = switch ($read) { 0 { 'granted' }; 5 { 'denied' }; default { 'unknown' } }
+        if ($read -ne 0) { $result.ErrorCategory = Get-ErrorCategory $read }
     }
     return [pscustomobject]$result
 }
@@ -1090,9 +1125,16 @@ function Test-AnyWrite {
     Select-Object -First 1
 }
 
+function Test-UnknownWrite {
+    param([Parameter(Mandatory)][psobject]$Access)
+
+    return [bool](@('Create', 'Write', 'Delete', 'ChangeAcl', 'TakeOwnership') |
+        Where-Object { $Access.$_ -eq 'unknown' } | Select-Object -First 1)
+}
+
 function Get-MatchingTargets {
     # Probes a path list for the requested right, emits one finding per match,
-    # and returns { Existing; Matched } without deciding a criterion. Used
+    # and returns { Existing; Matched; Unknown } without deciding a criterion. Used
     # directly by checks that combine several target sources into one criterion.
     param(
         [Parameter(Mandatory)][string]$Check,
@@ -1106,11 +1148,13 @@ function Get-MatchingTargets {
         [ValidateSet('critical', 'high', 'medium', 'low', 'info')][string]$Severity = 'medium'
     )
 
-    $existing = @($Path | Where-Object { $_ } | Select-Object -Unique |
-        Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue })
+    $existing = @()
     $matched = @()
-    foreach ($target in $existing) {
+    $unknown = @()
+    foreach ($target in @($Path | Where-Object { $_ } | Select-Object -Unique)) {
         $access = Get-PathAccess -Path $target
+        if (-not $access.Exists -and $access.ErrorCategory -eq 'not-found') { continue }
+        $existing += $target
         $how = if ($Right -eq 'Write') { Test-AnyWrite -Access $access }
         elseif ($access.Read -eq 'granted') { 'Read' } else { $null }
         if ($how) {
@@ -1119,8 +1163,15 @@ function Get-MatchingTargets {
             Add-Finding -Check $Check -Criterion $Criterion -Target $target -Capability $findingCapability `
                 -Result granted -Method $access.Method -Scope $Scope -Impact $Impact -Severity $Severity
         }
+        elseif (($Right -eq 'Write' -and (Test-UnknownWrite $access)) -or
+            ($Right -eq 'Read' -and $access.Read -eq 'unknown')) {
+            $unknown += $target
+            Add-Finding -Check $Check -Criterion $Criterion -Target $target -Capability $Capability `
+                -Result unknown -Method $access.Method -Scope $Scope -ErrorCategory $access.ErrorCategory `
+                -Impact 'Access could not be fully evaluated.'
+        }
     }
-    return [pscustomobject]@{ Existing = @($existing); Matched = @($matched) }
+    return [pscustomobject]@{ Existing = @($existing); Matched = @($matched); Unknown = @($unknown) }
 }
 
 function Resolve-AccessTargets {
@@ -1154,6 +1205,10 @@ function Resolve-AccessTargets {
         Set-CriterionOutcome -Id $Criterion -Outcome 'unmet' -Method 'permission-analysis' `
             -Reason ($UnmetReasonFormat -f $result.Matched.Count, $result.Existing.Count)
     }
+    elseif ($result.Unknown.Count -gt 0) {
+        Set-CriterionOutcome -Id $Criterion -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason "Access could not be fully evaluated on $($result.Unknown.Count) of $($result.Existing.Count) targets."
+    }
     else {
         Set-CriterionOutcome -Id $Criterion -Outcome 'met' -Method 'permission-analysis' -Reason $MetReason
     }
@@ -1162,7 +1217,7 @@ function Resolve-AccessTargets {
 
 function Get-WritableRegistryKeys {
     # Probes registry keys for KEY_SET_VALUE, emits one finding per writable key,
-    # and returns the writable keys' display names. Does not decide a criterion.
+    # and returns matched and unresolved keys. Does not decide a criterion.
     param(
         [Parameter(Mandatory)][string]$Check,
         [Parameter(Mandatory)][string]$Criterion,
@@ -1174,14 +1229,17 @@ function Get-WritableRegistryKeys {
     )
 
     $writable = @()
+    $unknown = @()
     foreach ($entry in $Key) {
-        if ([AgentSandboxAssessmentNative]::ProbeRegistryKey($entry.Hive, $entry.Sub, 0x2) -eq 0) {
+        $probe = [AgentSandboxAssessmentNative]::ProbeRegistryKey($entry.Hive, $entry.Sub, 0x2)
+        if ($probe -eq 0) {
             $writable += $entry.Display
             Add-Finding -Check $Check -Criterion $Criterion -Target $entry.Display -Capability $Capability `
                 -Result granted -Method access-request -Scope $Scope -Impact $Impact -Severity $Severity
         }
+        elseif ($probe -notin 2, 3, 5) { $unknown += $entry.Display }
     }
-    return @($writable)
+    return [pscustomobject]@{ Matched = @($writable); Unknown = @($unknown) }
 }
 
 function Get-IntegrityLabel {
@@ -1530,21 +1588,27 @@ function Invoke-MonitoringCheck {
 
     # M-TAMPER
     $tamperable = @()
+    $tamperUnknown = @()
     foreach ($key in $loggingPolicyKeys) {
-        if ([AgentSandboxAssessmentNative]::ProbeRegistryKey(2, $key, 0x2) -eq 0) {
+        $probe = [AgentSandboxAssessmentNative]::ProbeRegistryKey(2, $key, 0x2)
+        if ($probe -eq 0) {
             $tamperable += "regkey:$key"
             Add-Finding -Check MONITORING -Criterion 'M-TAMPER' -Target $key -Capability 'writable logging policy key' `
                 -Result granted -Method access-request -Scope 'monitoring-integrity' `
                 -Impact 'Agent can disable logging policy.' -Severity medium
         }
+        elseif ($probe -ne 5) { $tamperUnknown += "regkey:$key" }
     }
     foreach ($serviceName in $monitoringServices) {
-        $probe = [AgentSandboxAssessmentNative]::ProbeService($serviceName, (0x2 -bor 0x20))
-        if ($probe -eq 0) {
-            $tamperable += "service:$serviceName"
-            Add-Finding -Check MONITORING -Criterion 'M-TAMPER' -Target $serviceName -Capability 'change-config/stop on monitoring service' `
-                -Result granted -Method access-request -Scope 'monitoring-integrity' `
-                -Impact 'Agent can stop or reconfigure monitoring.' -Severity medium
+        foreach ($right in @(@{ Name = 'change-config'; Mask = 0x2 }, @{ Name = 'stop'; Mask = 0x20 })) {
+            $probe = [AgentSandboxAssessmentNative]::ProbeService($serviceName, [uint32]$right.Mask)
+            if ($probe -eq 0) {
+                $tamperable += "service:${serviceName}:$($right.Name)"
+                Add-Finding -Check MONITORING -Criterion 'M-TAMPER' -Target $serviceName -Capability "$($right.Name) on monitoring service" `
+                    -Result granted -Method access-request -Scope 'monitoring-integrity' `
+                    -Impact 'Agent can stop or reconfigure monitoring.' -Severity medium
+            }
+            elseif ($probe -ne 5) { $tamperUnknown += "service:${serviceName}:$($right.Name)" }
         }
     }
     if ($loggingSignals.Count -eq 0 -and $loggingPolicyKeys.Count -eq 0) {
@@ -1554,6 +1618,10 @@ function Invoke-MonitoringCheck {
     elseif ($tamperable.Count -gt 0) {
         Set-CriterionOutcome -Id 'M-TAMPER' -Outcome 'unmet' -Method 'access-request' `
             -Reason "Agent can alter discovered monitoring controls: $($tamperable -join ', ')."
+    }
+    elseif ($tamperUnknown.Count -gt 0) {
+        Set-CriterionOutcome -Id 'M-TAMPER' -Outcome 'unknown' -Method 'access-request' `
+            -Reason 'Some monitoring-control access probes could not be resolved.'
     }
     else {
         Set-CriterionOutcome -Id 'M-TAMPER' -Outcome 'met' -Method 'access-request' `
@@ -1571,9 +1639,11 @@ function Invoke-MonitoringCheck {
     }
     else {
         $writableLogs = @()
+        $unknownLogs = @()
         foreach ($dir in $existingLogDirs) {
             $access = Get-PathAccess -Path $dir
             if (Test-AnyWrite -Access $access) { $writableLogs += $dir }
+            elseif (Test-UnknownWrite $access) { $unknownLogs += $dir }
         }
         if ($writableLogs.Count -gt 0) {
             Set-CriterionOutcome -Id 'M-AGENT-LOG' -Outcome 'unmet' -Method 'permission-analysis' `
@@ -1581,6 +1651,10 @@ function Invoke-MonitoringCheck {
             Add-Finding -Check MONITORING -Criterion 'M-AGENT-LOG' -Target ($writableLogs[0]) -Capability 'writable agent log directory' `
                 -Result granted -Method permission-analysis -Scope 'monitoring-integrity' `
                 -Impact 'Agent can alter its own transcripts.' -Severity low
+        }
+        elseif ($unknownLogs.Count -gt 0) {
+            Set-CriterionOutcome -Id 'M-AGENT-LOG' -Outcome 'unknown' -Method 'permission-analysis' `
+                -Reason 'Write permissions on some agent transcript directories could not be resolved.'
         }
         else {
             Set-CriterionOutcome -Id 'M-AGENT-LOG' -Outcome 'met' -Method 'permission-analysis' `
@@ -1966,11 +2040,11 @@ function Invoke-HandoffCheck {
         @{ Hive = 2; Sub = 'SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'; Display = 'HKLM\Software\...\CurrentVersion\RunOnce' }
         @{ Hive = 2; Sub = 'SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run'; Display = 'HKLM\Software\Wow6432Node\...\Run' }
     )
-    $runWritable = @(Get-WritableRegistryKeys -Check HANDOFF -Criterion 'A-HANDOFF-SHARED' -Key $runKeys `
+    $runResult = Get-WritableRegistryKeys -Check HANDOFF -Criterion 'A-HANDOFF-SHARED' -Key $runKeys `
             -Capability 'agent-writable Run key' -Scope 'handoff' `
-            -Impact 'Code written here executes under another identity at logon.' -Severity high)
+            -Impact 'Code written here executes under another identity at logon.' -Severity high
 
-    $matchedCount = @($pathResult.Matched).Count + $runWritable.Count
+    $matchedCount = @($pathResult.Matched).Count + $runResult.Matched.Count
     $probedCount = @($pathResult.Existing).Count + $runKeys.Count
     if ($probedCount -eq 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unknown' -Method 'permission-analysis' `
@@ -1979,6 +2053,10 @@ function Invoke-HandoffCheck {
     elseif ($matchedCount -gt 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unmet' -Method 'permission-analysis' `
             -Reason "$matchedCount shared execution location(s) (PATH, Program Files, startup, Run keys, other profiles) are agent-writable."
+    }
+    elseif ($pathResult.Unknown.Count -gt 0 -or $runResult.Unknown.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason 'Some shared execution locations could not be evaluated for write access.'
     }
     else {
         Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'met' -Method 'permission-analysis' `
@@ -1994,6 +2072,7 @@ function Invoke-HandoffCheck {
     $benignSids = @($ownSid, 'S-1-5-18', 'S-1-3-0',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') | Where-Object { $_ }
     $otherReaders = @()
+    $aclUnknown = $false
     try {
         $acl = Get-Acl -LiteralPath $ws -ErrorAction Stop
         foreach ($rule in @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })) {
@@ -2010,6 +2089,7 @@ function Invoke-HandoffCheck {
         }
     }
     catch {
+        $aclUnknown = $true
         Add-AssessmentError -Check HANDOFF -Category 'acl-read' -Message "Could not read workspace ACL: $($_.Exception.Message)"
     }
     $otherReaders = @($otherReaders | Select-Object -Unique)
@@ -2030,6 +2110,10 @@ function Invoke-HandoffCheck {
         Add-Finding -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Target $ws `
             -Capability 'agent-writable workspace read by other identities' -Result observed -Method permission-analysis `
             -Scope 'handoff' -Impact 'Agent-written source/config may be built, run or opened by another identity.' -Severity medium
+    }
+    elseif ((-not $wsWritable -and (Test-UnknownWrite $wsAccess)) -or ($wsWritable -and $aclUnknown)) {
+        Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason 'Workspace write permissions or consumer access could not be evaluated.'
     }
     else {
         Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'met' -Method 'permission-analysis' `
@@ -2060,6 +2144,7 @@ function Invoke-IndirectCheck {
     $probed = 0
     $unmet = @()
     $criticalHit = $false
+    $incomplete = $false
 
     function Test-OtherIdentity {
         param([string]$Account)
@@ -2076,15 +2161,28 @@ function Invoke-IndirectCheck {
     try {
         foreach ($service in @(Get-CimInstance -ClassName Win32_Service -ErrorAction Stop)) {
             $exe = Get-ServiceImagePath -PathName $service.PathName
-            if (-not $exe -or -not (Test-Path -LiteralPath $exe -ErrorAction SilentlyContinue)) { continue }
+            if (-not $exe -or -not (Test-Path -LiteralPath $exe -ErrorAction SilentlyContinue)) { $incomplete = $true; continue }
             $probed++
             $otherIdentity = Test-OtherIdentity -Account $service.StartName
             $exeAccess = Get-PathAccess -Path $exe
             $binaryWritable = @('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $exeAccess.$_ -eq 'granted' } | Select-Object -First 1
             $parentAccess = Get-PathAccess -Path (Split-Path -Parent $exe)
             $parentAdd = ($parentAccess.Create -eq 'granted')
-            $svcConfig = ([AgentSandboxAssessmentNative]::ProbeService($service.Name, (0x2 -bor 0x40000 -bor 0x80000)) -eq 0)
-            $regSet = ([AgentSandboxAssessmentNative]::ProbeRegistryKey(2, "SYSTEM\CurrentControlSet\Services\$($service.Name)", 0x2) -eq 0)
+            $svcRights = @()
+            foreach ($right in @(
+                    @{ Name = 'change-config'; Mask = 0x2 },
+                    @{ Name = 'change-DACL'; Mask = 0x40000 },
+                    @{ Name = 'change-owner'; Mask = 0x80000 })) {
+                $probe = [AgentSandboxAssessmentNative]::ProbeService($service.Name, [uint32]$right.Mask)
+                if ($probe -eq 0) { $svcRights += $right.Name }
+                elseif ($probe -ne 5) { $incomplete = $true }
+            }
+            $svcConfig = ($svcRights.Count -gt 0)
+            $regProbe = [AgentSandboxAssessmentNative]::ProbeRegistryKey(2, "SYSTEM\CurrentControlSet\Services\$($service.Name)", 0x2)
+            $regSet = ($regProbe -eq 0)
+            if ($regProbe -ne 0 -and $regProbe -ne 5) { $incomplete = $true }
+            if (@('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $exeAccess.$_ -eq 'unknown' }) { $incomplete = $true }
+            if ($parentAccess.Create -eq 'unknown') { $incomplete = $true }
 
             $configWritable = $binaryWritable -or $svcConfig -or $regSet
             if ($configWritable -or $parentAdd) {
@@ -2093,7 +2191,7 @@ function Invoke-IndirectCheck {
                 if ($severity -eq 'critical') { $criticalHit = $true }
                 $how = @(
                     if ($binaryWritable) { "binary ($binaryWritable)" }
-                    if ($svcConfig) { 'service change-config/DACL/owner' }
+                    if ($svcConfig) { "service object ($($svcRights -join ', '))" }
                     if ($regSet) { 'service registry key' }
                     if ($parentAdd) { 'binary parent directory' }
                 ) -join ', '
@@ -2104,6 +2202,7 @@ function Invoke-IndirectCheck {
         }
     }
     catch {
+        $incomplete = $true
         Add-AssessmentError -Check INDIRECT -Category 'service-enum' -Message "Service enumeration failed: $($_.Exception.Message)"
     }
 
@@ -2118,12 +2217,14 @@ function Invoke-IndirectCheck {
                 try { $execute = $action.Execute } catch { $execute = $null }
                 if (-not $execute) { continue }
                 $exe = [Environment]::ExpandEnvironmentVariables($execute).Trim('"')
-                if (-not (Test-Path -LiteralPath $exe -ErrorAction SilentlyContinue)) { continue }
+                if (-not (Test-Path -LiteralPath $exe -ErrorAction SilentlyContinue)) { $incomplete = $true; continue }
                 $probed++
                 $exeAccess = Get-PathAccess -Path $exe
                 $binaryWritable = @('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $exeAccess.$_ -eq 'granted' } | Select-Object -First 1
                 $parentAccess = Get-PathAccess -Path (Split-Path -Parent $exe)
                 $parentAdd = ($parentAccess.Create -eq 'granted')
+                if (@('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $exeAccess.$_ -eq 'unknown' }) { $incomplete = $true }
+                if ($parentAccess.Create -eq 'unknown') { $incomplete = $true }
                 if ($binaryWritable -or $parentAdd) {
                     $unmet += "task:$($task.TaskName)"
                     $severity = if ($binaryWritable) { 'critical' } else { 'high' }
@@ -2137,6 +2238,7 @@ function Invoke-IndirectCheck {
         }
     }
     catch {
+        $incomplete = $true
         Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task enumeration failed: $($_.Exception.Message)"
     }
 
@@ -2152,6 +2254,10 @@ function Invoke-IndirectCheck {
     elseif ($unmet.Count -gt 0) {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unmet' -Method 'permission-analysis' `
             -Reason "$($unmet.Count) of $probed service/task targets expose a writable parent directory."
+    }
+    elseif ($incomplete) {
+        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason 'Some service/task targets or access permissions could not be evaluated.'
     }
     else {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'met' -Method 'permission-analysis' `
@@ -2538,15 +2644,18 @@ function Invoke-SecretsCheck {
 
     $present = 0
     $readable = @()
+    $readUnknown = 0
     foreach ($candidate in @($candidates | Select-Object -Unique)) {
         if (-not (Test-Path -LiteralPath $candidate)) { continue }
         $present++
-        if ((Get-PathAccess -Path $candidate).Read -eq 'granted') {
+        $access = Get-PathAccess -Path $candidate
+        if ($access.Read -eq 'granted') {
             $readable += $candidate
             Add-Finding -Check SECRETS -Criterion 'R-SECRETS-KNOWN' -Target (Format-SafePath $candidate) `
                 -Capability 'readable credential location' -Result granted -Method permission-analysis `
                 -Scope 'secrets' -Impact 'A stored credential file is readable by the agent identity.' -Severity high
         }
+        elseif ($access.Read -eq 'unknown') { $readUnknown++ }
     }
     $agentCredentialPresent = Test-Path -LiteralPath $expectedCredential
     if ($agentCredentialPresent) {
@@ -2561,6 +2670,10 @@ function Invoke-SecretsCheck {
     if ($readable.Count -gt 0) {
         Set-CriterionOutcome -Id 'R-SECRETS-KNOWN' -Outcome 'unmet' -Method 'permission-analysis' `
             -Reason "$($readable.Count) of $present known credential location(s) are readable (agent's own credential excluded)."
+    }
+    elseif ($readUnknown -gt 0) {
+        Set-CriterionOutcome -Id 'R-SECRETS-KNOWN' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason "Read access on $readUnknown known credential location(s) could not be resolved."
     }
     elseif ($present -eq 0) {
         Set-CriterionOutcome -Id 'R-SECRETS-KNOWN' -Outcome 'met' -Method 'permission-analysis' `
@@ -2621,6 +2734,33 @@ function Invoke-SecretsCheck {
     Invoke-SecretContentScan
 }
 
+function Get-ScanPathExclusion {
+    # Inspect metadata only. Exclude links and detectable cloud/offline content,
+    # including ancestors, before enumerating a directory or opening a file.
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ($Path -notmatch '^[A-Za-z]:[\\/]') { return 'network-path' }
+    try {
+        $cursor = [IO.Path]::GetFullPath($Path)
+        $root = [IO.Path]::GetPathRoot($cursor)
+        if ([IO.DriveInfo]::new($root).DriveType -eq [IO.DriveType]::Network) { return 'network-path' }
+        $ancestors = [Collections.Generic.Stack[string]]::new()
+        while ($cursor) {
+            $ancestors.Push($cursor)
+            $cursor = [IO.Path]::GetDirectoryName($cursor)
+        }
+        while ($ancestors.Count -gt 0) {
+            $cursor = $ancestors.Pop()
+            $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+            $attributes = [int]$item.Attributes
+            if ($attributes -band (0x1000 -bor 0x40000 -bor 0x400000)) { return 'offline-placeholder' }
+            if ($attributes -band 0x400) { return 'reparse-point' }
+        }
+    }
+    catch { return 'metadata-error' }
+    return $null
+}
+
 function Invoke-SecretContentScan {
     # Bounded content scan for likely secrets in the workspace and a short list
     # of plain-text profile config files. Reports only the sanitized location,
@@ -2645,50 +2785,95 @@ function Invoke-SecretContentScan {
     $configNames = @('.npmrc', '.netrc', '_netrc', '.pypirc', '.gitconfig', '.env')
     $skipDirectories = @('.git', 'node_modules', 'obj', 'bin', '.vs', 'dist', 'build', 'packages', '.venv', 'venv', '__pycache__')
 
-    # Candidate collection (workspace tree + a few profile config files).
+    # Walk one directory at a time so unsafe directories are never descended.
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $candidates = New-Object System.Collections.Generic.List[string]
-    $filesConsidered = 0
+    $exclusions = New-Object System.Collections.Generic.List[object]
+    $enumerationErrors = 0
     $limitHit = $null
-    foreach ($item in (Get-ChildItem -LiteralPath $script:WorkspacePath -Recurse -File -Force -ErrorAction SilentlyContinue)) {
-        if ($candidates.Count -ge $maxFiles) { $limitHit = 'max-files'; break }
-        $segments = $item.FullName -split '[\\/]'
-        if ($segments | Where-Object { $skipDirectories -contains $_ }) { continue }
-        if (($textExtensions -contains $item.Extension) -or ($configNames -contains $item.Name)) {
-            $candidates.Add($item.FullName) | Out-Null
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($script:WorkspacePath)
+    while ($pending.Count -gt 0 -and -not $limitHit) {
+        if ($stopwatch.Elapsed.TotalSeconds -ge $budgetSeconds) { $limitHit = 'time-budget'; break }
+        $directory = $pending.Pop()
+        $exclusion = Get-ScanPathExclusion $directory
+        if ($exclusion) {
+            $exclusions.Add([ordered]@{ path = (Format-SafePath $directory); reason = $exclusion })
+            continue
+        }
+        $directoryErrors = @()
+        $items = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction SilentlyContinue -ErrorVariable directoryErrors)
+        $enumerationErrors += $directoryErrors.Count
+        foreach ($item in $items) {
+            if ($stopwatch.Elapsed.TotalSeconds -ge $budgetSeconds) { $limitHit = 'time-budget'; break }
+            if ($item.PSIsContainer -and $skipDirectories -contains $item.Name) { continue }
+            $isCandidate = ($textExtensions -contains $item.Extension) -or ($configNames -contains $item.Name)
+            if (-not $item.PSIsContainer -and -not $isCandidate) { continue }
+            $exclusion = Get-ScanPathExclusion $item.FullName
+            if ($exclusion) {
+                $exclusions.Add([ordered]@{ path = (Format-SafePath $item.FullName); reason = $exclusion })
+                continue
+            }
+            if ($item.PSIsContainer) { $pending.Push($item.FullName) }
+            else {
+                if ($candidates.Count -ge $maxFiles) { $limitHit = 'max-files'; break }
+                $candidates.Add($item.FullName) | Out-Null
+            }
         }
     }
     foreach ($name in $configNames) {
         $profileFile = Join-Path $env:USERPROFILE $name
         if ((Test-Path -LiteralPath $profileFile -ErrorAction SilentlyContinue) -and ($candidates -notcontains $profileFile)) {
+            $exclusion = Get-ScanPathExclusion $profileFile
+            if ($exclusion) {
+                $exclusions.Add([ordered]@{ path = (Format-SafePath $profileFile); reason = $exclusion })
+                continue
+            }
+            if ($candidates.Count -ge $maxFiles) { $limitHit = 'max-files'; break }
             $candidates.Add($profileFile) | Out-Null
         }
     }
 
-    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $totalBytes = 0L
     $scanned = 0
+    $readErrors = 0
+    $partialFiles = 0
     $hitsByCategory = @{}
     $hitFiles = @()
 
     foreach ($path in $candidates) {
         if ($stopwatch.Elapsed.TotalSeconds -ge $budgetSeconds) { $limitHit = 'time-budget'; break }
         if ($totalBytes -ge $maxTotalBytes) { $limitHit = 'max-total-bytes'; break }
+        $exclusion = Get-ScanPathExclusion $path
+        if ($exclusion) {
+            $exclusions.Add([ordered]@{ path = (Format-SafePath $path); reason = $exclusion })
+            continue
+        }
         $text = $null
         try {
             $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
             try {
-                $toRead = [int][Math]::Min([long]$maxFileBytes, $stream.Length)
+                $toRead = [int][Math]::Min([long]$maxFileBytes, [Math]::Min($stream.Length, $maxTotalBytes - $totalBytes))
+                $read = 0
                 if ($toRead -gt 0) {
                     $buffer = New-Object byte[] $toRead
-                    $read = $stream.Read($buffer, 0, $toRead)
+                    while ($read -lt $toRead) {
+                        $count = $stream.Read($buffer, $read, $toRead - $read)
+                        if ($count -eq 0) { break }
+                        $read += $count
+                    }
                     $totalBytes += $read
                     $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
                 }
+                if ($read -lt $stream.Length) { $partialFiles++ }
             }
             finally { $stream.Dispose() }
         }
-        catch { continue }
-        $filesConsidered++
+        catch {
+            $readErrors++
+            $exclusions.Add([ordered]@{ path = (Format-SafePath $path); reason = 'read-error' })
+            continue
+        }
         if ([string]::IsNullOrEmpty($text)) { $scanned++; continue }
         $scanned++
         $fileCategories = @()
@@ -2708,6 +2893,10 @@ function Invoke-SecretContentScan {
     $script:Inventory['secretScan'] = [ordered]@{
         candidateFiles = $candidates.Count; filesScanned = $scanned
         bytesScanned = $totalBytes; limitReached = $limitHit
+        readErrors = $readErrors; enumerationErrors = $enumerationErrors; partialFiles = $partialFiles
+        exclusions = @($exclusions.ToArray())
+        limits = [ordered]@{ maxFiles = $maxFiles; maxFileBytes = $maxFileBytes; maxTotalBytes = $maxTotalBytes; budgetSeconds = $budgetSeconds }
+        excludedDirectories = $skipDirectories
         categories = @($hitsByCategory.Keys | Sort-Object)
     }
 
@@ -2715,13 +2904,9 @@ function Invoke-SecretContentScan {
         Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'unmet' -Method 'observed-operation' `
             -Reason "$($hitFiles.Count) file(s) contain suspected secrets ($(@($hitsByCategory.Keys | Sort-Object) -join ', ')); values not shown."
     }
-    elseif ($candidates.Count -eq 0) {
-        Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'met' -Method 'observed-operation' `
-            -Reason 'No candidate text or config files were found to scan.'
-    }
-    elseif ($limitHit) {
+    elseif ($limitHit -or $partialFiles -gt 0 -or $exclusions.Count -gt 0 -or $enumerationErrors -gt 0) {
         Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'unknown' -Method 'observed-operation' `
-            -Reason "Scan stopped at the $limitHit limit after $scanned of $($candidates.Count) files; no secret found in the scanned subset (coverage incomplete)."
+            -Reason "Scan incomplete: $scanned files scanned, $partialFiles partial, $readErrors read errors, $enumerationErrors enumeration errors, $($exclusions.Count) exclusions; limit=$limitHit. No secret found in the scanned subset."
     }
     else {
         Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'met' -Method 'observed-operation' `
@@ -2926,7 +3111,7 @@ function Write-HumanReport {
         foreach ($criterion in $notEvaluated) {
             $tag = if ($criterion.Essential) { 'essential, blocks bounded verdict' } else { 'non-essential' }
             Write-Host ("  {0} [{1}]  {2}" -f $criterion.Id, $tag, $criterion.Title)
-            Write-Host ("        why: {0}" -f $criterion.Reason) -ForegroundColor DarkGray
+            Write-Host ("        why: {0}" -f (Protect-Text $criterion.Reason)) -ForegroundColor DarkGray
         }
     }
     $remediable = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unmet' })
@@ -2986,11 +3171,11 @@ else {
 }
 
 if ($PolicyPath -and -not (Test-Path -LiteralPath $PolicyPath -PathType Leaf)) {
-    [Console]::Error.WriteLine("Policy file not found: $PolicyPath")
+    Write-Diag "Policy file not found: $PolicyPath"
     exit 1
 }
 if ($OutputDirectory -and -not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
-    [Console]::Error.WriteLine("Output directory does not exist: $OutputDirectory")
+    Write-Diag "Output directory does not exist: $OutputDirectory"
     exit 1
 }
 # Run order is explicit. Adding a check is one line here plus its criteria in
@@ -3021,7 +3206,7 @@ try {
     }
     catch {
         # The outer finally stops the spinner before the process exits.
-        [Console]::Error.WriteLine("Fatal: native probe initialization failed: $($_.Exception.Message)")
+        Write-Diag "Fatal: native probe initialization failed: $($_.Exception.Message)"
         exit 1
     }
     $checkCount = $CheckPlan.Count
@@ -3048,7 +3233,7 @@ foreach ($criterion in $script:Criteria.Values) {
 $policyResult = $null
 if ($PolicyPath) {
     try { $policyResult = Test-Policy -Path $PolicyPath }
-    catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+    catch { Write-Diag $_.Exception.Message; exit 1 }
 }
 
 $limitationUnimplemented = 'v1 does not implement the secret content scan, Credential Manager inventory or process injection-right probes; those criteria are unknown.'
@@ -3121,6 +3306,7 @@ $report = [ordered]@{
     errors            = $script:Errors.ToArray()
 }
 
+$report = Protect-Report $report
 $jsonText = $report | ConvertTo-Json -Depth 12
 
 if ($Json) {
