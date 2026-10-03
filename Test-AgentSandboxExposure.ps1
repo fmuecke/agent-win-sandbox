@@ -273,11 +273,21 @@ $SeverityRank = @{ critical = 4; high = 3; medium = 2; low = 1; info = 0 }
 # credential blob.
 
 function Initialize-NativeProbe {
-    if ('AgentSandboxAssessmentNative' -as [type]) {
-        return
+    # A compiled type cannot be replaced within a session, so a session that
+    # ran an older checker keeps the old class. The class carries a hash of
+    # its source; a mismatch stops the run instead of mixing versions.
+    $source = $script:NativeSource
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($source)))
+    $loaded = 'AgentSandboxAssessmentNative' -as [type]
+    if ($loaded) {
+        $field = $loaded.GetField('SourceHash')
+        if ($field -and $field.GetValue($null) -eq $hash) { return }
+        throw 'This PowerShell session holds an older build of the native probe class, which cannot be reloaded. Run the checker in a new session: pwsh -NoProfile -File .\Test-AgentSandboxExposure.ps1'
     }
+    Add-Type -TypeDefinition $source.Replace('__SOURCE_HASH__', $hash)
+}
 
-    Add-Type -TypeDefinition @'
+$script:NativeSource = @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -354,6 +364,7 @@ public sealed class JobInfo
 
 public static class AgentSandboxAssessmentNative
 {
+    public const string SourceHash = "__SOURCE_HASH__";
     private const uint TOKEN_QUERY = 0x0008;
     private const uint TOKEN_DUPLICATE = 0x0002;
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -923,7 +934,6 @@ public static class AgentSandboxAssessmentNative
     }
 }
 '@
-}
 
 # --- Assessment state ---------------------------------------------------------
 
