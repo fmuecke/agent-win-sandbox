@@ -15,6 +15,11 @@ public sealed class TestToken {
     public string UserSid = "S-1-5-21-101-102-103-1001";
     public string IntegritySid = "S-1-16-8192";
     public TestPrivilege[] Privileges = new TestPrivilege[0];
+    public bool IsElevated;
+}
+public sealed class TestHeldHandle {
+    public string Type; public uint Access; public bool Inheritable; public int ProcessId;
+    public string Path; public string TokenSid; public bool TokenElevated;
 }
 public sealed class TestJob { public bool InJob; public uint LimitFlags; public uint UiRestrictions; public int Error; }
 public static class AgentSandboxAssessmentNative {
@@ -40,7 +45,12 @@ public static class AgentSandboxAssessmentNative {
         return (right & ServiceGranted) == right ? 0 : 5;
     }
     public static string RegistryGrantedPath;
-    public static int ProbeRegistryKey(int hive, string path, uint right) { return path == RegistryGrantedPath ? 0 : 5; }
+    public static readonly Dictionary<string, int> RegistryErrors = new Dictionary<string, int>();
+    public static int ProbeRegistryKey(int hive, string path, uint right) {
+        int error;
+        if (path == RegistryGrantedPath) { return 0; }
+        return RegistryErrors.TryGetValue(path, out error) ? error : 5;
+    }
     public static TestToken GetCurrentToken() { return new TestToken(); }
     public static TestToken GetProcessToken(int pid) { return ForeignToken; }
     public static int ProbeProcess(int pid, uint right) {
@@ -48,6 +58,9 @@ public static class AgentSandboxAssessmentNative {
         return (right & ProcessGranted) == right ? 0 : ProcessError;
     }
     public static TestJob GetJobInfo() { return new TestJob(); }
+    public static int HandleStatus;
+    public static readonly List<TestHeldHandle> Handles = new List<TestHeldHandle>();
+    public static TestHeldHandle[] GetHeldHandles(out int status) { status = HandleStatus; return Handles.ToArray(); }
     public static string GetConsoleSessionSid() { return ConsoleSid; }
     public static int GetSessionId(int pid) { return 0; }
     public static string GetConsoleSessionUser() { return null; }
@@ -88,6 +101,7 @@ function Test-Case {
     [AgentSandboxAssessmentNative]::FileError = 5
     [AgentSandboxAssessmentNative]::FileErrors.Clear()
     [AgentSandboxAssessmentNative]::RegistryGrantedPath = $null
+    [AgentSandboxAssessmentNative]::RegistryErrors.Clear()
     [AgentSandboxAssessmentNative]::ServiceGranted = 0
     [AgentSandboxAssessmentNative]::ServiceRequests.Clear()
     [AgentSandboxAssessmentNative]::NamedPath = $null
@@ -97,6 +111,8 @@ function Test-Case {
     [AgentSandboxAssessmentNative]::ProcessGranted = 0
     [AgentSandboxAssessmentNative]::ProcessError = 5
     [AgentSandboxAssessmentNative]::ProcessRequests.Clear()
+    [AgentSandboxAssessmentNative]::HandleStatus = 0
+    [AgentSandboxAssessmentNative]::Handles.Clear()
     try {
         & $Body
         Write-Host "PASS $Name"
@@ -195,6 +211,17 @@ try {
         Invoke-SecretContentScan
         Assert-Equal $script:Criteria['R-SECRETS-SCAN'].Outcome 'unmet'
         Assert-Equal ($script:Findings | ConvertTo-Json -Depth 8).Contains('A' * 36) $false
+    }
+    foreach ($case in @(
+            @{ Name = 'a quoted JSON key'; File = 'settings.json'; Text = ('{"api_key": "' + ('x' * 24) + '"}'); Encoding = [Text.UTF8Encoding]::new($false) },
+            @{ Name = 'a fine-grained GitHub token'; File = 'notes.txt'; Text = ('github' + '_pat_' + ('A' * 22) + '_' + ('B' * 59)); Encoding = [Text.UTF8Encoding]::new($false) },
+            @{ Name = 'a UTF-16LE file with a byte-order mark'; File = 'out.txt'; Text = ('ghp_' + ('C' * 36)); Encoding = [Text.Encoding]::Unicode },
+            @{ Name = 'a UTF-16BE file with a byte-order mark'; File = 'out.txt'; Text = ('ghp_' + ('D' * 36)); Encoding = [Text.Encoding]::BigEndianUnicode })) {
+        Test-Case "The secret scan detects $($case.Name)" {
+            [IO.File]::WriteAllText((Join-Path $script:WorkspacePath $case.File), $case.Text, $case.Encoding)
+            Invoke-SecretContentScan
+            Assert-Equal $script:Criteria['R-SECRETS-SCAN'].Outcome 'unmet'
+        }
     }
     Test-Case 'Junctions are excluded before scanning their contents' {
         $outside = Join-Path $testRoot ('outside-' + [guid]::NewGuid().ToString('N'))
@@ -500,6 +527,13 @@ try {
             ForEach-Object { $_.MessageData.Message + $(if ($_.MessageData.NoNewLine) { '' } else { "`n" }) })
         $line = @($report -split "`r?`n" | Where-Object { $_ -like 'Verdict:*' })[0]
         Assert-Equal $line 'Verdict: Critical | Incomplete | Weak | PARTIAL | Strong'
+        Assert-Equal ($report -split "`r?`n" -contains "Verdict scope: $VerdictScope") $true
+    }
+    Test-Case 'Absent local tool declarations do not earn tool-scope credit' {
+        function Get-CimInstance { [pscustomobject]@{ PartOfDomain = $false; Workgroup = 'WORKGROUP'; Domain = 'WORKGROUP' } }
+        function Get-GitConfigPaths { @() }
+        Invoke-RemoteCheck
+        Assert-Equal $script:Criteria['A-TOOL-SCOPE'].Outcome 'unknown'
     }
     Test-Case 'The verdict block follows the findings and precedes remediation' {
         $script:Criteria['A-ID-ADMIN'].Outcome = 'unmet'
@@ -686,6 +720,46 @@ try {
         Test-Case "Git credentials behind $($case.Name) stay unknown" {
             Assert-Equal (Invoke-GitCredentialFixture -Configs $case.Config) 'unknown'
         }
+    }
+    # Discovery failures: a failed enumeration or a non-denial probe error is
+    # not evidence of absence or protection.
+    $otherHive = 'S-1-5-21-101-102-103-1002'
+    Test-Case 'Denied other-user and sensitive hives earn registry credit' {
+        function Get-LoadedUserHives { @('.DEFAULT', $otherHive, "${otherHive}_Classes", 'S-1-5-21-101-102-103-1001', 'S-1-5-18') }
+        Invoke-RegistryOthersCheck
+        Assert-Equal $script:Criteria['R-REG-OTHERS'].Outcome 'met'
+        Assert-Equal $script:Criteria['R-REG-OTHERS'].Reason 'Every probed other-user or sensitive registry location denied read (3 probed).'
+    }
+    Test-Case 'A readable other-user hive is unmet' {
+        function Get-LoadedUserHives { @($otherHive) }
+        [AgentSandboxAssessmentNative]::RegistryGrantedPath = "$otherHive\Software"
+        Invoke-RegistryOthersCheck
+        Assert-Equal $script:Criteria['R-REG-OTHERS'].Outcome 'unmet'
+    }
+    Test-Case 'A registry probe error is not a denial' {
+        function Get-LoadedUserHives { @($otherHive) }
+        [AgentSandboxAssessmentNative]::RegistryErrors['SECURITY'] = 1450
+        Invoke-RegistryOthersCheck
+        Assert-Equal $script:Criteria['R-REG-OTHERS'].Outcome 'unknown'
+    }
+    Test-Case 'A failed hive enumeration leaves registry reach unknown' {
+        function Get-LoadedUserHives { throw 'synthetic enumeration failure' }
+        Invoke-RegistryOthersCheck
+        Assert-Equal $script:Criteria['R-REG-OTHERS'].Outcome 'unknown'
+    }
+    Test-Case 'A failed share enumeration leaves mapped shares unknown' {
+        $script:NetworkTarget = @()
+        function Invoke-TcpProbe { 'blocked' }
+        function Get-CimInstance { param($ClassName) if ($ClassName -eq 'Win32_NetworkConnection') { throw 'synthetic CIM failure' } }
+        function Get-ItemProperty { throw 'No synthetic proxy' }
+        Invoke-NetworkCheck
+        Assert-Equal $script:Criteria['R-NET-SHARES'].Outcome 'unknown'
+    }
+    Test-Case 'A failed membership query leaves domain reach unknown' {
+        function Get-CimInstance { throw 'synthetic CIM failure' }
+        function Get-GitConfigPaths { @() }
+        Invoke-RemoteCheck
+        Assert-Equal $script:Criteria['A-REMOTE-DOMAIN'].Outcome 'unknown'
     }
     Test-Case 'PowerShell 7 script-block logging counts as configured logging' {
         function Get-Service { @() }
@@ -951,6 +1025,123 @@ try {
             Assert-Equal $script:Criteria['A-SVC'].Outcome $expected
             Assert-Equal $script:Criteria['A-SVC'].Critical ($create -eq 'granted')
         }
+    }
+    # Held handles: a right the token is denied on the same object is excess.
+    function Invoke-HandleFixture {
+        param([hashtable[]]$Handle)
+        foreach ($entry in $Handle) {
+            $held = [TestHeldHandle]::new()
+            foreach ($key in $entry.Keys) { $held.$key = $entry[$key] }
+            [AgentSandboxAssessmentNative]::Handles.Add($held)
+        }
+        Invoke-HeldHandleCheck -OwnSid 'S-1-5-21-101-102-103-1001' -OwnElevated $false
+        return $script:Criteria['A-PROC-HANDLES'].Outcome
+    }
+    Test-Case 'A process handle with rights the token is denied is excess authority' {
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Process'; Access = 0x20; ProcessId = 4242 }) 'unmet'
+    }
+    Test-Case 'A process handle within the token''s rights is not excess' {
+        [AgentSandboxAssessmentNative]::ProcessGranted = 0x20
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Process'; Access = 0x20; ProcessId = 4242 }) 'met'
+    }
+    Test-Case 'A held token of another identity is excess authority' {
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Token'; Access = 0xF; TokenSid = 'S-1-5-18' }) 'unmet'
+    }
+    Test-Case 'An elevated token of the same account is excess for an unelevated agent' {
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Token'; Access = 0xF; TokenSid = 'S-1-5-21-101-102-103-1001'; TokenElevated = $true }) 'unmet'
+    }
+    Test-Case 'A writable key handle the token cannot open for write is excess' {
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Key'; Access = 0x2; Path = '\REGISTRY\MACHINE\SOFTWARE\Synthetic' }) 'unmet'
+    }
+    Test-Case 'A key comparison that fails without a denial stays unknown' {
+        [AgentSandboxAssessmentNative]::RegistryErrors['SOFTWARE\Synthetic'] = 1450
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Key'; Access = 0x2; Path = '\REGISTRY\MACHINE\SOFTWARE\Synthetic' }) 'unknown'
+    }
+    Test-Case 'A file handle is compared by path analysis, not a second open' {
+        function Get-PathAccess { [pscustomobject]@{ Read = 'granted'; Write = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'File'; Access = 0x2; Path = '\\?\C:\synthetic\log.txt' }) 'unmet'
+    }
+    Test-Case 'A foreign thread handle with control rights cannot be compared and stays unknown' {
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Thread'; Access = 0x10; ProcessId = 4242 }) 'unknown'
+    }
+    Test-Case 'An unreadable handle table leaves held handles unknown' {
+        [AgentSandboxAssessmentNative]::HandleStatus = -1073741790
+        Assert-Equal (Invoke-HandleFixture @()) 'unknown'
+    }
+    Test-Case 'Handles within the token''s own rights earn held-handle credit' {
+        Assert-Equal (Invoke-HandleFixture @{ Type = 'Process'; Access = 0x100000; ProcessId = 4242 }, @{ Type = 'Thread'; Access = 0x1FFFFF; ProcessId = $PID }) 'met'
+    }
+    # Service execution files beyond the image: unquoted-path candidates and
+    # svchost ServiceDlls. $script:grants maps a path to its granted rights.
+    function New-SyntheticAccess {
+        param([string[]]$Granted = @(), [switch]$Missing)
+        if ($Missing) { return [pscustomobject]@{ Exists = $false; ErrorCategory = 'not-found'; Write = 'unknown'; Create = 'unknown' } }
+        $access = [ordered]@{ Exists = $true; ErrorCategory = $null }
+        foreach ($right in 'Write', 'Create', 'Delete', 'ChangeAcl', 'TakeOwnership', 'DeleteChild') { $access[$right] = $(if ($Granted -contains $right) { 'granted' } else { 'denied' }) }
+        return [pscustomobject]$access
+    }
+    function Invoke-ServiceFixture {
+        param([string]$PathName, [hashtable]$Grants = @{}, [string[]]$MissingPaths = @())
+        $script:fixturePathName = $PathName
+        $script:fixtureGrants = $Grants
+        $script:fixtureMissing = $MissingPaths
+        function Get-CimInstance { [pscustomobject]@{ Name = 'synthetic'; PathName = $script:fixturePathName; StartName = 'LocalSystem' } }
+        function Get-ScheduledTask { @() }
+        function Test-Path { param($LiteralPath) $LiteralPath -notin $script:fixtureMissing }
+        function Get-PathAccess {
+            param($Path)
+            if ($Path -in $script:fixtureMissing) { return New-SyntheticAccess -Missing }
+            New-SyntheticAccess -Granted @($script:fixtureGrants[$Path])
+        }
+        Invoke-IndirectCheck
+    }
+    Test-Case 'An unquoted service path tries each space-delimited prefix first' {
+        $candidates = Get-UnquotedPathCandidates -PathName 'C:\Program Files\A B\x.exe -k' -Image 'C:\Program Files\A B\x.exe'
+        Assert-Equal ($candidates -join '|') 'C:\Program.exe|C:\Program Files\A.exe'
+        Assert-Equal @(Get-UnquotedPathCandidates -PathName '"C:\Program Files\A B\x.exe"' -Image 'C:\Program Files\A B\x.exe').Count 0
+    }
+    Test-Case 'A creatable unquoted-path candidate for SYSTEM is critical' {
+        Invoke-ServiceFixture -PathName 'C:\synthetic dir\svc.exe' -MissingPaths 'C:\synthetic.exe' -Grants @{ 'C:\' = 'Write' }
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-SVC'].Critical $true
+    }
+    Test-Case 'Creating folders but not files beside an unquoted-path candidate is not a plant' {
+        Invoke-ServiceFixture -PathName 'C:\synthetic dir\svc.exe' -MissingPaths 'C:\synthetic.exe' -Grants @{ 'C:\' = 'Create' }
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'met'
+    }
+    Test-Case 'A writable svchost ServiceDll for SYSTEM is critical' {
+        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\svc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Unresolved = $null } }
+        Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k netsvcs' -Grants @{ 'C:\synthetic\svc.dll' = 'Write' }
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-SVC'].Critical $true
+    }
+    Test-Case 'A writable ServiceDll Parameters key for SYSTEM is critical' {
+        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\svc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Unresolved = $null } }
+        [AgentSandboxAssessmentNative]::RegistryGrantedPath = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'
+        Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k netsvcs'
+        Assert-Equal $script:Criteria['A-SVC'].Critical $true
+    }
+    Test-Case 'An unreadable ServiceDll leaves services unknown and is named' {
+        function Get-ServiceDll { [pscustomobject]@{ Path = $null; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Unresolved = 'ServiceDll key unreadable' } }
+        Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k netsvcs'
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unknown'
+        Assert-Equal $script:Criteria['A-SVC'].Reason.Contains('synthetic (ServiceDll key unreadable)') $true
+    }
+    Test-Case 'A host merely named like svchost is not resolved as svchost' {
+        function Get-ServiceDll { throw 'must not be called' }
+        Invoke-ServiceFixture -PathName 'C:\Windows\Microsoft.NET\SMSvcHost.exe'
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'met'
+    }
+    Test-Case 'A per-user service instance resolves its ServiceDll through the template' {
+        function Read-RegistryValue {
+            param($Path, $Name)
+            if ($Path -like '*\Services\CDPUserSvc\Parameters') { return [pscustomobject]@{ State = 'present'; Value = '%SystemRoot%\System32\CDPUserSvc.dll' } }
+            if ($Path -like '*\Services\CDPUserSvc_1ca413*') { return [pscustomobject]@{ State = 'present'; Value = $null } }
+            [pscustomobject]@{ State = 'absent'; Value = $null }
+        }
+        $dll = Get-ServiceDll -Name 'CDPUserSvc_1ca413'
+        Assert-Equal $dll.Path (Join-Path $env:SystemRoot 'System32\CDPUserSvc.dll')
+        Assert-Equal $dll.Key 'SYSTEM\CurrentControlSet\Services\CDPUserSvc\Parameters'
     }
     Test-Case 'Machine-wide variables in task paths are expanded; per-user ones are not' {
         $action = [pscustomobject]@{ Execute = '%windir%\system32\synthetic.exe'; Arguments = ''; WorkingDirectory = '' }
