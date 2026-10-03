@@ -2993,18 +2993,90 @@ function Get-DomainIdentity {
     return $info
 }
 
+function Get-GitConfigPaths {
+    # Git's read order on Windows: ProgramData, system, XDG, global.
+    return @(
+        (Join-Path $env:ProgramData 'Git\config'),
+        (Join-Path $env:ProgramFiles 'Git\etc\gitconfig'),
+        (Join-Path $env:USERPROFILE '.config\git\config'),
+        (Join-Path $env:USERPROFILE '.gitconfig'))
+}
+
+function Get-StoredCredentialTargets {
+    # Credential Manager target names for the current identity; secrets are
+    # never read. ERROR_NOT_FOUND (1168) means nothing is stored.
+    $credentialError = 0
+    $entries = [AgentSandboxAssessmentNative]::GetCredentialEntries([ref]$credentialError)
+    if ($credentialError -notin 0, 1168) { throw "CredEnumerate failed: $credentialError" }
+    return @($entries | ForEach-Object { $_.TargetName })
+}
+
+function Get-GitCredentialConfig {
+    # Effective credential helpers and credentialStore, parsed from git config
+    # files as data (git is never executed). An empty helper value clears the
+    # helpers configured before it in the same section. Includes are not
+    # followed; their presence is reported so the result stays unresolved.
+    param([string[]]$Path)
+
+    $helpers = [ordered]@{}
+    $store = $null
+    $includes = $false
+    foreach ($file in $Path) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
+        $section = ''
+        foreach ($line in [IO.File]::ReadAllLines($file)) {
+            $text = $line.Trim()
+            if ($text -match '^[#;]') { continue }
+            if ($text -match '^\[\s*([^\]]+?)\s*\]') {
+                $section = $Matches[1]
+                if ($section -match '^(?i)include(if)?\b') { $includes = $true }
+                continue
+            }
+            if ($section -notmatch '^(?i)credential(\s|\.|$)') { continue }
+            if ($text -match '^(?i)(helper|credentialStore)\s*(?:=\s*(.*))?$') {
+                $value = "$($Matches[2])".Trim()
+                if ($Matches[1] -ieq 'credentialStore') { $store = $value.Trim('"'); continue }
+                $key = $section.ToLowerInvariant()
+                if (-not $helpers.Contains($key)) { $helpers[$key] = [Collections.Generic.List[string]]::new() }
+                if ($value -eq '' -or $value -eq '""') { $helpers[$key].Clear() } else { $helpers[$key].Add($value) }
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Helpers = @($helpers.Values | ForEach-Object { $_ } | Where-Object { $_ })
+        CredentialStore = $store
+        Includes = $includes
+    }
+}
+
 function Invoke-RemoteCheck {
     # A-REMOTE-DELEGATED: presence only; credentials are never read or used.
+    # A credential helper is usable only if it has something stored: a
+    # helper with nothing stored can only obtain credentials interactively.
     $signals = @()
-    $gitConfigs = @(
-        (Join-Path $env:USERPROFILE '.gitconfig'),
-        (Join-Path $env:ProgramData 'Git\config'),
-        (Join-Path $env:ProgramFiles 'Git\etc\gitconfig'))
-    foreach ($gitConfig in $gitConfigs) {
-        if ((Test-Path -LiteralPath $gitConfig) -and
-            (Select-String -LiteralPath $gitConfig -Pattern 'helper\s*=' -Quiet -ErrorAction SilentlyContinue)) {
-            $signals += "git-credential-helper:$(Split-Path -Leaf $gitConfig)"
+    $unresolved = @()
+    $git = Get-GitCredentialConfig -Path (Get-GitConfigPaths)
+    if ($git.Includes) { $unresolved += 'git config include not followed' }
+    $script:Inventory['gitCredentialHelpers'] = @($git.Helpers | ForEach-Object { ($_ -split '\s+')[0] })
+    foreach ($helper in $git.Helpers) {
+        $name = ($helper -split '\s+')[0]
+        if ($name -in 'manager', 'manager-core', 'wincred') {
+            if ($name -ne 'wincred' -and $git.CredentialStore -and $git.CredentialStore -ne 'wincred') {
+                $unresolved += "git-credential-helper:$name (credentialStore $($git.CredentialStore))"
+                continue
+            }
+            try {
+                $stored = @(Get-StoredCredentialTargets | Where-Object { $_ -like 'git:*' })
+                if ($stored.Count -gt 0) { $signals += "git-credential-helper:$name ($($stored.Count) stored)" }
+            }
+            catch { $unresolved += "git-credential-helper:$name (Credential Manager not readable)" }
         }
+        elseif ($name -eq 'store') {
+            $storeFiles = if ($helper -match '--file[=\s]+(?:"([^"]+)"|(\S+))') { @("$($Matches[1])$($Matches[2])" -replace '^~', $env:USERPROFILE) }
+            else { @((Join-Path $env:USERPROFILE '.git-credentials'), (Join-Path $env:USERPROFILE '.config\git\credentials')) }
+            if (@($storeFiles | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).Count -gt 0) { $signals += 'git-credential-helper:store' }
+        }
+        else { $unresolved += "git-credential-helper:$name" }
     }
     $credentialFiles = @(
         (Join-Path $env:USERPROFILE '.git-credentials'),
@@ -3036,9 +3108,14 @@ function Invoke-RemoteCheck {
             -Capability 'usable remote credential source' -Result observed -Method inventory -Scope 'remote' `
             -Impact 'Agent may act against remote services; granted scope unknown.' -Severity high
     }
+    elseif ($unresolved.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-REMOTE-DELEGATED' -Outcome 'unknown' -Method 'inventory' `
+            -Reason "Git credential configuration could not be fully assessed: $($unresolved -join '; ')."
+    }
     else {
+        $helperNote = if ($git.Helpers.Count -gt 0) { ' Configured git credential helpers have nothing stored.' } else { '' }
         Set-CriterionOutcome -Id 'A-REMOTE-DELEGATED' -Outcome 'met' -Method 'inventory' `
-            -Reason 'No git credential helper or known tool login material was found for the agent identity.'
+            -Reason "No stored git credential or known tool login material was found for the agent identity.$helperNote"
     }
 
     # A-TOOL-SCOPE: declared MCP/tool servers. Local declarations only. Parsed

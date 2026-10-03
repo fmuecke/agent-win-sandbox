@@ -499,7 +499,7 @@ try {
         $report = -join (& { Write-HumanReport -Measure ([pscustomobject]@{ Verdict = 'Partial'; ScoreLower = 50; ScoreUpper = 60; CriticalCapApplied = $false; Coverage = 0.9; Dimensions = @() }) -Context $context } 6>&1 |
             ForEach-Object { $_.MessageData.Message + $(if ($_.MessageData.NoNewLine) { '' } else { "`n" }) })
         $line = @($report -split "`r?`n" | Where-Object { $_ -like 'Verdict:*' })[0]
-        Assert-Equal $line 'Verdict: Critical exposure | Weak | Incomplete | PARTIAL | Bounded within tested scope'
+        Assert-Equal $line 'Verdict: Critical | Incomplete | Weak | PARTIAL | Strong'
     }
     Test-Case 'The verdict block follows the findings and precedes remediation' {
         $script:Criteria['A-ID-ADMIN'].Outcome = 'unmet'
@@ -644,6 +644,47 @@ try {
             Set-ContainmentFixture -Settings $case.Settings -Owner $case.Owner -Write $case.Write
             Invoke-ContainmentFixture
             Assert-Equal $script:Criteria['C-TOOL-POLICY'].Outcome $case.Expected
+        }
+    }
+    # Git credential fixtures: synthetic config files in Git's read order and
+    # synthetic Credential Manager target names.
+    function Invoke-GitCredentialFixture {
+        param([string[]]$Configs, [string[]]$StoredTargets = @())
+        $paths = @()
+        for ($i = 0; $i -lt $Configs.Count; $i++) {
+            $path = Join-Path $script:WorkspacePath "gitconfig-$i"
+            [IO.File]::WriteAllText($path, $Configs[$i])
+            $paths += $path
+        }
+        $script:fixtureGitPaths = $paths
+        $script:fixtureTargets = $StoredTargets
+        function Get-GitConfigPaths { $script:fixtureGitPaths }
+        function Get-StoredCredentialTargets { $script:fixtureTargets }
+        function Get-CimInstance { [pscustomobject]@{ PartOfDomain = $false; Workgroup = 'WORKGROUP'; Domain = 'WORKGROUP' } }
+        Invoke-RemoteCheck
+        return $script:Criteria['A-REMOTE-DELEGATED'].Outcome
+    }
+    Test-Case 'A Credential Manager helper with nothing stored is not a usable credential' {
+        Assert-Equal (Invoke-GitCredentialFixture -Configs "[credential]`n`thelper = manager`n") 'met'
+    }
+    Test-Case 'A Credential Manager helper with a stored git credential is usable' {
+        Assert-Equal (Invoke-GitCredentialFixture -Configs "[credential]`n`thelper = manager`n" -StoredTargets 'git:https://github.com') 'unmet'
+    }
+    Test-Case 'An empty helper value in a later config clears earlier helpers' {
+        Assert-Equal (Invoke-GitCredentialFixture -Configs "[credential]`n`thelper = store`n", "[credential]`n`thelper =`n") 'met'
+    }
+    Test-Case 'A store helper with an existing credential file is usable' {
+        $file = Join-Path $script:WorkspacePath 'creds'
+        [IO.File]::WriteAllText($file, '')
+        $config = "[credential]`n`thelper = store --file `"$($file -replace '\\', '/')`"`n"
+        Assert-Equal (Invoke-GitCredentialFixture -Configs $config) 'unmet'
+    }
+    foreach ($case in @(
+            @{ Name = 'a custom helper'; Config = "[credential `"https://example.com`"]`n`thelper = !synthetic-helper`n" },
+            @{ Name = 'a non-default credential store'; Config = "[credential]`n`thelper = manager`n`tcredentialStore = dpapi`n" },
+            @{ Name = 'an unresolved include'; Config = "[include]`n`tpath = other.gitconfig`n" })) {
+        Test-Case "Git credentials behind $($case.Name) stay unknown" {
+            Assert-Equal (Invoke-GitCredentialFixture -Configs $case.Config) 'unknown'
         }
     }
     Test-Case 'PowerShell 7 script-block logging counts as configured logging' {
