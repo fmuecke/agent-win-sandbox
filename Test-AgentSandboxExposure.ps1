@@ -2435,19 +2435,167 @@ function Expand-MachinePath {
         })
 }
 
-function Get-TaskActionTargets {
-    # Recognize common script-launch forms as data. Ambiguous command strings,
-    # per-user environment paths and non-exec actions remain incomplete.
-    param([Parameter(Mandatory)]$Action)
+function Read-RegistryValue {
+    # Reads a key's default or named value without expanding variables.
+    # State is present, absent or denied; it describes the key, so a key
+    # without the requested value is present with a $null Value.
+    param([Parameter(Mandatory)][string]$Path, [string]$Name = '')
+
+    try {
+        $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+        return [pscustomobject]@{ State = 'present'; Value = $key.GetValue($Name, $null, 'DoNotExpandEnvironmentNames') }
+    }
+    catch [Management.Automation.ItemNotFoundException] { return [pscustomobject]@{ State = 'absent'; Value = $null } }
+    catch { return [pscustomobject]@{ State = 'denied'; Value = $null } }
+}
+
+function Get-ArgumentPathTokens {
+    # Absolute paths an argument string hands to a program, after expanding
+    # machine-wide variables. Flags and other words are data. A bare DLL name,
+    # optionally after a -name: or -name= prefix, resolves in -BaseDirectory
+    # when present there, because LoadLibrary searches the program directory
+    # first. A rundll32-style ",EntryPoint" suffix is not part of a path. Any
+    # other token that looks like a file reference but is not an absolute
+    # local path (per-user variable, UNC, relative or bare name) is incomplete.
+    param([string]$Arguments, [string]$BaseDirectory)
 
     $paths = [Collections.Generic.List[string]]::new()
+    $incomplete = $false
+    foreach ($match in [regex]::Matches((Expand-MachinePath $Arguments), '"([^"]*)"|(\S+)')) {
+        $token = if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value }
+        $path = [regex]::Match($token, '(?<![A-Za-z0-9])[A-Za-z]:[\\/].*')
+        if ($path.Success -and $token -notmatch '%') {
+            $paths.Add(($path.Value -replace '(\.[A-Za-z0-9]{1,5}),[^\\/]*$', '$1'))
+            continue
+        }
+        $bareDll = [regex]::Match($token, '(?i)^(?:[-/][\w-]*[:=])?([\w.-]+\.dll)$')
+        if ($bareDll.Success -and $BaseDirectory) {
+            $candidate = Join-Path $BaseDirectory $bareDll.Groups[1].Value
+            if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction SilentlyContinue) {
+                $paths.Add($candidate)
+                continue
+            }
+        }
+        if ($token -match '%|\\' -or $token -match '(?i)\.(?:ps1|psm1|bat|cmd|exe|dll|js|vbs|py|xml|json|config|ini|txt)$') {
+            $incomplete = $true
+        }
+    }
+    return [pscustomobject]@{ Paths = @($paths.ToArray()); Incomplete = $incomplete }
+}
+
+function Resolve-BareExecutable {
+    # Resolves a bare program name the way CreateProcess searches: the
+    # working directory, the system directories, then the machine PATH.
+    # Agent-writable PATH directories are assessed by A-HANDOFF-SHARED.
+    param([string]$Name, [string]$WorkingDirectory)
+
+    if ($Name -notmatch '^[\w.-]+$') { return $null }
+    $file = if ([IO.Path]::GetExtension($Name)) { $Name } else { "$Name.exe" }
+    $directories = @($WorkingDirectory, [Environment]::SystemDirectory, (Join-Path $env:windir 'System'), $env:windir) +
+        @(([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') | ForEach-Object { Expand-MachinePath $_.Trim() })
+    foreach ($directory in $directories) {
+        if ($directory -notmatch '^[A-Za-z]:[\\/]' -or $directory -match '%') { continue }
+        $candidate = Join-Path $directory $file
+        if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction SilentlyContinue) { return $candidate }
+    }
+    return $null
+}
+
+function Resolve-ComHandler {
+    # Resolves a COM task handler to the server file it loads, plus the
+    # registry keys whose change would redirect it. A principal's per-user
+    # registration overrides the machine one; a per-user hive this identity
+    # cannot read is accepted as having no override (see the spec). A class
+    # hosted by a service (AppID LocalService) is assessed through the
+    # services check; an unregistered class through whether it can be added.
+    param([string]$ClassId, [string]$PrincipalSid)
+
+    $result = [pscustomobject]@{ Paths = @(); ArgumentPaths = @(); Keys = @(); Incomplete = $true }
+    if ($ClassId -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { return $result }
+    $registrations = @()
+    if ($PrincipalSid) {
+        foreach ($sub in @("${PrincipalSid}_Classes\CLSID", "$PrincipalSid\Software\Classes\CLSID")) {
+            $registrations += @{ Hive = 3; Root = 'Registry::HKEY_USERS\'; Sub = "$sub\$ClassId" }
+            # Creating this key would plant an override for the principal.
+            $result.Keys += @{ Hive = 3; Sub = $sub; Access = 0x4; Display = "HKU\$sub (create override)" }
+        }
+    }
+    $registrations += @{ Hive = 2; Root = 'Registry::HKEY_LOCAL_MACHINE\'; Sub = "SOFTWARE\Classes\CLSID\$ClassId" }
+    foreach ($registration in $registrations) {
+        $base = $registration.Root + $registration.Sub
+        $state = (Read-RegistryValue $base).State
+        if ($state -eq 'denied' -and $registration.Hive -eq 2) { return $result }
+        if ($state -ne 'present') { continue }
+        if ((Read-RegistryValue "$base\TreatAs").State -ne 'absent') { return $result }
+        $display = $(if ($registration.Hive -eq 2) { 'HKLM\' } else { 'HKU\' }) + $registration.Sub
+        $result.Keys += @{ Hive = $registration.Hive; Sub = $registration.Sub; Access = 0x2 -bor 0x4; Display = $display }
+        $inproc = Read-RegistryValue "$base\InprocServer32"
+        $local = Read-RegistryValue "$base\LocalServer32"
+        if ($inproc.State -eq 'present' -and $inproc.Value) {
+            $server = Expand-MachinePath ([string]$inproc.Value).Trim().Trim('"')
+            $result.Keys += @{ Hive = $registration.Hive; Sub = "$($registration.Sub)\InprocServer32"; Access = 0x2; Display = "$display\InprocServer32" }
+            if ($server -match '^[A-Za-z]:[\\/]' -and $server -notmatch '%') {
+                $result.Paths = @($server)
+                $result.Incomplete = $false
+            }
+        }
+        elseif ($local.State -eq 'present' -and $local.Value) {
+            $tokens = Get-ArgumentPathTokens ([string]$local.Value)
+            $result.Keys += @{ Hive = $registration.Hive; Sub = "$($registration.Sub)\LocalServer32"; Access = 0x2; Display = "$display\LocalServer32" }
+            $result.Paths = @($tokens.Paths | Select-Object -First 1)
+            $result.ArgumentPaths = @($tokens.Paths | Select-Object -Skip 1)
+            $result.Incomplete = $tokens.Incomplete -or $result.Paths.Count -eq 0
+        }
+        else {
+            $appId = [string](Read-RegistryValue $base -Name 'AppID').Value
+            if ($appId -match '^\{[0-9A-Fa-f-]{36}\}$') {
+                $appSub = "SOFTWARE\Classes\AppID\$appId"
+                $service = Read-RegistryValue "Registry::HKEY_LOCAL_MACHINE\$appSub" -Name 'LocalService'
+                if ($service.State -eq 'present' -and $service.Value) {
+                    $result.Keys += @{ Hive = 2; Sub = $appSub; Access = 0x2; Display = "HKLM\$appSub" }
+                    $result.Incomplete = $false
+                }
+            }
+        }
+        return $result
+    }
+    # Registered nowhere readable: the task loads nothing unless the class
+    # can be registered.
+    $result.Keys += @{ Hive = 2; Sub = 'SOFTWARE\Classes\CLSID'; Access = 0x4; Display = 'HKLM\SOFTWARE\Classes\CLSID (register handler)' }
+    $result.Incomplete = $false
+    return $result
+}
+
+function Get-TaskActionTargets {
+    # Recognize common script-launch forms and COM handlers as data.
+    # Ambiguous command strings, per-user environment paths and unresolvable
+    # handlers remain incomplete.
+    param([Parameter(Mandatory)]$Action, [string]$PrincipalSid)
+
+    if ($Action.PSObject.Properties.Name -contains 'ClassId') {
+        return Resolve-ComHandler -ClassId ([string]$Action.ClassId) -PrincipalSid $PrincipalSid
+    }
+    $paths = [Collections.Generic.List[string]]::new()
+    $argumentPaths = @()
     $incomplete = $false
     $execute = if ($Action.PSObject.Properties.Name -contains 'Execute') { [string]$Action.Execute } else { '' }
     $arguments = if ($Action.PSObject.Properties.Name -contains 'Arguments') { [string]$Action.Arguments } else { '' }
     $working = if ($Action.PSObject.Properties.Name -contains 'WorkingDirectory') { Expand-MachinePath ([string]$Action.WorkingDirectory) } else { '' }
     $execute = Expand-MachinePath $execute.Trim('"')
+    if ($execute -notmatch '^[A-Za-z]:[\\/]') {
+        $resolved = Resolve-BareExecutable -Name $execute -WorkingDirectory $working
+        if ($resolved) { $execute = $resolved }
+    }
     if ($execute -match '^[A-Za-z]:[\\/]' -and $execute -notmatch '%') { $paths.Add($execute) }
     else { $incomplete = $true }
+    # conhost --headless only hosts the command that follows; assess that.
+    if ($paths.Count -gt 0 -and [IO.Path]::GetFileNameWithoutExtension($execute) -eq 'conhost' -and
+        $arguments -match '^\s*--headless\s+(?:"(?<exe>[^"]+)"|(?<exe>\S+))\s*(?<rest>.*)$') {
+        $hosted = [pscustomobject]@{ Execute = $Matches['exe']; Arguments = $Matches['rest']; WorkingDirectory = $working }
+        $inner = Get-TaskActionTargets $hosted -PrincipalSid $PrincipalSid
+        $inner.Paths = @($execute) + @($inner.Paths)
+        return $inner
+    }
     $interpreter = [IO.Path]::GetFileNameWithoutExtension($execute)
     $scriptArgument = $null
     if ($interpreter -in @('powershell', 'pwsh', 'cmd', 'python', 'python3', 'node', 'cscript', 'wscript', 'bash', 'sh')) {
@@ -2468,8 +2616,12 @@ function Get-TaskActionTargets {
         else { $incomplete = $true }
     }
     elseif ($arguments) {
-        # Other executables can load scripts/plugins/configuration from args.
-        $incomplete = $true
+        # Other executables can load scripts/plugins/configuration from args;
+        # each absolute path among them is assessed like an execution file.
+        $programDirectory = if ($paths.Count -gt 0) { Split-Path -Parent $paths[0] } else { '' }
+        $tokens = Get-ArgumentPathTokens $arguments -BaseDirectory $programDirectory
+        $argumentPaths = $tokens.Paths
+        if ($tokens.Incomplete) { $incomplete = $true }
     }
     if ($scriptArgument) {
         if ($scriptArgument -match '%' -or $scriptArgument -match '^\\\\') { $incomplete = $true }
@@ -2479,7 +2631,7 @@ function Get-TaskActionTargets {
         }
         else { $incomplete = $true }
     }
-    return [pscustomobject]@{ Paths = @($paths.ToArray()); Incomplete = $incomplete }
+    return [pscustomobject]@{ Paths = @($paths.ToArray()); ArgumentPaths = @($argumentPaths); Keys = @(); Incomplete = $incomplete }
 }
 
 function Get-MissingFileCreateAccess {
@@ -2510,12 +2662,21 @@ function Invoke-IndirectCheck {
     # Services
     try {
         foreach ($service in @(Get-CimInstance -ClassName Win32_Service -ErrorAction Stop)) {
-            $exe = Get-ServiceImagePath -PathName $service.PathName
+            $pathName = $service.PathName
+            $startName = $service.StartName
+            if (-not $pathName -or -not $startName) {
+                # CIM omits configuration this identity cannot query; the
+                # service's registry key is often still readable.
+                $serviceKey = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\$($service.Name)"
+                if (-not $pathName) { $pathName = Expand-MachinePath ([string](Read-RegistryValue $serviceKey -Name 'ImagePath').Value) }
+                if (-not $startName) { $startName = [string](Read-RegistryValue $serviceKey -Name 'ObjectName').Value }
+            }
+            $exe = Get-ServiceImagePath -PathName $pathName
             if (-not $exe) { $incomplete = $true; continue }
             $probed++
             # The consumer identity only grades severity; an unresolved one
             # does not make denied write access unknown.
-            $consumerSid = Get-ExecutionIdentitySid $service.StartName
+            $consumerSid = Get-ExecutionIdentitySid $startName
             $missingCreate = if (-not (Test-Path -LiteralPath $exe -ErrorAction SilentlyContinue)) { Get-MissingFileCreateAccess -Path $exe }
             if ($missingCreate) {
                 $binaryWritable = if ($missingCreate -eq 'granted') { 'creatable while missing' }
@@ -2563,7 +2724,7 @@ function Invoke-IndirectCheck {
                     if ($replacement) { 'binary replacement via delete and parent file-create rights' }
                     elseif ($deletable) { 'binary deletion' }
                 ) -join ', '
-                Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "service:$($service.Name) [$($service.StartName)]" `
+                Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "service:$($service.Name) [$startName]" `
                     -Capability "agent-writable service target: $how" -Result granted -Method permission-analysis `
                     -Scope 'broker' -Impact 'Granted rights permit changes to a service execution file, configuration or parent directory; execution was not exercised.' -Severity $severity
             }
@@ -2581,8 +2742,36 @@ function Invoke-IndirectCheck {
             if ($task.Principal) { $principal = $task.Principal.UserId }
             $consumerSid = Get-ExecutionIdentitySid $principal
             foreach ($action in @($task.Actions)) {
-                $targets = Get-TaskActionTargets $action
+                $targets = Get-TaskActionTargets $action -PrincipalSid $consumerSid
                 if ($targets.Incomplete) { $incomplete = $true }
+                foreach ($key in $targets.Keys) {
+                    $keyProbe = [AgentSandboxAssessmentNative]::ProbeRegistryKey($key.Hive, $key.Sub, [uint32]$key.Access)
+                    if ($keyProbe -eq 0) {
+                        $unmet += "task:$($task.TaskName)"
+                        $severity = if ($consumerSid -eq 'S-1-5-18' -and $ownSid -ne $consumerSid) { 'critical' } else { 'high' }
+                        if ($severity -eq 'critical') { $criticalHit = $true }
+                        Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "task:$($task.TaskName) [$principal]" `
+                            -Capability "agent-writable task COM registration [$($key.Display)]" -Result granted -Method access-request `
+                            -Scope 'broker' -Impact 'Agent can redirect the COM handler a task loads; execution was not exercised.' -Severity $severity
+                    }
+                    elseif ($keyProbe -notin 2, 3, 5) { $incomplete = $true }
+                }
+                foreach ($argumentPath in $targets.ArgumentPaths) {
+                    # A missing argument may be an output the program creates, so it
+                    # is not treated as plantable; it stays unresolved.
+                    if (-not (Test-Path -LiteralPath $argumentPath -ErrorAction SilentlyContinue) -and
+                        (Get-PathAccess -Path $argumentPath).ErrorCategory -eq 'not-found') { $incomplete = $true; continue }
+                    $probed++
+                    $argumentAccess = Get-PathAccess -Path $argumentPath
+                    $how = Test-AnyWrite -Access $argumentAccess
+                    if ($how) {
+                        $unmet += "task:$($task.TaskName)"
+                        Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "task:$($task.TaskName) [$principal]" `
+                            -Capability "agent-writable task argument path ($how) [$argumentPath]" -Result granted -Method permission-analysis `
+                            -Scope 'broker' -Impact 'A path passed to a task program is agent-writable; whether the program loads code from it is unverified.' -Severity high
+                    }
+                    elseif (Test-UnknownWrite $argumentAccess) { $incomplete = $true }
+                }
                 $executionResolved = -not $targets.Incomplete -and $targets.Paths.Count -gt 0 -and
                     (Test-Path -LiteralPath $targets.Paths[0] -ErrorAction SilentlyContinue)
                 foreach ($exe in $targets.Paths) {

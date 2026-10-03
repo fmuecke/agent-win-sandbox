@@ -39,7 +39,8 @@ public static class AgentSandboxAssessmentNative {
         ServiceRequests.Add(right);
         return (right & ServiceGranted) == right ? 0 : 5;
     }
-    public static int ProbeRegistryKey(int hive, string path, uint right) { return 5; }
+    public static string RegistryGrantedPath;
+    public static int ProbeRegistryKey(int hive, string path, uint right) { return path == RegistryGrantedPath ? 0 : 5; }
     public static TestToken GetCurrentToken() { return new TestToken(); }
     public static TestToken GetProcessToken(int pid) { return ForeignToken; }
     public static int ProbeProcess(int pid, uint right) {
@@ -84,6 +85,7 @@ function Test-Case {
     [AgentSandboxAssessmentNative]::NamedGranted = 0
     [AgentSandboxAssessmentNative]::FileError = 5
     [AgentSandboxAssessmentNative]::FileErrors.Clear()
+    [AgentSandboxAssessmentNative]::RegistryGrantedPath = $null
     [AgentSandboxAssessmentNative]::ServiceGranted = 0
     [AgentSandboxAssessmentNative]::ServiceRequests.Clear()
     [AgentSandboxAssessmentNative]::NamedPath = $null
@@ -694,6 +696,7 @@ try {
         Assert-Equal $script:Criteria['A-SVC'].Critical $false
     }
     Test-Case 'A task script with an unresolved interpreter does not establish privileged execution' {
+        function Resolve-BareExecutable { $null }
         function Get-CimInstance { @() }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
@@ -798,6 +801,160 @@ try {
         Assert-Equal (@($result.Paths) -contains (Join-Path $env:windir 'system32\synthetic.exe')) $true
         $action.Execute = '%LOCALAPPDATA%\synthetic.exe'
         Assert-Equal (Get-TaskActionTargets $action).Incomplete $true
+    }
+    # COM handler fixtures: Read-RegistryValue reads a synthetic registry whose
+    # keys are paths (default value) or 'path::name' (named value).
+    $comId = '{11111111-2222-3333-4444-555555555555}'
+    $machineCom = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\$comId"
+    $userCom = "Registry::HKEY_USERS\S-1-5-21-101-102-103-1002_Classes\CLSID\$comId"
+    function New-SyntheticRegistry {
+        param([hashtable]$Values, [string[]]$Denied = @())
+        $script:syntheticRegistry = $Values
+        $script:syntheticDenied = $Denied
+    }
+    function Read-RegistryValue {
+        param($Path, $Name = '')
+        if ($script:syntheticDenied | Where-Object { $Path.StartsWith($_) }) { return [pscustomobject]@{ State = 'denied'; Value = $null } }
+        if (-not $script:syntheticRegistry.ContainsKey($Path)) { return [pscustomobject]@{ State = 'absent'; Value = $null } }
+        $value = if ($Name) { $script:syntheticRegistry["${Path}::$Name"] } else { $script:syntheticRegistry[$Path] }
+        return [pscustomobject]@{ State = 'present'; Value = $value }
+    }
+    Test-Case 'A service-hosted COM handler is assessed through its service' {
+        $appId = '{66666666-7777-8888-9999-000000000000}'
+        $appKey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\AppID\$appId"
+        New-SyntheticRegistry @{ $machineCom = ''; "${machineCom}::AppID" = $appId; $appKey = ''; "${appKey}::LocalService" = 'SyntheticSvc' }
+        $result = Get-TaskActionTargets ([pscustomobject]@{ ClassId = $comId; Data = '' })
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal $result.Paths.Count 0
+        Assert-Equal (@($result.Keys | Where-Object { $_.Sub -eq "SOFTWARE\Classes\AppID\$appId" }).Count) 1
+    }
+    Test-Case 'An unregistered COM handler is resolved by whether it can be registered' {
+        New-SyntheticRegistry @{}
+        $result = Get-TaskActionTargets ([pscustomobject]@{ ClassId = $comId; Data = '' })
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal (@($result.Keys | Where-Object { $_.Sub -eq 'SOFTWARE\Classes\CLSID' -and $_.Access -eq 0x4 }).Count) 1
+    }
+    Test-Case 'A rundll32 entry point is not part of the DLL path' {
+        $result = Get-ArgumentPathTokens 'C:\WINDOWS\system32\synthetic.dll,EntryPoint'
+        Assert-Equal @($result.Paths)[0] 'C:\WINDOWS\system32\synthetic.dll'
+    }
+    Test-Case 'A bare program name resolves through the system directories' {
+        $result = Get-TaskActionTargets ([pscustomobject]@{ Execute = 'sc.exe'; Arguments = ''; WorkingDirectory = '' })
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal @($result.Paths)[0] (Join-Path ([Environment]::SystemDirectory) 'sc.exe')
+    }
+    Test-Case 'A bare DLL argument resolves in the program directory only when present' {
+        $tool = Join-Path $script:WorkspacePath 'tool.exe'
+        [IO.File]::WriteAllText($tool, '')
+        [IO.File]::WriteAllText((Join-Path $script:WorkspacePath 'plugin.dll'), '')
+        $result = Get-TaskActionTargets ([pscustomobject]@{ Execute = $tool; Arguments = '-m:plugin.dll -f:Run'; WorkingDirectory = '' })
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal @($result.ArgumentPaths)[0] (Join-Path $script:WorkspacePath 'plugin.dll')
+        $result = Get-TaskActionTargets ([pscustomobject]@{ Execute = $tool; Arguments = '-m:absent.dll'; WorkingDirectory = '' })
+        Assert-Equal $result.Incomplete $true
+    }
+    Test-Case 'A headless conhost wrapper is assessed through the command it hosts' {
+        $action = [pscustomobject]@{ Execute = 'conhost.exe'; Arguments = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File job.ps1'; WorkingDirectory = $script:WorkspacePath }
+        $result = Get-TaskActionTargets $action
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal (@($result.Paths) -contains (Join-Path ([Environment]::SystemDirectory) 'conhost.exe')) $true
+        Assert-Equal (@($result.Paths) -contains (Join-Path $script:WorkspacePath 'job.ps1')) $true
+    }
+    Test-Case 'A service hidden from CIM is read from its registry ImagePath' {
+        $serviceKey = 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\test-service'
+        New-SyntheticRegistry @{ $serviceKey = ''; "${serviceKey}::ImagePath" = 'C:\synthetic\svc.exe -k test'; "${serviceKey}::ObjectName" = 'LocalSystem' }
+        function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = $null; StartName = $null } }
+        function Get-ScheduledTask { @() }
+        function Test-Path { $true }
+        function Get-PathAccess { [pscustomobject]@{ Write = 'denied'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
+        Invoke-IndirectCheck
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'met'
+    }
+    Test-Case 'A COM handler resolves to its machine-registered server file' {
+        New-SyntheticRegistry @{ $machineCom = ''; "$machineCom\InprocServer32" = '%SystemRoot%\system32\synthetic.dll' }
+        $result = Get-TaskActionTargets ([pscustomobject]@{ ClassId = $comId; Data = '' })
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal @($result.Paths)[0] (Join-Path $env:SystemRoot 'system32\synthetic.dll')
+    }
+    Test-Case 'A principal''s per-user COM registration overrides the machine one' {
+        New-SyntheticRegistry @{ $machineCom = ''; "$machineCom\InprocServer32" = 'C:\machine\server.dll'; $userCom = ''; "$userCom\InprocServer32" = 'C:\user\server.dll' }
+        $result = Get-TaskActionTargets ([pscustomobject]@{ ClassId = $comId; Data = '' }) -PrincipalSid 'S-1-5-21-101-102-103-1002'
+        Assert-Equal @($result.Paths)[0] 'C:\user\server.dll'
+    }
+    Test-Case 'An unreadable per-user COM hive falls back to the machine registration' {
+        New-SyntheticRegistry @{ $machineCom = ''; "$machineCom\InprocServer32" = 'C:\machine\server.dll' } -Denied @('Registry::HKEY_USERS\S-1-5-21-101-102-103-1002')
+        $result = Get-TaskActionTargets ([pscustomobject]@{ ClassId = $comId; Data = '' }) -PrincipalSid 'S-1-5-21-101-102-103-1002'
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal @($result.Paths)[0] 'C:\machine\server.dll'
+    }
+    foreach ($case in @(
+            @{ Name = 'a TreatAs redirection'; Values = @{ $machineCom = ''; "$machineCom\TreatAs" = '{x}'; "$machineCom\InprocServer32" = 'C:\machine\server.dll' } },
+            @{ Name = 'a bare server name'; Values = @{ $machineCom = ''; "$machineCom\InprocServer32" = 'server.dll' } })) {
+        Test-Case "A COM handler with $($case.Name) stays unresolved" {
+            New-SyntheticRegistry $case.Values
+            Assert-Equal (Get-TaskActionTargets ([pscustomobject]@{ ClassId = $comId; Data = '' })).Incomplete $true
+        }
+    }
+    Test-Case 'An agent-writable COM registration for a SYSTEM task is critical' {
+        New-SyntheticRegistry @{ $machineCom = ''; "$machineCom\InprocServer32" = 'C:\machine\server.dll' }
+        [AgentSandboxAssessmentNative]::RegistryGrantedPath = "SOFTWARE\Classes\CLSID\$comId\InprocServer32"
+        function Get-CimInstance { @() }
+        function Get-ScheduledTask {
+            [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
+                Actions = @([pscustomobject]@{ ClassId = $comId; Data = '' }) }
+        }
+        function Test-Path { $true }
+        function Get-PathAccess { [pscustomobject]@{ Write = 'denied'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
+        Invoke-IndirectCheck
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-SVC'].Critical $true
+    }
+    Test-Case 'Absolute argument paths of a program are extracted; flags are data' {
+        $action = [pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '/reporting --config "C:\Program Files\synthetic\a.json" /out:%ProgramData%\x.log'; WorkingDirectory = '' }
+        $result = Get-TaskActionTargets $action
+        Assert-Equal $result.Incomplete $false
+        Assert-Equal (@($result.ArgumentPaths) -contains 'C:\Program Files\synthetic\a.json') $true
+        Assert-Equal (@($result.ArgumentPaths) -contains (Join-Path $env:ProgramData 'x.log')) $true
+    }
+    foreach ($arguments in @('-f %LOCALAPPDATA%\x.json', '-f sub\x.json', '-f \\server\share\x.json', '-f settings.xml')) {
+        Test-Case "An unresolvable argument path stays unknown ($arguments)" {
+            $action = [pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = $arguments; WorkingDirectory = '' }
+            Assert-Equal (Get-TaskActionTargets $action).Incomplete $true
+        }
+    }
+    Test-Case 'A writable argument path is high but not critical' {
+        function Get-CimInstance { @() }
+        function Get-ScheduledTask {
+            [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
+                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '--config C:\synthetic\a.json'; WorkingDirectory = '' }) }
+        }
+        function Test-Path { $true }
+        function Get-PathAccess {
+            param($Path)
+            $write = if ($Path -eq 'C:\synthetic\a.json') { 'granted' } else { 'denied' }
+            [pscustomobject]@{ Write = $write; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied'; DeleteChild = 'denied' }
+        }
+        Invoke-IndirectCheck
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-SVC'].Critical $false
+    }
+    Test-Case 'A missing argument path stays unknown instead of plantable' {
+        function Get-CimInstance { @() }
+        function Get-ScheduledTask {
+            [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
+                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '--log C:\logs\missing.log'; WorkingDirectory = '' }) }
+        }
+        function Test-Path { param($LiteralPath) $LiteralPath -ne 'C:\logs\missing.log' }
+        function Get-PathAccess {
+            param($Path)
+            if ($Path -eq 'C:\logs\missing.log') { return [pscustomobject]@{ ErrorCategory = 'not-found'; Exists = $false } }
+            # The missing argument's folder would accept a new file.
+            $create = if ($Path -eq 'C:\logs') { 'granted' } else { 'denied' }
+            [pscustomobject]@{ Write = 'denied'; Create = $create; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied'; DeleteChild = 'denied'; ErrorCategory = $null; Exists = $true }
+        }
+        Invoke-IndirectCheck
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unknown'
+        Assert-Equal (@($script:Findings | Where-Object { $_.Result -eq 'granted' }).Count) 0
     }
     Test-Case 'Native file analysis distinguishes child read rights and parent deletion rights' {
         $fixture = Join-Path $script:WorkspacePath 'native-fixture.json'
