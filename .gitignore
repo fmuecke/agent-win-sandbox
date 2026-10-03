@@ -1,2 +1,4 @@
 discovery/
 dist/
+.claude/settings.local.json
+.claude/skills/*

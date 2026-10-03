@@ -1,0 +1,25 @@
+# Normalize line endings so they no longer depend on each clone's core.autocrlf.
+# Text is stored as LF in the repository; working-tree endings are set per type.
+
+* text=auto
+
+# Windows PowerShell tooling: CRLF in the working tree.
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Everything else text: LF in the working tree.
+*.md   text eol=lf
+*.json text eol=lf
+*.log  text eol=lf
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+LICENSE        text eol=lf
+
+# Binary assets are never converted or diffed as text.
+*.exe binary
+*.dll binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.ico binary

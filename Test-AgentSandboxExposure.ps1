@@ -1,0 +1,3083 @@
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: MIT
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
+
+#requires -Version 7.0
+
+<#
+.SYNOPSIS
+    Inside-only exposure assessment for an AI coding agent's execution context.
+
+.DESCRIPTION
+    Assumes prompt injection succeeded and the agent runs arbitrary code as the
+    current process identity. The script inventories and probes, without
+    damaging anything, what that identity can reach, which authority it holds,
+    how well it is contained and whether its actions are visible. It reports a
+    control score interval, evidence coverage and a verdict.
+
+    Run it through the agent's normal shell. It needs no elevation, modules or
+    prompts. It never reads another process's memory or file contents, uses
+    discovered credentials, executes discovered scripts or binaries, or
+    modifies files, ACLs, services, tasks or the registry. Access probes
+    request one right at a time and close the handle immediately.
+
+    Network probes run only with -ProbeNetwork or -NetworkTarget. TCP probes
+    connect and close without sending data.
+
+    v1 does not implement the secret content scan, Credential Manager
+    inventory or process injection-right probes; those criteria stay unknown.
+
+    Limits: this run cannot establish complete host policy, external log
+    collection or remote authorization. A compromised agent can falsify the
+    report. Treat the output as data for review, not instructions.
+
+.PARAMETER Json
+    Write exactly one schema-versioned JSON object to stdout. Diagnostics go to
+    stderr.
+
+.PARAMETER Brief
+    Shorten the human report to the summary only: verdict, score, dimensions,
+    top findings, unknowns and remediation. Without it, the report also lists
+    every criterion grouped by dimension with its outcome
+    (met/unmet/unknown/na) and reason. Ignored with -Json, whose output always
+    carries every criterion.
+
+.PARAMETER Workspace
+    The agent workspace. Defaults to the current directory.
+
+.PARAMETER ProbeNetwork
+    Probe the documented default Internet targets: DNS for example.com and
+    TCP 443 to example.com, 1.1.1.1 and 2606:4700:4700::1111.
+
+.PARAMETER NetworkTarget
+    Explicit probe targets. Forms: dns:<name>, tcp:<host>:<port>, smb:<host>
+    (TCP 445). Use brackets for IPv6, for example tcp:[::1]:8080. LAN and
+    loopback targets are probed only when listed here. Combined with
+    -ProbeNetwork these add to the Internet defaults; on their own they are the
+    only targets probed.
+
+.PARAMETER PolicyPath
+    Optional JSON policy: { "name": "...", "requireMet": ["R-NET-INTERNET", ...] }.
+    Adds compliant/violation/unknown results without changing the score.
+
+.PARAMETER OutputDirectory
+    Existing writable directory for assessment-<timestamp>.json and .md.
+
+.PARAMETER SkipCheck
+    Check areas to skip. Their criteria stay unknown and count against coverage.
+
+.EXAMPLE
+    .\Test-AgentSandboxExposure.ps1
+    Prints the full human report for the current process context, including a
+    per-criterion met/unmet/unknown breakdown.
+
+.EXAMPLE
+    .\Test-AgentSandboxExposure.ps1 -Brief
+    Prints only the summary, without the per-criterion breakdown.
+
+.EXAMPLE
+    .\Test-AgentSandboxExposure.ps1 -Json -ProbeNetwork 2>$null
+    Emits one JSON assessment including default Internet probes.
+
+.NOTES
+    Exit codes: 0 when the assessment completed, regardless of risk;
+    1 when it could not run (invalid arguments or a fatal error).
+    Exposure severity is in the output, not the exit code.
+#>
+
+[CmdletBinding()]
+param(
+    [switch]$Json,
+    [switch]$Brief,
+    [string]$Workspace,
+    [switch]$ProbeNetwork,
+    [string[]]$NetworkTarget = @(),
+    [string]$PolicyPath,
+    [string]$OutputDirectory,
+    [ValidateSet('IDENTITY', 'FILES', 'SECRETS', 'PROCESSES', 'DESKTOP', 'INDIRECT',
+        'NETWORK', 'REMOTE', 'HANDOFF', 'CONTAINMENT', 'MONITORING')]
+    [string[]]$SkipCheck = @()
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$WarningPreference = 'SilentlyContinue'
+
+$SchemaVersion = 'agent-sandbox-assessment/1'
+$CheckerVersion = '0.1.0'
+$ProfileId = 'default'
+$ProfileVersion = '2'
+$MinimumCoverageForVerdict = 0.6
+
+# --- Criterion registry -------------------------------------------------------
+# Profile default/1. Each criterion belongs to exactly one dimension and one
+# check area. Essential criteria must be resolved (met or unmet) before a
+# bounded verdict is awarded. Monitoring criteria are nonessential because an
+# inside-only run usually cannot resolve them.
+
+$CriterionRegistry = @(
+    # Reach
+    @{ Id = 'R-FILES-PROFILES'; Dimension = 'Reach'; Check = 'FILES'; Essential = $true; Severity = 'high'
+        Title = 'Other user profiles are not readable'
+        Remediation = 'Remove inherited or explicit read ACEs that give the agent identity access to other user profiles.' 
+    }
+    @{ Id = 'R-FILES-ADJACENT'; Dimension = 'Reach'; Check = 'FILES'; Essential = $true; Severity = 'high'
+        Title = 'Data outside the workspace on fixed drives is not readable'
+        Remediation = 'Restrict Users/Authenticated Users read ACEs on non-system drive-root folders and workspace siblings, or move the workspace to an isolated tree.' 
+    }
+    @{ Id = 'R-REG-OTHERS'; Dimension = 'Reach'; Check = 'FILES'; Essential = $false; Severity = 'medium'
+        Title = 'Other users'' registry hives and SAM/SECURITY are not readable'
+        Remediation = 'Remove read ACEs for the agent identity on other users'' loaded hives.' 
+    }
+    @{ Id = 'R-SECRETS-ENV'; Dimension = 'Reach'; Check = 'SECRETS'; Essential = $false; Severity = 'high'
+        Title = 'No suspected secrets in the environment'
+        Remediation = 'Stop passing tokens through environment variables into the agent session.' 
+    }
+    @{ Id = 'R-SECRETS-KNOWN'; Dimension = 'Reach'; Check = 'SECRETS'; Essential = $true; Severity = 'high'
+        Title = 'No readable credentials in known credential locations'
+        Remediation = 'Remove credential files from the agent profile, or keep them in an identity the agent cannot read.' 
+    }
+    @{ Id = 'R-SECRETS-SCAN'; Dimension = 'Reach'; Check = 'SECRETS'; Essential = $true; Severity = 'high'
+        Title = 'No suspected secrets in scanned workspace and configuration files'
+        Remediation = 'Remove or rotate the suspected secrets and load them from a store the agent cannot read.' 
+    }
+    @{ Id = 'R-SECRETS-CREDMAN'; Dimension = 'Reach'; Check = 'SECRETS'; Essential = $false; Severity = 'medium'
+        Title = 'No Credential Manager entries for the agent identity'
+        Remediation = 'Remove stored credentials from the agent account''s Credential Manager.' 
+    }
+    @{ Id = 'R-PROC-READ'; Dimension = 'Reach'; Check = 'PROCESSES'; Essential = $true; Severity = 'high'
+        Title = 'No other identity''s process grants memory-read access'
+        Remediation = 'Run the agent under a logon that does not share a logon SID or default DACL with the interactive user; see sandbox-surfaces.' 
+    }
+    @{ Id = 'R-DESKTOP'; Dimension = 'Reach'; Check = 'DESKTOP'; Essential = $true; Severity = 'high'
+        Title = 'Agent does not share the interactive desktop'
+        Remediation = 'Launch the agent on a separate window station/desktop or in a separate session.' 
+    }
+    @{ Id = 'R-NET-INTERNET'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $true; Severity = 'high'
+        Title = 'Arbitrary Internet destinations are unreachable on tested routes'
+        Remediation = 'Restrict outbound traffic for the agent identity to an allowlist (firewall rules per user SID or an enforced proxy).' 
+    }
+    @{ Id = 'R-NET-LATERAL'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $false; Severity = 'medium'
+        Title = 'Supplied LAN and loopback targets are unreachable'
+        Remediation = 'Block LAN and loopback service access for the agent identity where it is not required.' 
+    }
+    @{ Id = 'R-NET-SHARES'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $false; Severity = 'medium'
+        Title = 'No network shares are mapped into the agent session'
+        Remediation = 'Remove persistent drive mappings for the agent identity; mount remote data only when required and under a least-privilege identity.' 
+    }
+    # Authority
+    @{ Id = 'A-ID-ADMIN'; Dimension = 'Authority'; Check = 'IDENTITY'; Essential = $true; Severity = 'critical'
+        Title = 'Identity is not an administrator and not elevated'
+        Remediation = 'Run the agent as a standard user without Administrators membership.' 
+    }
+    @{ Id = 'A-ID-PRIVS'; Dimension = 'Authority'; Check = 'IDENTITY'; Essential = $true; Severity = 'critical'
+        Title = 'Token holds no high-impact privileges'
+        Remediation = 'Remove user-rights assignments that give the agent identity sensitive privileges.' 
+    }
+    @{ Id = 'A-ID-GROUPS'; Dimension = 'Authority'; Check = 'IDENTITY'; Essential = $false; Severity = 'high'
+        Title = 'No membership in privileged or broker groups'
+        Remediation = 'Remove the agent identity from privileged and broker groups (for example docker-users, Hyper-V Administrators).' 
+    }
+    @{ Id = 'A-PROC-INJECT'; Dimension = 'Authority'; Check = 'PROCESSES'; Essential = $true; Severity = 'critical'
+        Title = 'No other identity''s process grants write, thread, handle or DACL rights'
+        Remediation = 'Separate the agent logon from the interactive user and services; review process DACLs that grant the agent rights.' 
+    }
+    @{ Id = 'A-PROC-CONTROL'; Dimension = 'Authority'; Check = 'PROCESSES'; Essential = $false; Severity = 'medium'
+        Title = 'No other identity''s process grants terminate or suspend rights'
+        Remediation = 'Separate the agent logon from the interactive user so default DACLs do not grant control rights.' 
+    }
+    @{ Id = 'A-SVC'; Dimension = 'Authority'; Check = 'INDIRECT'; Essential = $true; Severity = 'critical'
+        Title = 'Service and task binaries and configuration are not agent-writable'
+        Remediation = 'Fix ACLs on the listed service/task binaries, directories, registry keys and service objects.' 
+    }
+    @{ Id = 'A-HANDOFF-SHARED'; Dimension = 'Authority'; Check = 'HANDOFF'; Essential = $true; Severity = 'high'
+        Title = 'No agent-writable location is executed by other identities'
+        Remediation = 'Remove write/create rights for the agent identity on machine PATH directories, startup locations, Run keys, program directories and other profiles.' 
+    }
+    @{ Id = 'A-HANDOFF-WORKSPACE'; Dimension = 'Authority'; Check = 'HANDOFF'; Essential = $true; Severity = 'medium'
+        Title = 'Agent-written workspace content is not consumed by another identity'
+        Remediation = 'Review agent output before another identity builds, runs or opens it; use a separate clone or a less privileged consumer.' 
+    }
+    @{ Id = 'A-REMOTE-DELEGATED'; Dimension = 'Authority'; Check = 'REMOTE'; Essential = $false; Severity = 'high'
+        Title = 'No usable remote credentials or delegated sessions'
+        Remediation = 'Remove credential helpers, tool logins and stored tokens from the agent identity, or scope them to least privilege.' 
+    }
+    @{ Id = 'A-TOOL-SCOPE'; Dimension = 'Authority'; Check = 'REMOTE'; Essential = $false; Severity = 'medium'
+        Title = 'No external agent tool channels are declared'
+        Remediation = 'Inventory each declared MCP/tool server and its authority, or remove unneeded servers.' 
+    }
+    @{ Id = 'A-REMOTE-DOMAIN'; Dimension = 'Authority'; Check = 'REMOTE'; Essential = $false; Severity = 'high'
+        Title = 'Device is not domain-joined with domain-reachable authority'
+        Remediation = 'Keep the sandbox off the AD/Azure AD domain, or confirm the agent account has no domain-reachable rights (local account, no delegated or computer-account resource access).' 
+    }
+    # Containment
+    @{ Id = 'C-POLICY-INTEGRITY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $true; Severity = 'high'
+        Title = 'Agent cannot modify its launcher, policy or checker files'
+        Remediation = 'Make launcher, bootstrap, managed policy and checker files admin-write only.' 
+    }
+    @{ Id = 'C-TOOL-POLICY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
+        Title = 'Agent tool permissions come from a managed policy'
+        Remediation = 'Deploy an admin-owned managed-settings.json so agent-writable settings cannot widen tool permissions.' 
+    }
+    @{ Id = 'C-JOB'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
+        Title = 'Process tree is confined to a kill-on-close job without breakaway'
+        Remediation = 'Launch the agent inside a job object with kill-on-close and no breakaway.' 
+    }
+    @{ Id = 'C-PERSIST-SELF'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
+        Title = 'Agent cannot persist code into later sandbox sessions'
+        Remediation = 'Reset or lock agent-writable startup paths (profile scripts, user PATH directories, agent hooks) between sessions.' 
+    }
+    @{ Id = 'C-PROXY-INTEGRITY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
+        Title = 'Configured proxy cannot be changed by the agent'
+        Remediation = 'Enforce the proxy machine-wide (policy) and block direct egress so user-level proxy changes do not matter.' 
+    }
+    # Monitoring
+    @{ Id = 'M-ATTRIBUTION'; Dimension = 'Monitoring'; Check = 'MONITORING'; Essential = $false; Severity = 'medium'
+        Title = 'Agent actions are attributable to a distinct account'
+        Remediation = 'Run the agent as a dedicated account distinct from the interactive user.' 
+    }
+    @{ Id = 'M-OS-LOGGING'; Dimension = 'Monitoring'; Check = 'MONITORING'; Essential = $false; Severity = 'medium'
+        Title = 'OS-level process or script logging is configured'
+        Remediation = 'Enable PowerShell script block logging, process-creation auditing with command lines, or Sysmon/EDR.' 
+    }
+    @{ Id = 'M-TAMPER'; Dimension = 'Monitoring'; Check = 'MONITORING'; Essential = $false; Severity = 'medium'
+        Title = 'Agent cannot alter discovered monitoring controls'
+        Remediation = 'Restrict write access to logging policy, monitoring services and log output directories.' 
+    }
+    @{ Id = 'M-AGENT-LOG'; Dimension = 'Monitoring'; Check = 'MONITORING'; Essential = $false; Severity = 'low'
+        Title = 'Agent tool logs are outside the agent''s write reach'
+        Remediation = 'Forward agent transcripts to a location the agent identity cannot modify.' 
+    }
+)
+
+$Dimensions = @('Reach', 'Authority', 'Containment', 'Monitoring')
+$SeverityRank = @{ critical = 4; high = 3; medium = 2; low = 1; info = 0 }
+
+# --- Native probes ------------------------------------------------------------
+# Every probe either queries information or requests a single access right and
+# closes the handle. No probe reads foreign memory, writes data, or returns a
+# credential blob.
+
+function Initialize-NativeProbe {
+    if ('AgentSandboxAssessmentNative' -as [type]) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+
+public sealed class TokenGroupInfo
+{
+    public string Sid { get; set; }
+    public uint Attributes { get; set; }
+}
+
+public sealed class TokenPrivilegeInfo
+{
+    public string Name { get; set; }
+    public uint Attributes { get; set; }
+}
+
+public sealed class TokenSnapshot
+{
+    public string UserSid { get; set; }
+    public TokenGroupInfo[] Groups { get; set; }
+    public TokenPrivilegeInfo[] Privileges { get; set; }
+    public string IntegritySid { get; set; }
+    public int ElevationType { get; set; }
+    public bool IsElevated { get; set; }
+    public int SessionId { get; set; }
+    public string AuthenticationId { get; set; }
+    public int TokenType { get; set; }
+    public int RestrictedSidCount { get; set; }
+    public bool IsAppContainer { get; set; }
+    public int CapabilityCount { get; set; }
+    public bool UiAccess { get; set; }
+    public bool HasThreadToken { get; set; }
+}
+
+public sealed class ForeignTokenInfo
+{
+    public string UserSid { get; set; }
+    public string IntegritySid { get; set; }
+    public string[] LogonSids { get; set; }
+}
+
+public sealed class AccessCheckResult
+{
+    public uint Granted { get; set; }
+    public int Error { get; set; }
+}
+
+public sealed class CredentialEntry
+{
+    public int Type { get; set; }
+    public string TargetName { get; set; }
+}
+
+public sealed class JobInfo
+{
+    public bool InJob { get; set; }
+    public uint LimitFlags { get; set; }
+    public uint UiRestrictions { get; set; }
+    public int Error { get; set; }
+}
+
+public static class AgentSandboxAssessmentNative
+{
+    private const uint TOKEN_QUERY = 0x0008;
+    private const uint TOKEN_DUPLICATE = 0x0002;
+    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private const uint MAXIMUM_ALLOWED = 0x02000000;
+    private const uint SE_GROUP_LOGON_ID = 0xC0000000;
+    private const uint OWNER_SECURITY_INFORMATION = 0x1;
+    private const uint GROUP_SECURITY_INFORMATION = 0x2;
+    private const uint DACL_SECURITY_INFORMATION = 0x4;
+    private const uint LABEL_SECURITY_INFORMATION = 0x10;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TokenGroupsHeader { public uint GroupCount; public SidAndAttributes FirstGroup; }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private struct Luid { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private struct LuidAndAttributes { public Luid Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GenericMapping { public uint GenericRead; public uint GenericWrite; public uint GenericExecute; public uint GenericAll; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JobBasicLimitInformation
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    private delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
+
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentThread();
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool ProcessIdToSessionId(int processId, out int sessionId);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, int length, out int returnLength);
+
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenThreadToken(IntPtr thread, uint access, bool openAsSelf, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length, out int returnLength);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool DuplicateToken(IntPtr token, int level, out IntPtr duplicate);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeNameW(string system, ref Luid luid, StringBuilder name, ref int length);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetNamedSecurityInfoW(string name, int objectType, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AccessCheck(IntPtr descriptor, IntPtr token, uint desired, ref GenericMapping mapping, IntPtr privileges, ref int privilegesLength, out uint granted, out bool status);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern IntPtr OpenSCManagerW(string machine, string database, uint access);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern IntPtr OpenServiceW(IntPtr manager, string name, uint access);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool CloseServiceHandle(IntPtr handle);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)] private static extern int RegOpenKeyExW(IntPtr hive, string subKey, uint options, uint access, out IntPtr key);
+    [DllImport("advapi32.dll")] private static extern int RegCloseKey(IntPtr key);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern bool CredEnumerateW(string filter, uint flags, out int count, out IntPtr credentials);
+    [DllImport("advapi32.dll")] private static extern void CredFree(IntPtr buffer);
+
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr GetThreadDesktop(uint threadId);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool GetUserObjectInformationW(IntPtr handle, int index, StringBuilder info, int length, out int needed);
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern IntPtr OpenWindowStationW(string name, bool inherit, uint access);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool CloseWindowStation(IntPtr station);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out int processId);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQuerySessionInformationW(IntPtr server, int sessionId, int infoClass, out IntPtr buffer, out int bytes);
+    [DllImport("wtsapi32.dll")] private static extern void WTSFreeMemory(IntPtr memory);
+    [DllImport("kernel32.dll")] private static extern uint WTSGetActiveConsoleSessionId();
+
+    private static IntPtr identificationToken = IntPtr.Zero;
+    private static IntPtr serviceManager = IntPtr.Zero;
+
+    // --- Token ---------------------------------------------------------------
+
+    private static IntPtr QueryToken(IntPtr token, int infoClass)
+    {
+        int size;
+        GetTokenInformation(token, infoClass, IntPtr.Zero, 0, out size);
+        if (size <= 0) { return IntPtr.Zero; }
+        IntPtr buffer = Marshal.AllocHGlobal(size);
+        if (!GetTokenInformation(token, infoClass, buffer, size, out size))
+        {
+            Marshal.FreeHGlobal(buffer);
+            return IntPtr.Zero;
+        }
+        return buffer;
+    }
+
+    private static int QueryTokenInt(IntPtr token, int infoClass)
+    {
+        IntPtr buffer = QueryToken(token, infoClass);
+        if (buffer == IntPtr.Zero) { return -1; }
+        try { return Marshal.ReadInt32(buffer); } finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static string QueryTokenSid(IntPtr token, int infoClass)
+    {
+        IntPtr buffer = QueryToken(token, infoClass);
+        if (buffer == IntPtr.Zero) { return null; }
+        try { return new SecurityIdentifier(Marshal.ReadIntPtr(buffer)).Value; } finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static TokenGroupInfo[] QueryTokenGroups(IntPtr token, int infoClass)
+    {
+        IntPtr buffer = QueryToken(token, infoClass);
+        if (buffer == IntPtr.Zero) { return new TokenGroupInfo[0]; }
+        try
+        {
+            uint count = unchecked((uint)Marshal.ReadInt32(buffer));
+            int offset = Marshal.OffsetOf(typeof(TokenGroupsHeader), "FirstGroup").ToInt32();
+            int size = Marshal.SizeOf(typeof(SidAndAttributes));
+            var groups = new List<TokenGroupInfo>();
+            for (uint i = 0; i < count; i++)
+            {
+                var item = (SidAndAttributes)Marshal.PtrToStructure(IntPtr.Add(buffer, offset + checked((int)i * size)), typeof(SidAndAttributes));
+                groups.Add(new TokenGroupInfo { Sid = new SecurityIdentifier(item.Sid).Value, Attributes = item.Attributes });
+            }
+            return groups.ToArray();
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static TokenPrivilegeInfo[] QueryTokenPrivileges(IntPtr token)
+    {
+        IntPtr buffer = QueryToken(token, 3);
+        if (buffer == IntPtr.Zero) { return new TokenPrivilegeInfo[0]; }
+        try
+        {
+            int count = Marshal.ReadInt32(buffer);
+            int size = Marshal.SizeOf(typeof(LuidAndAttributes));
+            var privileges = new List<TokenPrivilegeInfo>();
+            for (int i = 0; i < count; i++)
+            {
+                var item = (LuidAndAttributes)Marshal.PtrToStructure(IntPtr.Add(buffer, 4 + i * size), typeof(LuidAndAttributes));
+                var luid = item.Luid;
+                int length = 128;
+                var name = new StringBuilder(length);
+                string text = LookupPrivilegeNameW(null, ref luid, name, ref length) ? name.ToString() : "LUID:" + luid.HighPart + ":" + luid.LowPart;
+                privileges.Add(new TokenPrivilegeInfo { Name = text, Attributes = item.Attributes });
+            }
+            return privileges.ToArray();
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    public static TokenSnapshot GetCurrentToken()
+    {
+        IntPtr token;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out token))
+        {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "OpenProcessToken failed");
+        }
+        try
+        {
+            var snapshot = new TokenSnapshot();
+            snapshot.UserSid = QueryTokenSid(token, 1);
+            snapshot.Groups = QueryTokenGroups(token, 2);
+            snapshot.Privileges = QueryTokenPrivileges(token);
+            snapshot.TokenType = QueryTokenInt(token, 8);
+            snapshot.SessionId = QueryTokenInt(token, 12);
+            snapshot.ElevationType = QueryTokenInt(token, 18);
+            snapshot.IsElevated = QueryTokenInt(token, 20) != 0;
+            snapshot.UiAccess = QueryTokenInt(token, 26) == 1;
+            snapshot.IsAppContainer = QueryTokenInt(token, 29) == 1;
+            snapshot.RestrictedSidCount = QueryTokenGroups(token, 11).Length;
+            snapshot.CapabilityCount = QueryTokenGroups(token, 30).Length;
+            snapshot.IntegritySid = QueryTokenSid(token, 25);
+
+            IntPtr statistics = QueryToken(token, 10);
+            if (statistics != IntPtr.Zero)
+            {
+                try { snapshot.AuthenticationId = Marshal.ReadInt32(statistics, 12).ToString("x8") + ":" + Marshal.ReadInt32(statistics, 8).ToString("x8"); }
+                finally { Marshal.FreeHGlobal(statistics); }
+            }
+
+            IntPtr threadToken;
+            if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, out threadToken))
+            {
+                snapshot.HasThreadToken = true;
+                CloseHandle(threadToken);
+            }
+            return snapshot;
+        }
+        finally { CloseHandle(token); }
+    }
+
+    public static ForeignTokenInfo GetProcessToken(int processId)
+    {
+        IntPtr process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+        if (process == IntPtr.Zero) { return null; }
+        try
+        {
+            IntPtr token;
+            if (!OpenProcessToken(process, TOKEN_QUERY, out token)) { return null; }
+            try
+            {
+                var info = new ForeignTokenInfo();
+                info.UserSid = QueryTokenSid(token, 1);
+                info.IntegritySid = QueryTokenSid(token, 25);
+                var logon = new List<string>();
+                foreach (var group in QueryTokenGroups(token, 2))
+                {
+                    if ((group.Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID) { logon.Add(group.Sid); }
+                }
+                info.LogonSids = logon.ToArray();
+                return info;
+            }
+            finally { CloseHandle(token); }
+        }
+        finally { CloseHandle(process); }
+    }
+
+    public static int GetSessionId(int processId)
+    {
+        int sessionId;
+        return ProcessIdToSessionId(processId, out sessionId) ? sessionId : -1;
+    }
+
+    public static int ProbeProcess(int processId, uint access)
+    {
+        IntPtr process = OpenProcess(access, false, processId);
+        if (process == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
+        CloseHandle(process);
+        return 0;
+    }
+
+    // --- Security descriptors --------------------------------------------------
+
+    private static IntPtr GetIdentificationToken()
+    {
+        if (identificationToken != IntPtr.Zero) { return identificationToken; }
+        IntPtr token;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, out token))
+        {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "OpenProcessToken failed");
+        }
+        try
+        {
+            IntPtr duplicate;
+            if (!DuplicateToken(token, 1, out duplicate))
+            {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "DuplicateToken failed");
+            }
+            identificationToken = duplicate;
+            return identificationToken;
+        }
+        finally { CloseHandle(token); }
+    }
+
+    // objectType: 1 = file, 4 = registry key. Evaluates the object's security
+    // descriptor against the current token without opening the object.
+    public static AccessCheckResult CheckNamedObject(string name, int objectType)
+    {
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint info = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
+        int error = GetNamedSecurityInfoW(name, objectType, info, out owner, out group, out dacl, out sacl, out descriptor);
+        if (error != 0) { return new AccessCheckResult { Granted = 0, Error = error }; }
+        try
+        {
+            var mapping = objectType == 4
+                ? new GenericMapping { GenericRead = 0x20019, GenericWrite = 0x20006, GenericExecute = 0x20019, GenericAll = 0xF003F }
+                : new GenericMapping { GenericRead = 0x120089, GenericWrite = 0x120116, GenericExecute = 0x1200A0, GenericAll = 0x1F01FF };
+            int privilegeLength = 256;
+            IntPtr privileges = Marshal.AllocHGlobal(privilegeLength);
+            try
+            {
+                uint granted;
+                bool status;
+                if (!AccessCheck(descriptor, GetIdentificationToken(), MAXIMUM_ALLOWED, ref mapping, privileges, ref privilegeLength, out granted, out status))
+                {
+                    return new AccessCheckResult { Granted = 0, Error = Marshal.GetLastWin32Error() };
+                }
+                return new AccessCheckResult { Granted = status ? granted : 0, Error = 0 };
+            }
+            finally { Marshal.FreeHGlobal(privileges); }
+        }
+        finally { LocalFree(descriptor); }
+    }
+
+    // Opens an existing file or directory with one access mask and closes it.
+    // OPEN_EXISTING never creates or truncates; reparse points are not followed.
+    public static int ProbeFile(string path, uint access)
+    {
+        IntPtr handle = CreateFileW(path, access, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero);
+        if (handle == new IntPtr(-1)) { return Marshal.GetLastWin32Error(); }
+        CloseHandle(handle);
+        return 0;
+    }
+
+    // hive: 1 = HKCU, 2 = HKLM, 3 = HKU.
+    public static int ProbeRegistryKey(int hive, string subKey, uint access)
+    {
+        IntPtr root = new IntPtr(unchecked((int)(0x80000000u + (uint)hive)));
+        IntPtr key;
+        int error = RegOpenKeyExW(root, subKey, 0, access | 0x0100, out key);
+        if (error == 0) { RegCloseKey(key); }
+        return error;
+    }
+
+    public static int ProbeService(string name, uint access)
+    {
+        if (serviceManager == IntPtr.Zero)
+        {
+            serviceManager = OpenSCManagerW(null, null, 0x0001);
+            if (serviceManager == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
+        }
+        IntPtr service = OpenServiceW(serviceManager, name, access);
+        if (service == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
+        CloseServiceHandle(service);
+        return 0;
+    }
+
+    // Enumerates the current identity's stored credentials, copying only the
+    // type and target name. The credential blob (the secret) is never read.
+    public static CredentialEntry[] GetCredentialEntries(out int error)
+    {
+        error = 0;
+        int count;
+        IntPtr credentials;
+        if (!CredEnumerateW(null, 0, out count, out credentials))
+        {
+            error = Marshal.GetLastWin32Error();
+            return new CredentialEntry[0];
+        }
+        try
+        {
+            var entries = new List<CredentialEntry>();
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr credential = Marshal.ReadIntPtr(credentials, i * IntPtr.Size);
+                entries.Add(new CredentialEntry
+                {
+                    Type = Marshal.ReadInt32(credential, 4),
+                    TargetName = Marshal.PtrToStringUni(Marshal.ReadIntPtr(credential, 8))
+                });
+            }
+            return entries.ToArray();
+        }
+        finally { CredFree(credentials); }
+    }
+
+    // --- Desktop ---------------------------------------------------------------
+
+    private static string GetUserObjectName(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero) { return null; }
+        int needed;
+        GetUserObjectInformationW(handle, 2, null, 0, out needed);
+        if (needed <= 0) { return null; }
+        var name = new StringBuilder(needed / 2);
+        return GetUserObjectInformationW(handle, 2, name, needed, out needed) ? name.ToString() : null;
+    }
+
+    public static string GetWindowStationName() { return GetUserObjectName(GetProcessWindowStation()); }
+
+    public static string GetDesktopName() { return GetUserObjectName(GetThreadDesktop(GetCurrentThreadId())); }
+
+    public static int ProbeInputDesktop(uint access)
+    {
+        IntPtr desktop = OpenInputDesktop(0, false, access);
+        if (desktop == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
+        CloseDesktop(desktop);
+        return 0;
+    }
+
+    public static int ProbeWindowStation(string name, uint access)
+    {
+        IntPtr station = OpenWindowStationW(name, false, access);
+        if (station == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
+        CloseWindowStation(station);
+        return 0;
+    }
+
+    // Owning process IDs of visible top-level windows on the current desktop.
+    // Window titles and contents are not read.
+    public static int[] GetVisibleWindowProcessIds()
+    {
+        var ids = new List<int>();
+        EnumWindowsProc callback = delegate (IntPtr window, IntPtr parameter)
+        {
+            if (IsWindowVisible(window))
+            {
+                int processId;
+                GetWindowThreadProcessId(window, out processId);
+                ids.Add(processId);
+            }
+            return true;
+        };
+        EnumWindows(callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return ids.ToArray();
+    }
+
+    // --- Session and job ------------------------------------------------------
+
+    public static string GetSessionUser()
+    {
+        IntPtr buffer;
+        int bytes;
+        if (!WTSQuerySessionInformationW(IntPtr.Zero, -1, 5, out buffer, out bytes)) { return null; }
+        try { return Marshal.PtrToStringUni(buffer); } finally { WTSFreeMemory(buffer); }
+    }
+
+    // The user logged on at the physical console (the interactive human), or
+    // null when there is no active console session to compare against.
+    public static string GetConsoleSessionUser()
+    {
+        uint session = WTSGetActiveConsoleSessionId();
+        if (session == 0xFFFFFFFF) { return null; }
+        IntPtr buffer;
+        int bytes;
+        if (!WTSQuerySessionInformationW(IntPtr.Zero, unchecked((int)session), 5, out buffer, out bytes)) { return null; }
+        try { return Marshal.PtrToStringUni(buffer); } finally { WTSFreeMemory(buffer); }
+    }
+
+    public static JobInfo GetJobInfo()
+    {
+        var info = new JobInfo();
+        bool inJob;
+        if (!IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob)) { info.Error = Marshal.GetLastWin32Error(); return info; }
+        info.InJob = inJob;
+        if (!inJob) { return info; }
+        // QueryInformationJobObject requires an exactly-sized buffer per info
+        // class; an oversized buffer returns ERROR_BAD_LENGTH. Basic limit info
+        // (class 2) carries the kill-on-close / breakaway flags we need.
+        int basicSize = Marshal.SizeOf(typeof(JobBasicLimitInformation));
+        IntPtr buffer = Marshal.AllocHGlobal(basicSize);
+        try
+        {
+            int length;
+            if (QueryInformationJobObject(IntPtr.Zero, 2, buffer, basicSize, out length))
+            {
+                var basic = (JobBasicLimitInformation)Marshal.PtrToStructure(buffer, typeof(JobBasicLimitInformation));
+                info.LimitFlags = basic.LimitFlags;
+            }
+            else { info.Error = Marshal.GetLastWin32Error(); }
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+        IntPtr uiBuffer = Marshal.AllocHGlobal(4);   // JOBOBJECT_BASIC_UI_RESTRICTIONS is a single DWORD
+        try
+        {
+            int length;
+            if (QueryInformationJobObject(IntPtr.Zero, 4, uiBuffer, 4, out length)) { info.UiRestrictions = unchecked((uint)Marshal.ReadInt32(uiBuffer)); }
+        }
+        finally { Marshal.FreeHGlobal(uiBuffer); }
+        return info;
+    }
+}
+'@
+}
+
+# --- Assessment state ---------------------------------------------------------
+
+$script:Criteria = [ordered]@{}
+foreach ($entry in $CriterionRegistry) {
+    $script:Criteria[$entry.Id] = [pscustomobject]@{
+        Id             = $entry.Id
+        Dimension      = $entry.Dimension
+        Check          = $entry.Check
+        Essential      = $entry.Essential
+        Severity       = $entry.Severity
+        Title          = $entry.Title
+        Remediation    = $entry.Remediation
+        Outcome        = 'unknown'
+        Reason         = 'not evaluated'
+        Method         = $null
+        Critical       = $false
+        CriticalReason = $null
+    }
+}
+
+$script:Findings = New-Object System.Collections.Generic.List[object]
+$script:Errors = New-Object System.Collections.Generic.List[object]
+$script:Inventory = [ordered]@{}
+$script:UserProfile = $null
+$script:WorkspacePath = $null
+$script:OtherProfiles = @()
+$script:NetworkProbed = $false
+$script:NetworkTargetsUsed = @()
+
+$AllCheckAreas = @('IDENTITY', 'FILES', 'SECRETS', 'PROCESSES', 'DESKTOP', 'INDIRECT',
+    'NETWORK', 'REMOTE', 'HANDOFF', 'CONTAINMENT', 'MONITORING')
+
+# --- Core helpers -------------------------------------------------------------
+
+function Write-Diag {
+    param([string]$Message)
+
+    [Console]::Error.WriteLine($Message)
+}
+
+function Protect-Text {
+    # Final sanitizing pass. Redacts credentials embedded as URL userinfo (for
+    # example in a git remote) and the local-part of e-mail addresses (PII that
+    # can appear in resolved account names and credential targets), keeping the
+    # domain for context. v1 does not emit file contents or environment values.
+    param([string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return $Text
+    }
+    $value = [regex]::Replace($Text, '(?i)([a-z][a-z0-9+.-]*://)[^/@\s:]+(?::[^/@\s]+)?@', '$1<redacted>@')
+    return [regex]::Replace($value, '[A-Za-z0-9._%+\-]+@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})', '<redacted>@$1')
+}
+
+function Format-SafePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) {
+        return $Path
+    }
+    $value = $Path
+    if ($script:WorkspacePath -and
+        $value.StartsWith($script:WorkspacePath, [StringComparison]::OrdinalIgnoreCase)) {
+        $value = '%WORKSPACE%' + $value.Substring($script:WorkspacePath.Length)
+    }
+    elseif ($script:UserProfile -and
+        $value.StartsWith($script:UserProfile, [StringComparison]::OrdinalIgnoreCase)) {
+        $value = '%USERPROFILE%' + $value.Substring($script:UserProfile.Length)
+    }
+    return (Protect-Text $value)
+}
+
+function Get-ErrorCategory {
+    param([int]$Code)
+
+    switch ($Code) {
+        0 { 'none' }
+        2 { 'not-found' }
+        3 { 'not-found' }
+        5 { 'access-denied' }
+        32 { 'sharing-violation' }
+        1920 { 'cannot-access' }
+        default { "win32-$Code" }
+    }
+}
+
+function Set-CriterionOutcome {
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][ValidateSet('met', 'unmet', 'unknown', 'na')][string]$Outcome,
+        [string]$Reason,
+        [string]$Method,
+        [switch]$Critical,
+        [string]$CriticalReason
+    )
+
+    if (-not $script:Criteria.Contains($Id)) {
+        throw "Unknown criterion id: $Id"
+    }
+    $criterion = $script:Criteria[$Id]
+    $criterion.Outcome = $Outcome
+    if ($PSBoundParameters.ContainsKey('Reason')) { $criterion.Reason = $Reason }
+    if ($PSBoundParameters.ContainsKey('Method')) { $criterion.Method = $Method }
+    if ($Critical) {
+        $criterion.Critical = $true
+        $criterion.CriticalReason = $CriticalReason
+    }
+}
+
+function Add-Finding {
+    param(
+        [Parameter(Mandatory)][string]$Check,
+        [string]$Criterion,
+        [Parameter(Mandatory)][string]$Target,
+        [string]$Capability,
+        [ValidateSet('granted', 'denied', 'unknown', 'observed')][string]$Result = 'observed',
+        [ValidateSet('inventory', 'permission-analysis', 'access-request', 'observed-operation')][string]$Method = 'inventory',
+        [string]$Scope,
+        [string]$ErrorCategory,
+        [string]$Impact,
+        [ValidateSet('critical', 'high', 'medium', 'low', 'info')][string]$Severity = 'info'
+    )
+
+    $script:Findings.Add([pscustomobject]@{
+            Check         = $Check
+            Criterion     = $Criterion
+            Target        = (Format-SafePath $Target)
+            Capability    = $Capability
+            Result        = $Result
+            Method        = $Method
+            Scope         = $Scope
+            ErrorCategory = $ErrorCategory
+            Impact        = $Impact
+            Severity      = $Severity
+        }) | Out-Null
+}
+
+function Add-AssessmentError {
+    param(
+        [Parameter(Mandatory)][string]$Check,
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Category = 'check-exception'
+    )
+
+    $safe = Protect-Text $Message
+    $script:Errors.Add([pscustomobject]@{ Check = $Check; Category = $Category; Message = $safe }) | Out-Null
+    Write-Diag "[$Check] ${Category}: $safe"
+}
+
+function Invoke-Check {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][scriptblock]$Body
+    )
+
+    if ($SkipCheck -contains $Name) {
+        foreach ($criterion in @($script:Criteria.Values | Where-Object { $_.Check -eq $Name })) {
+            Set-CriterionOutcome -Id $criterion.Id -Outcome 'unknown' -Reason 'skipped'
+        }
+        Write-Diag "[$Name] skipped by request."
+        return
+    }
+    try {
+        & $Body
+        # Completeness invariant: a check must resolve every criterion in its
+        # area. An unresolved criterion is a check bug, not a silent unknown.
+        $unresolved = @($script:Criteria.Values |
+            Where-Object { $_.Check -eq $Name -and $_.Reason -eq 'not evaluated' })
+        if ($unresolved.Count -gt 0) {
+            Add-AssessmentError -Check $Name -Category 'incomplete-check' `
+                -Message "Check left criteria unresolved: $(($unresolved | ForEach-Object { $_.Id }) -join ', ')"
+        }
+    }
+    catch {
+        Add-AssessmentError -Check $Name -Message $_.Exception.Message
+        # A thrown check may have resolved some criteria before failing; mark the
+        # rest as unknown/check-error so the later sweep does not mislabel them
+        # "not implemented in v1".
+        foreach ($criterion in @($script:Criteria.Values |
+                Where-Object { $_.Check -eq $Name -and $_.Reason -eq 'not evaluated' })) {
+            Set-CriterionOutcome -Id $criterion.Id -Outcome 'unknown' -Reason 'check error'
+        }
+    }
+}
+
+# --- Access probing -----------------------------------------------------------
+
+function Get-PathAccess {
+    # Resolves the effective rights of the current identity on an existing path
+    # without opening it for a mutating operation. Prefers an AccessCheck
+    # against the security descriptor; falls back to a read-only open probe.
+    param([Parameter(Mandatory)][string]$Path)
+
+    $result = [ordered]@{
+        Path = $Path; Exists = $false; IsDirectory = $false; Method = $null; ErrorCategory = $null
+        Read = 'unknown'; Create = 'unknown'; Write = 'unknown'; Delete = 'unknown'
+        ChangeAcl = 'unknown'; TakeOwnership = 'unknown'
+    }
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) {
+        # Absent, or the parent denies traversal; either way it is not reachable.
+        $result.ErrorCategory = 'not-found'
+        return [pscustomobject]$result
+    }
+    $result.Exists = $true
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    $isDir = $false
+    if ($item) { $isDir = [bool]$item.PSIsContainer }
+    $result.IsDirectory = $isDir
+
+    $check = [AgentSandboxAssessmentNative]::CheckNamedObject($Path, 1)
+    if ($check.Error -eq 0) {
+        $result.Method = 'permission-analysis'
+        $granted = $check.Granted
+        # Test specific data rights, not the generic masks: FILE_GENERIC_WRITE
+        # shares SYNCHRONIZE and READ_CONTROL with FILE_GENERIC_READ, so a
+        # whole-mask -band test reports write on read-only objects.
+        $fileReadData = 0x1     # FILE_READ_DATA / FILE_LIST_DIRECTORY
+        $fileWriteData = 0x2    # FILE_WRITE_DATA / FILE_ADD_FILE
+        $fileAppend = 0x4       # FILE_APPEND_DATA / FILE_ADD_SUBDIRECTORY
+        $result.Read = if ($granted -band $fileReadData) { 'granted' } else { 'denied' }
+        $result.Write = if ($granted -band $fileWriteData) { 'granted' } else { 'denied' }
+        $result.Create = if ($granted -band ($fileWriteData -bor $fileAppend)) { 'granted' } else { 'denied' }
+        $result.Delete = if ($granted -band 0x10000) { 'granted' } else { 'denied' }
+        $result.ChangeAcl = if ($granted -band 0x40000) { 'granted' } else { 'denied' }
+        $result.TakeOwnership = if ($granted -band 0x80000) { 'granted' } else { 'denied' }
+    }
+    else {
+        # Security descriptor unreadable; only a read open can be probed safely.
+        $result.ErrorCategory = Get-ErrorCategory $check.Error
+        $result.Method = 'access-request'
+        $read = [AgentSandboxAssessmentNative]::ProbeFile($Path, 0x1)
+        $result.Read = if ($read -eq 0) { 'granted' } else { 'denied' }
+    }
+    return [pscustomobject]$result
+}
+
+function Test-AnyWrite {
+    param([Parameter(Mandatory)][psobject]$Access)
+
+    return @('Create', 'Write', 'Delete', 'ChangeAcl', 'TakeOwnership') |
+    Where-Object { $Access.$_ -eq 'granted' } |
+    Select-Object -First 1
+}
+
+function Get-MatchingTargets {
+    # Probes a path list for the requested right, emits one finding per match,
+    # and returns { Existing; Matched } without deciding a criterion. Used
+    # directly by checks that combine several target sources into one criterion.
+    param(
+        [Parameter(Mandatory)][string]$Check,
+        [Parameter(Mandatory)][string]$Criterion,
+        [Parameter(Mandatory)][ValidateSet('Read', 'Write')][string]$Right,
+        [string[]]$Path = @(),
+        [Parameter(Mandatory)][string]$Capability,
+        [switch]$IncludeHowInCapability,
+        [Parameter(Mandatory)][string]$Scope,
+        [Parameter(Mandatory)][string]$Impact,
+        [ValidateSet('critical', 'high', 'medium', 'low', 'info')][string]$Severity = 'medium'
+    )
+
+    $existing = @($Path | Where-Object { $_ } | Select-Object -Unique |
+        Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue })
+    $matched = @()
+    foreach ($target in $existing) {
+        $access = Get-PathAccess -Path $target
+        $how = if ($Right -eq 'Write') { Test-AnyWrite -Access $access }
+        elseif ($access.Read -eq 'granted') { 'Read' } else { $null }
+        if ($how) {
+            $matched += $target
+            $findingCapability = if ($IncludeHowInCapability) { "$Capability ($how)" } else { $Capability }
+            Add-Finding -Check $Check -Criterion $Criterion -Target $target -Capability $findingCapability `
+                -Result granted -Method $access.Method -Scope $Scope -Impact $Impact -Severity $Severity
+        }
+    }
+    return [pscustomobject]@{ Existing = @($existing); Matched = @($matched) }
+}
+
+function Resolve-AccessTargets {
+    # Shared discover -> probe -> decide -> emit pattern for a single-source
+    # path-set criterion. Sets the criterion to unknown (none exist), unmet
+    # (any match) or met (none match). Returns the matching paths. -Right Write
+    # matches any mutating right; -Right Read matches read.
+    param(
+        [Parameter(Mandatory)][string]$Check,
+        [Parameter(Mandatory)][string]$Criterion,
+        [Parameter(Mandatory)][ValidateSet('Read', 'Write')][string]$Right,
+        [string[]]$Path = @(),
+        [Parameter(Mandatory)][string]$Capability,
+        [switch]$IncludeHowInCapability,
+        [Parameter(Mandatory)][string]$Scope,
+        [Parameter(Mandatory)][string]$Impact,
+        [ValidateSet('critical', 'high', 'medium', 'low', 'info')][string]$Severity = 'medium',
+        [Parameter(Mandatory)][string]$NoneReason,
+        [Parameter(Mandatory)][string]$MetReason,
+        [Parameter(Mandatory)][string]$UnmetReasonFormat
+    )
+
+    $result = Get-MatchingTargets -Check $Check -Criterion $Criterion -Right $Right -Path $Path `
+        -Capability $Capability -IncludeHowInCapability:$IncludeHowInCapability -Scope $Scope `
+        -Impact $Impact -Severity $Severity
+    if ($result.Existing.Count -eq 0) {
+        Set-CriterionOutcome -Id $Criterion -Outcome 'unknown' -Method 'permission-analysis' -Reason $NoneReason
+        return @()
+    }
+    if ($result.Matched.Count -gt 0) {
+        Set-CriterionOutcome -Id $Criterion -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason ($UnmetReasonFormat -f $result.Matched.Count, $result.Existing.Count)
+    }
+    else {
+        Set-CriterionOutcome -Id $Criterion -Outcome 'met' -Method 'permission-analysis' -Reason $MetReason
+    }
+    return $result.Matched
+}
+
+function Get-WritableRegistryKeys {
+    # Probes registry keys for KEY_SET_VALUE, emits one finding per writable key,
+    # and returns the writable keys' display names. Does not decide a criterion.
+    param(
+        [Parameter(Mandatory)][string]$Check,
+        [Parameter(Mandatory)][string]$Criterion,
+        [hashtable[]]$Key = @(),
+        [Parameter(Mandatory)][string]$Capability,
+        [Parameter(Mandatory)][string]$Scope,
+        [Parameter(Mandatory)][string]$Impact,
+        [ValidateSet('critical', 'high', 'medium', 'low', 'info')][string]$Severity = 'medium'
+    )
+
+    $writable = @()
+    foreach ($entry in $Key) {
+        if ([AgentSandboxAssessmentNative]::ProbeRegistryKey($entry.Hive, $entry.Sub, 0x2) -eq 0) {
+            $writable += $entry.Display
+            Add-Finding -Check $Check -Criterion $Criterion -Target $entry.Display -Capability $Capability `
+                -Result granted -Method access-request -Scope $Scope -Impact $Impact -Severity $Severity
+        }
+    }
+    return @($writable)
+}
+
+function Get-IntegrityLabel {
+    param([string]$IntegritySid)
+
+    if ([string]::IsNullOrEmpty($IntegritySid)) { return 'unknown' }
+    $rid = ($IntegritySid -split '-')[-1]
+    switch ($rid) {
+        '0' { 'untrusted' }
+        '4096' { 'low' }
+        '8192' { 'medium' }
+        '8448' { 'medium-plus' }
+        '12288' { 'high' }
+        '16384' { 'system' }
+        default { "level-$rid" }
+    }
+}
+
+function Resolve-SidName {
+    param([string]$Sid)
+
+    try {
+        return (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate(
+            [System.Security.Principal.NTAccount]).Value
+    }
+    catch {
+        return $null
+    }
+}
+
+# --- IDENTITY -----------------------------------------------------------------
+
+function Invoke-IdentityCheck {
+    $token = [AgentSandboxAssessmentNative]::GetCurrentToken()
+    $enabled = 0x4
+    $denyOnly = 0x10
+
+    $groupView = foreach ($group in $token.Groups) {
+        [pscustomobject]@{
+            Sid      = $group.Sid
+            Name     = (Resolve-SidName $group.Sid)
+            Enabled  = [bool]($group.Attributes -band $enabled)
+            DenyOnly = [bool]($group.Attributes -band $denyOnly)
+        }
+    }
+    $privilegeNames = @($token.Privileges | ForEach-Object { $_.Name })
+    $integrityLabel = Get-IntegrityLabel $token.IntegritySid
+
+    $script:Inventory['identity'] = [ordered]@{
+        userSid            = $token.UserSid
+        userName           = (Protect-Text (Resolve-SidName $token.UserSid))
+        integrityLevel     = $integrityLabel
+        isElevated         = $token.IsElevated
+        elevationType      = $token.ElevationType
+        sessionId          = $token.SessionId
+        authenticationId   = $token.AuthenticationId
+        tokenType          = $token.TokenType
+        restrictedSidCount = $token.RestrictedSidCount
+        isAppContainer     = $token.IsAppContainer
+        capabilityCount    = $token.CapabilityCount
+        hasThreadToken     = $token.HasThreadToken
+        privileges         = $privilegeNames
+        groups             = @($groupView | ForEach-Object { @{ sid = $_.Sid; name = (Protect-Text $_.Name); enabled = $_.Enabled; denyOnly = $_.DenyOnly } })
+    }
+
+    # A-ID-ADMIN
+    $adminGroup = $groupView | Where-Object { $_.Sid -eq 'S-1-5-32-544' } | Select-Object -First 1
+    $adminActive = $adminGroup -and -not $adminGroup.DenyOnly
+    $highIntegrity = @('high', 'system') -contains $integrityLabel
+    if ($token.IsElevated -or $adminActive -or $highIntegrity) {
+        Set-CriterionOutcome -Id 'A-ID-ADMIN' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "Identity holds active administrative authority (integrity=$integrityLabel, elevated=$($token.IsElevated))." `
+            -Critical -CriticalReason 'Administrative control over the host from the agent context.'
+        Add-Finding -Check IDENTITY -Criterion 'A-ID-ADMIN' -Target $token.UserSid -Capability 'administrator' `
+            -Result observed -Method inventory -Scope 'current-token' -Impact 'Full administrative control of the host.' -Severity critical
+    }
+    elseif ($adminGroup) {
+        Set-CriterionOutcome -Id 'A-ID-ADMIN' -Outcome 'unmet' -Method 'inventory' `
+            -Reason 'Identity is a member of Administrators as a deny-only (UAC split-token) group and can elevate without credentials.'
+        Add-Finding -Check IDENTITY -Criterion 'A-ID-ADMIN' -Target $token.UserSid -Capability 'administrator (split token)' `
+            -Result observed -Method inventory -Scope 'current-token' -Impact 'Elevation to administrator without credentials via UAC.' -Severity high
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-ID-ADMIN' -Outcome 'met' -Method 'inventory' `
+            -Reason "Standard user, integrity=$integrityLabel, not elevated."
+    }
+
+    # A-ID-PRIVS
+    $highImpactPrivileges = @(
+        'SeDebugPrivilege', 'SeTcbPrivilege', 'SeCreateTokenPrivilege', 'SeLoadDriverPrivilege',
+        'SeRestorePrivilege', 'SeBackupPrivilege', 'SeTakeOwnershipPrivilege',
+        'SeAssignPrimaryTokenPrivilege', 'SeImpersonatePrivilege'
+    )
+    $dangerous = @($privilegeNames | Where-Object { $highImpactPrivileges -contains $_ })
+    if ($dangerous.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-ID-PRIVS' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "Token holds high-impact privileges: $($dangerous -join ', ')." `
+            -Critical -CriticalReason 'Privileges permit host-wide escalation regardless of enabled state.'
+        Add-Finding -Check IDENTITY -Criterion 'A-ID-PRIVS' -Target ($dangerous -join ', ') -Capability 'high-impact privilege' `
+            -Result observed -Method inventory -Scope 'current-token' -Impact 'Escalation or kernel/credential access.' -Severity critical
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-ID-PRIVS' -Outcome 'met' -Method 'inventory' `
+            -Reason 'No high-impact privileges present in the token.'
+    }
+
+    # A-ID-GROUPS
+    $privilegedGroupSids = @{
+        'S-1-5-32-551' = 'Backup Operators'; 'S-1-5-32-549' = 'Server Operators'
+        'S-1-5-32-548' = 'Account Operators'; 'S-1-5-32-578' = 'Hyper-V Administrators'
+        'S-1-5-32-580' = 'Remote Management Users'; 'S-1-5-32-556' = 'Network Configuration Operators'
+    }
+    $brokerGroupNames = @('docker-users', 'Hyper-V Administrators')
+    $privilegedMemberships = @($groupView | Where-Object {
+            -not $_.DenyOnly -and (
+                $privilegedGroupSids.ContainsKey($_.Sid) -or
+                ($null -ne $_.Name -and ($brokerGroupNames -contains ($_.Name -replace '.*\\', '')))
+            )
+        })
+    if ($privilegedMemberships.Count -gt 0) {
+        $names = @($privilegedMemberships | ForEach-Object { if ($_.Name) { $_.Name } else { $_.Sid } })
+        Set-CriterionOutcome -Id 'A-ID-GROUPS' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "Member of privileged or broker groups: $($names -join ', ')."
+        Add-Finding -Check IDENTITY -Criterion 'A-ID-GROUPS' -Target ($names -join ', ') -Capability 'privileged group membership' `
+            -Result observed -Method inventory -Scope 'current-token' -Impact 'Delegated administrative or broker authority.' -Severity high
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-ID-GROUPS' -Outcome 'met' -Method 'inventory' `
+            -Reason 'No privileged or broker group memberships are active.'
+    }
+}
+
+# --- CONTAINMENT --------------------------------------------------------------
+
+function Test-ManagedSettingsPresent {
+    return (Test-Path -LiteralPath 'C:\Program Files\ClaudeCode\managed-settings.json' -PathType Leaf)
+}
+
+function Invoke-ContainmentCheck {
+    # C-POLICY-INTEGRITY: launcher/policy/checker files must not be agent-writable.
+    $programDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
+    $scriptDir = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
+    $policyTargets = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @(
+            $programDataRoot,
+            'C:\Program Files\ClaudeCode',
+            'C:\Program Files\ClaudeCode\managed-settings.json',
+            $PSCommandPath,
+            $scriptDir)) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { $policyTargets.Add($candidate) | Out-Null }
+    }
+    if (Test-Path -LiteralPath $programDataRoot) {
+        foreach ($child in @(Get-ChildItem -LiteralPath $programDataRoot -Force -ErrorAction SilentlyContinue |
+                Select-Object -First 40)) {
+            $policyTargets.Add($child.FullName) | Out-Null
+        }
+    }
+    $policyTargets = @($policyTargets | Select-Object -Unique)
+    Resolve-AccessTargets -Check CONTAINMENT -Criterion 'C-POLICY-INTEGRITY' -Right Write -Path $policyTargets `
+        -Capability 'writable control file' -IncludeHowInCapability -Scope 'control-integrity' `
+        -Impact 'Agent can alter its own launcher, policy or checker.' -Severity high `
+        -NoneReason 'No installed launcher, policy or checker targets were found to evaluate.' `
+        -MetReason "No write, create, delete or ACL rights on $($policyTargets.Count) control targets." `
+        -UnmetReasonFormat '{0} of {1} control targets are agent-writable.' | Out-Null
+
+    # C-TOOL-POLICY
+    $managedPresent = Test-ManagedSettingsPresent
+    $claudeHome = Join-Path $env:USERPROFILE '.claude'
+    if ($managedPresent) {
+        Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome 'met' -Method 'inventory' `
+            -Reason 'Admin-owned managed-settings.json is present.'
+    }
+    elseif (Test-Path -LiteralPath $claudeHome) {
+        Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome 'unmet' -Method 'inventory' `
+            -Reason 'Agent settings exist without a managed policy to constrain tool permissions.'
+    }
+    else {
+        Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome 'unknown' -Method 'inventory' `
+            -Reason 'No managed policy and no agent settings directory were found.'
+    }
+
+    # C-JOB
+    $job = [AgentSandboxAssessmentNative]::GetJobInfo()
+    $script:Inventory['job'] = [ordered]@{
+        inJob = $job.InJob; limitFlags = ('0x{0:x}' -f $job.LimitFlags)
+        uiRestrictions = ('0x{0:x}' -f $job.UiRestrictions); error = $job.Error
+    }
+    $killOnClose = [bool]($job.LimitFlags -band 0x2000)
+    $breakaway = [bool]($job.LimitFlags -band (0x800 -bor 0x1000))
+    if ($job.InJob -and $job.Error -ne 0) {
+        Set-CriterionOutcome -Id 'C-JOB' -Outcome 'unknown' -Method 'inventory' `
+            -Reason "Process is in a job but its limits could not be queried (win32-$($job.Error))."
+    }
+    elseif ($job.InJob -and $killOnClose -and -not $breakaway) {
+        Set-CriterionOutcome -Id 'C-JOB' -Outcome 'met' -Method 'inventory' `
+            -Reason 'Confined to a kill-on-close job without breakaway.'
+    }
+    elseif ($job.InJob) {
+        Set-CriterionOutcome -Id 'C-JOB' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "In a job without reliable kill-on-close/no-breakaway (killOnClose=$killOnClose, breakaway=$breakaway)."
+    }
+    else {
+        Set-CriterionOutcome -Id 'C-JOB' -Outcome 'unmet' -Method 'inventory' `
+            -Reason 'Process is not confined to a job object.'
+    }
+
+    # C-PERSIST-SELF
+    $persistTargets = New-Object System.Collections.Generic.List[string]
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath) {
+        foreach ($dir in ($userPath -split ';' | Where-Object { $_ -and $_.Trim() })) {
+            $persistTargets.Add($dir.Trim()) | Out-Null
+        }
+    }
+    foreach ($extra in @(
+            (Join-Path $env:USERPROFILE '.local\bin'),
+            (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell'),
+            (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell'))) {
+        $persistTargets.Add($extra) | Out-Null
+    }
+    $managedBlocksHooks = $false
+    if ($managedPresent) {
+        try {
+            $managed = Get-Content -LiteralPath 'C:\Program Files\ClaudeCode\managed-settings.json' -Raw | ConvertFrom-Json
+            if ($managed.PSObject.Properties.Name -contains 'allowManagedHooksOnly') {
+                $managedBlocksHooks = [bool]$managed.allowManagedHooksOnly
+            }
+        }
+        catch {
+            Add-AssessmentError -Check CONTAINMENT -Message "Could not parse managed-settings.json: $($_.Exception.Message)" -Category 'parse'
+        }
+    }
+    if (-not $managedBlocksHooks) {
+        $persistTargets.Add((Join-Path $claudeHome 'settings.json')) | Out-Null
+    }
+    Resolve-AccessTargets -Check CONTAINMENT -Criterion 'C-PERSIST-SELF' -Right Write -Path @($persistTargets) `
+        -Capability 'writable startup path' -Scope 'persistence' `
+        -Impact 'Code placed here runs in later agent sessions.' -Severity medium `
+        -NoneReason 'No persistence targets (user PATH, profile, agent hooks) exist to evaluate.' `
+        -MetReason 'No evaluated startup/persistence paths are agent-writable.' `
+        -UnmetReasonFormat '{0} startup/persistence paths are agent-writable.' | Out-Null
+
+    # C-PROXY-INTEGRITY
+    $envProxy = $env:HTTPS_PROXY -or $env:HTTP_PROXY -or $env:ALL_PROXY
+    $userProxy = $false
+    try {
+        $wininet = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+        if (($wininet.PSObject.Properties.Name -contains 'ProxyEnable') -and $wininet.ProxyEnable -eq 1) { $userProxy = $true }
+    }
+    catch {
+        # No per-user WinINET configuration present.
+    }
+    $machinePolicyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $machinePolicy = Test-Path -LiteralPath $machinePolicyKey
+    if (-not $envProxy -and -not $userProxy -and -not $machinePolicy) {
+        Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'na' -Method 'inventory' `
+            -Reason 'No proxy is configured for this identity.'
+    }
+    elseif ($machinePolicy) {
+        $policyWritable = [AgentSandboxAssessmentNative]::ProbeRegistryKey(
+            2, 'SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings', 0x2) -eq 0
+        if ($policyWritable) {
+            Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unmet' -Method 'access-request' `
+                -Reason 'Machine proxy policy key is agent-writable.'
+        }
+        else {
+            Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'met' -Method 'access-request' `
+                -Reason 'Proxy is enforced by a machine policy key the agent cannot modify.'
+        }
+    }
+    else {
+        Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unmet' -Method 'inventory' `
+            -Reason 'Proxy is configured only via environment or HKCU, which the agent can change.'
+    }
+}
+
+# --- MONITORING ---------------------------------------------------------------
+
+function Invoke-MonitoringCheck {
+    # M-ATTRIBUTION: are the agent's actions attributable to an account distinct
+    # from the interactive (human) user? Running in the non-interactive session 0
+    # under a dedicated account is the strongest form of separation, so the
+    # agent being unable to see the interactive session is a pass, not unknown.
+    $agentSession = [AgentSandboxAssessmentNative]::GetSessionId($PID)
+    $consoleUser = [AgentSandboxAssessmentNative]::GetConsoleSessionUser()
+    $script:Inventory['sessionUser'] = [AgentSandboxAssessmentNative]::GetSessionUser()
+    $script:Inventory['agentSessionId'] = $agentSession
+    $script:Inventory['consoleUser'] = (Protect-Text $consoleUser)
+    if ($agentSession -eq 0) {
+        Set-CriterionOutcome -Id 'M-ATTRIBUTION' -Outcome 'met' -Method 'inventory' `
+            -Reason "Agent runs in the non-interactive session 0 as $env:USERNAME, isolated from interactive user sessions."
+    }
+    elseif ($consoleUser -and ($consoleUser -ne $env:USERNAME)) {
+        Set-CriterionOutcome -Id 'M-ATTRIBUTION' -Outcome 'met' -Method 'inventory' `
+            -Reason "Agent account ($env:USERNAME) differs from the interactive console user."
+    }
+    elseif ($consoleUser -and ($consoleUser -eq $env:USERNAME)) {
+        Set-CriterionOutcome -Id 'M-ATTRIBUTION' -Outcome 'unmet' -Method 'inventory' `
+            -Reason 'Agent runs as the interactive console user, so its actions are not separately attributable.'
+    }
+    else {
+        Set-CriterionOutcome -Id 'M-ATTRIBUTION' -Outcome 'unknown' -Method 'inventory' `
+            -Reason 'Agent is in an interactive session but the console user could not be determined for comparison.'
+    }
+
+    # M-OS-LOGGING and discovery for M-TAMPER
+    $loggingSignals = @()
+    $monitoringServices = @()
+    foreach ($serviceName in @('Sysmon', 'Sysmon64', 'Sense')) {
+        $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($service) { $loggingSignals += "service:$serviceName"; $monitoringServices += $serviceName }
+    }
+    $scriptBlockKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    $loggingPolicyKeys = @()
+    try {
+        $sbl = Get-ItemProperty -Path $scriptBlockKey -ErrorAction Stop
+        if (($sbl.PSObject.Properties.Name -contains 'EnableScriptBlockLogging') -and $sbl.EnableScriptBlockLogging -eq 1) {
+            $loggingSignals += 'policy:ScriptBlockLogging'
+            $loggingPolicyKeys += 'SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+        }
+    }
+    catch {
+        # Policy not configured.
+    }
+    $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+    try {
+        $audit = Get-ItemProperty -Path $auditKey -ErrorAction Stop
+        if (($audit.PSObject.Properties.Name -contains 'ProcessCreationIncludeCmdLine_Enabled') -and
+            $audit.ProcessCreationIncludeCmdLine_Enabled -eq 1) {
+            $loggingSignals += 'policy:ProcessCreationCmdLine'
+        }
+    }
+    catch {
+        # Policy not configured.
+    }
+    $script:Inventory['loggingSignals'] = $loggingSignals
+
+    if ($loggingSignals.Count -gt 0) {
+        Set-CriterionOutcome -Id 'M-OS-LOGGING' -Outcome 'met' -Method 'inventory' `
+            -Reason "OS-level logging signals present: $($loggingSignals -join ', ')."
+    }
+    else {
+        Set-CriterionOutcome -Id 'M-OS-LOGGING' -Outcome 'unknown' -Method 'inventory' `
+            -Reason 'No OS-level process or script logging configuration was visible (not proof of absence).'
+    }
+
+    # M-TAMPER
+    $tamperable = @()
+    foreach ($key in $loggingPolicyKeys) {
+        if ([AgentSandboxAssessmentNative]::ProbeRegistryKey(2, $key, 0x2) -eq 0) {
+            $tamperable += "regkey:$key"
+            Add-Finding -Check MONITORING -Criterion 'M-TAMPER' -Target $key -Capability 'writable logging policy key' `
+                -Result granted -Method access-request -Scope 'monitoring-integrity' `
+                -Impact 'Agent can disable logging policy.' -Severity medium
+        }
+    }
+    foreach ($serviceName in $monitoringServices) {
+        $probe = [AgentSandboxAssessmentNative]::ProbeService($serviceName, (0x2 -bor 0x20))
+        if ($probe -eq 0) {
+            $tamperable += "service:$serviceName"
+            Add-Finding -Check MONITORING -Criterion 'M-TAMPER' -Target $serviceName -Capability 'change-config/stop on monitoring service' `
+                -Result granted -Method access-request -Scope 'monitoring-integrity' `
+                -Impact 'Agent can stop or reconfigure monitoring.' -Severity medium
+        }
+    }
+    if ($loggingSignals.Count -eq 0 -and $loggingPolicyKeys.Count -eq 0) {
+        Set-CriterionOutcome -Id 'M-TAMPER' -Outcome 'unknown' -Method 'access-request' `
+            -Reason 'No monitoring controls were discovered to test for tamper resistance.'
+    }
+    elseif ($tamperable.Count -gt 0) {
+        Set-CriterionOutcome -Id 'M-TAMPER' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "Agent can alter discovered monitoring controls: $($tamperable -join ', ')."
+    }
+    else {
+        Set-CriterionOutcome -Id 'M-TAMPER' -Outcome 'met' -Method 'access-request' `
+            -Reason 'Discovered monitoring controls did not grant write/change-config/stop rights.'
+    }
+
+    # M-AGENT-LOG
+    $logDirs = @(
+        (Join-Path $env:USERPROFILE '.claude\projects'),
+        (Join-Path $env:USERPROFILE '.copilot'))
+    $existingLogDirs = @($logDirs | Where-Object { Test-Path -LiteralPath $_ })
+    if ($existingLogDirs.Count -eq 0) {
+        Set-CriterionOutcome -Id 'M-AGENT-LOG' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason 'No agent transcript directories were found.'
+    }
+    else {
+        $writableLogs = @()
+        foreach ($dir in $existingLogDirs) {
+            $access = Get-PathAccess -Path $dir
+            if (Test-AnyWrite -Access $access) { $writableLogs += $dir }
+        }
+        if ($writableLogs.Count -gt 0) {
+            Set-CriterionOutcome -Id 'M-AGENT-LOG' -Outcome 'unmet' -Method 'permission-analysis' `
+                -Reason 'Agent transcript directories are writable by the agent identity.'
+            Add-Finding -Check MONITORING -Criterion 'M-AGENT-LOG' -Target ($writableLogs[0]) -Capability 'writable agent log directory' `
+                -Result granted -Method permission-analysis -Scope 'monitoring-integrity' `
+                -Impact 'Agent can alter its own transcripts.' -Severity low
+        }
+        else {
+            Set-CriterionOutcome -Id 'M-AGENT-LOG' -Outcome 'met' -Method 'permission-analysis' `
+                -Reason 'Agent transcript directories are not agent-writable.'
+        }
+    }
+}
+
+# --- FILES --------------------------------------------------------------------
+
+function Invoke-FilesCheck {
+    $usersRoot = Join-Path $env:SystemDrive 'Users'
+    $ownProfile = $env:USERPROFILE.TrimEnd('\')
+    $excluded = @('Public', 'Default', 'Default User', 'All Users')
+
+    # R-FILES-PROFILES
+    $otherProfiles = @()
+    if (Test-Path -LiteralPath $usersRoot) {
+        $otherProfiles = @(Get-ChildItem -LiteralPath $usersRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName.TrimEnd('\') -ne $ownProfile -and $excluded -notcontains $_.Name } |
+            ForEach-Object { $_.FullName })
+    }
+    $script:OtherProfiles = $otherProfiles   # cached for HANDOFF (step 4)
+    Resolve-AccessTargets -Check FILES -Criterion 'R-FILES-PROFILES' -Right Read -Path $otherProfiles `
+        -Capability 'readable user profile' -Scope 'cross-user-files' `
+        -Impact 'Another user''s documents and app data are readable.' -Severity high `
+        -NoneReason 'No other user profiles are present to evaluate.' `
+        -MetReason 'No other user profile is readable by the agent identity.' `
+        -UnmetReasonFormat '{0} of {1} other user profiles are readable.' | Out-Null
+
+    # R-FILES-ADJACENT: non-system top-level dirs on fixed drives, excluding the
+    # workspace tree and its ancestors. Capped at 200 directories.
+    $systemRoots = @($env:SystemRoot, (Join-Path $env:SystemDrive 'Program Files'),
+        (Join-Path $env:SystemDrive 'Program Files (x86)'), $usersRoot,
+        (Join-Path $env:SystemDrive 'ProgramData')) | ForEach-Object { $_.TrimEnd('\') }
+    $wsAncestors = @()
+    $cursor = $script:WorkspacePath
+    while ($cursor) {
+        $wsAncestors += $cursor.TrimEnd('\')
+        $parent = Split-Path -Parent $cursor
+        if (-not $parent -or $parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    $adjacent = New-Object System.Collections.Generic.List[string]
+    foreach ($drive in [System.IO.DriveInfo]::GetDrives()) {
+        if ($drive.DriveType -ne 'Fixed' -or -not $drive.IsReady) { continue }
+        foreach ($dir in @(Get-ChildItem -LiteralPath $drive.RootDirectory.FullName -Directory -Force -ErrorAction SilentlyContinue)) {
+            $full = $dir.FullName.TrimEnd('\')
+            if ($systemRoots -contains $full) { continue }
+            if ($wsAncestors -contains $full) { continue }
+            if ($full.StartsWith($script:WorkspacePath, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $adjacent.Add($dir.FullName) | Out-Null
+        }
+    }
+    $adjacentCapped = @($adjacent | Select-Object -Unique -First 200)
+    Resolve-AccessTargets -Check FILES -Criterion 'R-FILES-ADJACENT' -Right Read -Path $adjacentCapped `
+        -Capability 'readable directory outside workspace' -Scope 'host-files' `
+        -Impact 'Data outside the agent workspace is readable.' -Severity medium `
+        -NoneReason 'No non-system directories outside the workspace were found to evaluate.' `
+        -MetReason 'No evaluated directory outside the workspace is readable.' `
+        -UnmetReasonFormat '{0} of {1} directories outside the workspace are readable.' | Out-Null
+
+    # R-REG-OTHERS
+    $ownSid = $null
+    try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
+    $hkuSids = @()
+    try {
+        $hkuSids = @(Get-ChildItem -Path 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.PSChildName } |
+            Where-Object { $_ -match '^S-1-5-21-' -and $_ -notlike '*_Classes' -and $_ -ne $ownSid })
+    }
+    catch { $hkuSids = @() }
+    $readableReg = @()
+    $probedReg = 0
+    foreach ($sid in $hkuSids) {
+        $probedReg++
+        if ([AgentSandboxAssessmentNative]::ProbeRegistryKey(3, "$sid\Software", 0x20019) -eq 0) {
+            $readableReg += "HKU\$sid\Software"
+            Add-Finding -Check FILES -Criterion 'R-REG-OTHERS' -Target "HKU\$sid\Software" `
+                -Capability 'readable other-user hive' -Result granted -Method access-request `
+                -Scope 'cross-user-registry' -Impact 'Another user''s registry data is readable.' -Severity medium
+        }
+    }
+    foreach ($sensitive in @('SAM\SAM', 'SECURITY')) {
+        $probedReg++
+        if ([AgentSandboxAssessmentNative]::ProbeRegistryKey(2, $sensitive, 0x20019) -eq 0) {
+            $readableReg += "HKLM\$sensitive"
+            Add-Finding -Check FILES -Criterion 'R-REG-OTHERS' -Target "HKLM\$sensitive" `
+                -Capability 'readable sensitive registry hive' -Result granted -Method access-request `
+                -Scope 'registry' -Impact 'A sensitive security hive is readable.' -Severity high
+        }
+    }
+    if ($probedReg -eq 0) {
+        Set-CriterionOutcome -Id 'R-REG-OTHERS' -Outcome 'unknown' -Method 'access-request' `
+            -Reason 'No other-user or sensitive registry locations were available to probe.'
+    }
+    elseif ($readableReg.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-REG-OTHERS' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "$($readableReg.Count) other-user or sensitive registry location(s) are readable."
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-REG-OTHERS' -Outcome 'met' -Method 'access-request' `
+            -Reason "No other-user or sensitive registry location was readable ($probedReg probed)."
+    }
+}
+
+# --- DESKTOP ------------------------------------------------------------------
+
+function Invoke-DesktopCheck {
+    $winsta = [AgentSandboxAssessmentNative]::GetWindowStationName()
+    $desk = [AgentSandboxAssessmentNative]::GetDesktopName()
+    $onInteractive = ($winsta -ieq 'WinSta0') -and ($desk -ieq 'Default')
+    $inputOpenable = ([AgentSandboxAssessmentNative]::ProbeInputDesktop(0x41) -eq 0)  # READOBJECTS|ENUMERATE
+
+    $ownSid = $null
+    try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
+    $foreignOwned = @()
+    foreach ($wpid in @([AgentSandboxAssessmentNative]::GetVisibleWindowProcessIds() | Sort-Object -Unique)) {
+        if ($wpid -le 0 -or $wpid -eq $PID) { continue }
+        $info = [AgentSandboxAssessmentNative]::GetProcessToken($wpid)
+        if ($info -and $info.UserSid -and $info.UserSid -ne $ownSid) { $foreignOwned += $wpid }
+    }
+    $script:Inventory['desktop'] = [ordered]@{
+        windowStation = $winsta; desktop = $desk; onInteractiveDesktop = $onInteractive
+        inputDesktopOpenable = $inputOpenable; foreignOwnedWindowCount = $foreignOwned.Count
+    }
+
+    # Broker named pipes: inventory presence of known names only; never connect.
+    $knownPipes = @('docker_engine', 'openssh-ssh-agent')
+    $presentPipes = @()
+    try {
+        $pipeNames = @(Get-ChildItem -Path '\\.\pipe\' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+        $presentPipes = @($knownPipes | Where-Object { $pipeNames -contains $_ })
+    }
+    catch { }
+    $script:Inventory['brokerPipes'] = @($presentPipes)
+
+    if ($onInteractive -and ($inputOpenable -or $foreignOwned.Count -gt 0)) {
+        $why = if ($inputOpenable) { 'the input desktop is openable' }
+        else { "visible windows are owned by another identity ($($foreignOwned.Count))" }
+        Set-CriterionOutcome -Id 'R-DESKTOP' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "Shares the interactive desktop ($winsta\$desk): $why."
+        Add-Finding -Check DESKTOP -Criterion 'R-DESKTOP' -Target "$winsta\$desk" `
+            -Capability 'interactive desktop access' -Result granted -Method access-request -Scope 'desktop' `
+            -Impact 'Can observe or drive the interactive user''s UI session.' -Severity high
+    }
+    elseif (-not $onInteractive -and -not $inputOpenable) {
+        Set-CriterionOutcome -Id 'R-DESKTOP' -Outcome 'met' -Method 'access-request' `
+            -Reason "Not on WinSta0\Default ($winsta\$desk) and the input desktop is not openable."
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-DESKTOP' -Outcome 'unknown' -Method 'access-request' `
+            -Reason "Indeterminate desktop exposure ($winsta\$desk, inputDesktopOpenable=$inputOpenable)."
+    }
+}
+
+# --- NETWORK ------------------------------------------------------------------
+
+function ConvertTo-NetworkTarget {
+    param([Parameter(Mandatory)][string]$Spec)
+
+    $split = $Spec.IndexOf(':')
+    if ($split -lt 1) { return $null }
+    $kind = $Spec.Substring(0, $split).ToLowerInvariant()
+    $rest = $Spec.Substring($split + 1)
+    switch ($kind) {
+        'dns' { if ($rest) { return [pscustomobject]@{ Raw = $Spec; Kind = 'dns'; HostName = $rest; Port = 0 } } }
+        'smb' { if ($rest) { return [pscustomobject]@{ Raw = $Spec; Kind = 'tcp'; HostName = $rest; Port = 445 } } }
+        'tcp' {
+            if ($rest.StartsWith('[')) {
+                $close = $rest.IndexOf(']')
+                if ($close -lt 2) { return $null }
+                $hostName = $rest.Substring(1, $close - 1)
+                $portText = $rest.Substring($close + 1).TrimStart(':')
+            }
+            else {
+                $lastColon = $rest.LastIndexOf(':')
+                if ($lastColon -lt 1) { return $null }
+                $hostName = $rest.Substring(0, $lastColon)
+                $portText = $rest.Substring($lastColon + 1)
+            }
+            $port = 0
+            if (-not [int]::TryParse($portText, [ref]$port) -or $port -lt 1 -or $port -gt 65535) { return $null }
+            return [pscustomobject]@{ Raw = $Spec; Kind = 'tcp'; HostName = $hostName; Port = $port }
+        }
+    }
+    return $null
+}
+
+function Get-AddressClass {
+    param([Parameter(Mandatory)][string]$HostOrIp)
+
+    $ip = [System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($HostOrIp, [ref]$ip)) {
+        try { $ip = @([System.Net.Dns]::GetHostAddresses($HostOrIp))[0] } catch { return 'unknown' }
+    }
+    if (-not $ip) { return 'unknown' }
+    if ([System.Net.IPAddress]::IsLoopback($ip)) { return 'loopback' }
+    $bytes = $ip.GetAddressBytes()
+    if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+        if ($bytes[0] -eq 10) { return 'lan' }
+        if ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) { return 'lan' }
+        if ($bytes[0] -eq 192 -and $bytes[1] -eq 168) { return 'lan' }
+        if ($bytes[0] -eq 169 -and $bytes[1] -eq 254) { return 'lan' }
+        return 'internet'
+    }
+    if ($ip.IsIPv6LinkLocal -or $ip.IsIPv6SiteLocal) { return 'lan' }
+    if (($bytes[0] -band 0xFE) -eq 0xFC) { return 'lan' }  # fc00::/7 unique-local
+    return 'internet'
+}
+
+function Invoke-TcpProbe {
+    # Connects and closes without sending any application data.
+    param([Parameter(Mandatory)][string]$HostName, [Parameter(Mandatory)][int]$Port, [int]$TimeoutMs = 3000)
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $async = $client.BeginConnect($HostName, $Port, $null, $null)
+        if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        $client.EndConnect($async)
+        return $true
+    }
+    catch { return $false }
+    finally { $client.Close() }
+}
+
+function Invoke-NetworkCheck {
+    # Inventory (always): interfaces, gateways, DNS, proxy.
+    $interfaces = @()
+    try {
+        foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($nic.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up) { continue }
+            $props = $nic.GetIPProperties()
+            $interfaces += [ordered]@{
+                name      = $nic.Name
+                type      = $nic.NetworkInterfaceType.ToString()
+                addresses = @($props.UnicastAddresses | ForEach-Object { $_.Address.IPAddressToString })
+                gateways  = @($props.GatewayAddresses | ForEach-Object { $_.Address.IPAddressToString })
+                dns       = @($props.DnsAddresses | ForEach-Object { $_.IPAddressToString })
+            }
+        }
+    }
+    catch { }
+    $userProxy = $null
+    try {
+        $wininet = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+        if (($wininet.PSObject.Properties.Name -contains 'ProxyEnable') -and $wininet.ProxyEnable -eq 1 -and
+            ($wininet.PSObject.Properties.Name -contains 'ProxyServer')) {
+            $userProxy = (Protect-Text ([string]$wininet.ProxyServer))
+        }
+    }
+    catch { }
+    $proxyConfigured = [bool]($env:HTTPS_PROXY -or $env:HTTP_PROXY -or $userProxy)
+
+    # Mapped network shares (configured reach to remote file servers). Inventory
+    # of presence only; shares are never contacted or authenticated to here.
+    $mappedShares = @()
+    try {
+        foreach ($connection in @(Get-CimInstance -ClassName Win32_NetworkConnection -ErrorAction SilentlyContinue)) {
+            $mappedShares += [ordered]@{ local = $connection.LocalName; remote = (Protect-Text $connection.RemoteName) }
+        }
+    }
+    catch { }
+
+    $script:Inventory['network'] = [ordered]@{
+        interfaces   = @($interfaces)
+        proxy        = [ordered]@{ envHttps = (Protect-Text $env:HTTPS_PROXY); envHttp = (Protect-Text $env:HTTP_PROXY); user = $userProxy }
+        mappedShares = @($mappedShares)
+    }
+
+    # R-NET-SHARES
+    if ($mappedShares.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-NET-SHARES' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "$($mappedShares.Count) network share(s) are mapped into the agent session; remote file-server data is reachable."
+        foreach ($share in $mappedShares) {
+            Add-Finding -Check NETWORK -Criterion 'R-NET-SHARES' -Target ([string]$share.remote) `
+                -Capability 'mapped network share' -Result observed -Method inventory -Scope 'lateral' `
+                -Impact 'Data on a remote file server is reachable from the agent context.' -Severity medium
+        }
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-NET-SHARES' -Outcome 'met' -Method 'inventory' `
+            -Reason 'No network shares are mapped into the agent session.'
+    }
+
+    # Targets: -ProbeNetwork adds the Internet defaults, -NetworkTarget adds
+    # explicit targets, and the two combine so one run can test Internet egress
+    # and a LAN/loopback target together. -NetworkTarget alone (no -ProbeNetwork)
+    # probes only what was supplied.
+    $specs = @()
+    if ($ProbeNetwork) { $specs += @('dns:example.com', 'tcp:example.com:443', 'tcp:1.1.1.1:443', 'tcp:[2606:4700:4700::1111]:443') }
+    $specs += @($NetworkTarget)
+    $specs = @($specs | Select-Object -Unique)
+    $script:NetworkProbed = ($specs.Count -gt 0)
+    $script:NetworkTargetsUsed = @($specs)
+
+    $probeResults = @()
+    foreach ($spec in $specs) {
+        $target = ConvertTo-NetworkTarget -Spec $spec
+        if (-not $target) {
+            Add-AssessmentError -Check NETWORK -Category 'bad-target' -Message "Ignored malformed network target: $spec"
+            continue
+        }
+        if ($target.Kind -eq 'dns') {
+            $ok = $false
+            try { $ok = @([System.Net.Dns]::GetHostAddresses($target.HostName)).Count -gt 0 } catch { $ok = $false }
+            $probeResults += [pscustomobject]@{ Spec = $spec; Kind = 'dns'; Class = 'n/a'; Success = $ok }
+            continue
+        }
+        $class = Get-AddressClass -HostOrIp $target.HostName
+        $ok = Invoke-TcpProbe -HostName $target.HostName -Port $target.Port
+        $probeResults += [pscustomobject]@{ Spec = $spec; Kind = 'tcp'; Class = $class; Success = $ok }
+        if ($ok) {
+            $criterion = if ($class -eq 'internet') { 'R-NET-INTERNET' } else { 'R-NET-LATERAL' }
+            $severity = if ($class -eq 'internet') { 'high' } else { 'medium' }
+            Add-Finding -Check NETWORK -Criterion $criterion -Target $spec -Capability "tcp connect ($class)" `
+                -Result granted -Method observed-operation -Scope 'egress' `
+                -Impact 'A network destination is reachable from the agent context.' -Severity $severity
+        }
+    }
+    $script:Inventory['networkProbes'] = @($probeResults)
+
+    # R-NET-INTERNET: a DNS resolution alone never decides this.
+    $internetTcp = @($probeResults | Where-Object { $_.Kind -eq 'tcp' -and $_.Class -eq 'internet' })
+    $internetOk = @($internetTcp | Where-Object { $_.Success })
+    if ($internetOk.Count -gt 0) {
+        $reason = 'A direct TCP connection to an Internet destination succeeded.'
+        if ($proxyConfigured) { $reason += ' A proxy is configured, so this is a bypass on the tested route.' }
+        Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unmet' -Method 'observed-operation' -Reason $reason
+    }
+    elseif ($internetTcp.Count -ge 2) {
+        Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'met' -Method 'observed-operation' `
+            -Reason "All $($internetTcp.Count) Internet TCP probes failed (a timeout is not proof of a firewall denial)."
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unknown' -Method 'observed-operation' `
+            -Reason 'Fewer than two Internet TCP targets were probed; pass -ProbeNetwork or -NetworkTarget.'
+    }
+
+    # R-NET-LATERAL
+    $lateralTcp = @($probeResults | Where-Object { $_.Kind -eq 'tcp' -and ($_.Class -eq 'lan' -or $_.Class -eq 'loopback') })
+    $lateralOk = @($lateralTcp | Where-Object { $_.Success })
+    if ($lateralTcp.Count -eq 0) {
+        Set-CriterionOutcome -Id 'R-NET-LATERAL' -Outcome 'unknown' -Method 'observed-operation' `
+            -Reason 'No LAN or loopback targets were supplied to probe.'
+    }
+    elseif ($lateralOk.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-NET-LATERAL' -Outcome 'unmet' -Method 'observed-operation' `
+            -Reason "$($lateralOk.Count) of $($lateralTcp.Count) supplied LAN/loopback targets are reachable."
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-NET-LATERAL' -Outcome 'met' -Method 'observed-operation' `
+            -Reason "All $($lateralTcp.Count) supplied LAN/loopback targets failed (a timeout is not proof of a firewall denial)."
+    }
+}
+
+# --- HANDOFF ------------------------------------------------------------------
+
+function Invoke-HandoffCheck {
+    # A-HANDOFF-SHARED: locations an agent can write that another identity runs.
+    $sharedPaths = New-Object System.Collections.Generic.List[string]
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    if ($machinePath) {
+        foreach ($dir in ($machinePath -split ';' | Where-Object { $_ -and $_.Trim() })) {
+            $sharedPaths.Add($dir.Trim()) | Out-Null
+        }
+    }
+    $sharedPaths.Add((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp')) | Out-Null
+    foreach ($programFiles in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($programFiles -and (Test-Path -LiteralPath $programFiles)) {
+            foreach ($dir in @(Get-ChildItem -LiteralPath $programFiles -Directory -Force -ErrorAction SilentlyContinue)) {
+                $sharedPaths.Add($dir.FullName) | Out-Null
+            }
+        }
+    }
+    foreach ($profile in $script:OtherProfiles) { $sharedPaths.Add($profile) | Out-Null }
+
+    $pathResult = Get-MatchingTargets -Check HANDOFF -Criterion 'A-HANDOFF-SHARED' -Right Write -Path @($sharedPaths) `
+        -Capability 'agent-writable shared execution location' -Scope 'handoff' `
+        -Impact 'Code written here executes under another identity.' -Severity high
+    $runKeys = @(
+        @{ Hive = 2; Sub = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'; Display = 'HKLM\Software\...\CurrentVersion\Run' }
+        @{ Hive = 2; Sub = 'SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'; Display = 'HKLM\Software\...\CurrentVersion\RunOnce' }
+        @{ Hive = 2; Sub = 'SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run'; Display = 'HKLM\Software\Wow6432Node\...\Run' }
+    )
+    $runWritable = @(Get-WritableRegistryKeys -Check HANDOFF -Criterion 'A-HANDOFF-SHARED' -Key $runKeys `
+            -Capability 'agent-writable Run key' -Scope 'handoff' `
+            -Impact 'Code written here executes under another identity at logon.' -Severity high)
+
+    $matchedCount = @($pathResult.Matched).Count + $runWritable.Count
+    $probedCount = @($pathResult.Existing).Count + $runKeys.Count
+    if ($probedCount -eq 0) {
+        Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason 'No shared execution locations were available to evaluate.'
+    }
+    elseif ($matchedCount -gt 0) {
+        Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "$matchedCount shared execution location(s) (PATH, Program Files, startup, Run keys, other profiles) are agent-writable."
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'met' -Method 'permission-analysis' `
+            -Reason "No shared execution location is agent-writable ($probedCount probed)."
+    }
+
+    # A-HANDOFF-WORKSPACE: agent output consumed by another identity.
+    $ws = $script:WorkspacePath
+    $wsAccess = Get-PathAccess -Path $ws
+    $wsWritable = [bool](Test-AnyWrite -Access $wsAccess)
+    $ownSid = $null
+    try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
+    $benignSids = @($ownSid, 'S-1-5-18', 'S-1-3-0',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') | Where-Object { $_ }
+    $otherReaders = @()
+    try {
+        $acl = Get-Acl -LiteralPath $ws -ErrorAction Stop
+        foreach ($rule in @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })) {
+            if ($rule.FileSystemRights.ToString() -notmatch 'Read|Modify|FullControl|ListDirectory|ExecuteFile') { continue }
+            $sid = $null
+            try {
+                $sid = if ($rule.IdentityReference -is [System.Security.Principal.SecurityIdentifier]) {
+                    $rule.IdentityReference.Value
+                }
+                else { $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+            }
+            catch { $sid = $rule.IdentityReference.ToString() }
+            if ($benignSids -notcontains $sid) { $otherReaders += $sid }
+        }
+    }
+    catch {
+        Add-AssessmentError -Check HANDOFF -Category 'acl-read' -Message "Could not read workspace ACL: $($_.Exception.Message)"
+    }
+    $otherReaders = @($otherReaders | Select-Object -Unique)
+
+    # Inventory of executable handoff artifacts (counts only; never executed).
+    $artifact = [ordered]@{
+        gitHooks    = @(Get-ChildItem -LiteralPath (Join-Path $ws '.git\hooks') -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -ne '.sample' }).Count
+        vscodeTasks = [bool](Test-Path -LiteralPath (Join-Path $ws '.vscode\tasks.json'))
+        workflows   = @(Get-ChildItem -LiteralPath (Join-Path $ws '.github\workflows') -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in '.yml', '.yaml' }).Count
+    }
+    $script:Inventory['handoffArtifacts'] = $artifact
+
+    if ($wsWritable -and $otherReaders.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "Workspace is agent-writable and its ACL grants read to $($otherReaders.Count) other principal(s); consumer privileges unknown."
+        Add-Finding -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Target $ws `
+            -Capability 'agent-writable workspace read by other identities' -Result observed -Method permission-analysis `
+            -Scope 'handoff' -Impact 'Agent-written source/config may be built, run or opened by another identity.' -Severity medium
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'met' -Method 'permission-analysis' `
+            -Reason $(if (-not $wsWritable) { 'Workspace is not agent-writable.' } else { 'No other principal has read access to the workspace.' })
+    }
+}
+
+# --- INDIRECT -----------------------------------------------------------------
+
+function Get-ServiceImagePath {
+    param([string]$PathName)
+
+    if ([string]::IsNullOrWhiteSpace($PathName)) { return $null }
+    $trimmed = $PathName.Trim()
+    if ($trimmed.StartsWith('"')) {
+        $end = $trimmed.IndexOf('"', 1)
+        if ($end -gt 1) { return $trimmed.Substring(1, $end - 1) }
+    }
+    $match = [regex]::Match($trimmed, '^(?<p>.*?\.exe)(\s|$)', 'IgnoreCase')
+    if ($match.Success) { return $match.Groups['p'].Value }
+    return ($trimmed -split '\s')[0]
+}
+
+function Invoke-IndirectCheck {
+    $ownSid = $null
+    try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
+
+    $probed = 0
+    $unmet = @()
+    $criticalHit = $false
+
+    function Test-OtherIdentity {
+        param([string]$Account)
+        if ([string]::IsNullOrWhiteSpace($Account)) { return $true }
+        try {
+            $sid = (New-Object System.Security.Principal.NTAccount($Account)).Translate(
+                [System.Security.Principal.SecurityIdentifier]).Value
+            return ($sid -ne $ownSid)
+        }
+        catch { return $true }
+    }
+
+    # Services
+    try {
+        foreach ($service in @(Get-CimInstance -ClassName Win32_Service -ErrorAction Stop)) {
+            $exe = Get-ServiceImagePath -PathName $service.PathName
+            if (-not $exe -or -not (Test-Path -LiteralPath $exe -ErrorAction SilentlyContinue)) { continue }
+            $probed++
+            $otherIdentity = Test-OtherIdentity -Account $service.StartName
+            $exeAccess = Get-PathAccess -Path $exe
+            $binaryWritable = @('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $exeAccess.$_ -eq 'granted' } | Select-Object -First 1
+            $parentAccess = Get-PathAccess -Path (Split-Path -Parent $exe)
+            $parentAdd = ($parentAccess.Create -eq 'granted')
+            $svcConfig = ([AgentSandboxAssessmentNative]::ProbeService($service.Name, (0x2 -bor 0x40000 -bor 0x80000)) -eq 0)
+            $regSet = ([AgentSandboxAssessmentNative]::ProbeRegistryKey(2, "SYSTEM\CurrentControlSet\Services\$($service.Name)", 0x2) -eq 0)
+
+            $configWritable = $binaryWritable -or $svcConfig -or $regSet
+            if ($configWritable -or $parentAdd) {
+                $unmet += $service.Name
+                $severity = if ($configWritable -and $otherIdentity) { 'critical' } else { 'high' }
+                if ($severity -eq 'critical') { $criticalHit = $true }
+                $how = @(
+                    if ($binaryWritable) { "binary ($binaryWritable)" }
+                    if ($svcConfig) { 'service change-config/DACL/owner' }
+                    if ($regSet) { 'service registry key' }
+                    if ($parentAdd) { 'binary parent directory' }
+                ) -join ', '
+                Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "service:$($service.Name) [$($service.StartName)]" `
+                    -Capability "agent-writable service target: $how" -Result granted -Method permission-analysis `
+                    -Scope 'broker' -Impact 'Agent can alter a binary or config run by a service identity.' -Severity $severity
+            }
+        }
+    }
+    catch {
+        Add-AssessmentError -Check INDIRECT -Category 'service-enum' -Message "Service enumeration failed: $($_.Exception.Message)"
+    }
+
+    # Scheduled tasks
+    try {
+        foreach ($task in @(Get-ScheduledTask -ErrorAction Stop)) {
+            $principal = $null
+            if ($task.Principal) { $principal = $task.Principal.UserId }
+            if ($principal -and -not (Test-OtherIdentity -Account $principal)) { continue }
+            foreach ($action in @($task.Actions)) {
+                $execute = $null
+                try { $execute = $action.Execute } catch { $execute = $null }
+                if (-not $execute) { continue }
+                $exe = [Environment]::ExpandEnvironmentVariables($execute).Trim('"')
+                if (-not (Test-Path -LiteralPath $exe -ErrorAction SilentlyContinue)) { continue }
+                $probed++
+                $exeAccess = Get-PathAccess -Path $exe
+                $binaryWritable = @('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $exeAccess.$_ -eq 'granted' } | Select-Object -First 1
+                $parentAccess = Get-PathAccess -Path (Split-Path -Parent $exe)
+                $parentAdd = ($parentAccess.Create -eq 'granted')
+                if ($binaryWritable -or $parentAdd) {
+                    $unmet += "task:$($task.TaskName)"
+                    $severity = if ($binaryWritable) { 'critical' } else { 'high' }
+                    if ($severity -eq 'critical') { $criticalHit = $true }
+                    $how = if ($binaryWritable) { "binary ($binaryWritable)" } else { 'binary parent directory' }
+                    Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "task:$($task.TaskName) [$principal]" `
+                        -Capability "agent-writable task target: $how" -Result granted -Method permission-analysis `
+                        -Scope 'broker' -Impact 'Agent can alter a binary run by a scheduled-task identity.' -Severity $severity
+                }
+            }
+        }
+    }
+    catch {
+        Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task enumeration failed: $($_.Exception.Message)"
+    }
+
+    if ($probed -eq 0) {
+        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason 'No service or task binaries were available to evaluate.'
+    }
+    elseif ($criticalHit) {
+        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "$($unmet.Count) of $probed service/task targets are agent-writable, including a binary or config run by another identity." `
+            -Critical -CriticalReason 'Agent-writable binary or config executed by a more-privileged service or task identity.'
+    }
+    elseif ($unmet.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "$($unmet.Count) of $probed service/task targets expose a writable parent directory."
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'met' -Method 'permission-analysis' `
+            -Reason "No service or task binary, config or parent directory is agent-writable ($probed probed)."
+    }
+}
+
+# --- REMOTE -------------------------------------------------------------------
+
+function Get-DomainIdentity {
+    $info = [ordered]@{
+        partOfDomain = $false; domain = $null; workgroup = $null; azureAdJoined = $false
+        logonServer = $env:LOGONSERVER; userDomain = $env:USERDOMAIN
+        computerName = $env:COMPUTERNAME; agentAccountScope = 'local'
+    }
+    try {
+        $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        $info.partOfDomain = [bool]$computerSystem.PartOfDomain
+        $info.domain = $computerSystem.Domain
+        $info.workgroup = $computerSystem.Workgroup
+    }
+    catch { }
+    # Azure AD / Entra join leaves a GUID subkey under CloudDomainJoin\JoinInfo.
+    try {
+        $joinInfo = 'HKLM:\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo'
+        if ((Test-Path -LiteralPath $joinInfo -ErrorAction SilentlyContinue) -and
+            (@(Get-ChildItem -LiteralPath $joinInfo -ErrorAction SilentlyContinue).Count -gt 0)) {
+            $info.azureAdJoined = $true
+        }
+    }
+    catch { }
+    if ($info.userDomain -and $info.computerName -and ($info.userDomain -ne $info.computerName)) {
+        $info.agentAccountScope = 'domain'
+    }
+    return $info
+}
+
+function Invoke-RemoteCheck {
+    # A-REMOTE-DELEGATED: presence only; credentials are never read or used.
+    $signals = @()
+    $gitConfigs = @(
+        (Join-Path $env:USERPROFILE '.gitconfig'),
+        (Join-Path $env:ProgramData 'Git\config'),
+        (Join-Path $env:ProgramFiles 'Git\etc\gitconfig'))
+    foreach ($gitConfig in $gitConfigs) {
+        if ((Test-Path -LiteralPath $gitConfig) -and
+            (Select-String -LiteralPath $gitConfig -Pattern 'helper\s*=' -Quiet -ErrorAction SilentlyContinue)) {
+            $signals += "git-credential-helper:$(Split-Path -Leaf $gitConfig)"
+        }
+    }
+    $credentialFiles = @(
+        (Join-Path $env:USERPROFILE '.git-credentials'),
+        (Join-Path $env:APPDATA 'GitHub CLI\hosts.yml'),
+        (Join-Path $env:USERPROFILE '.aws\credentials'),
+        (Join-Path $env:USERPROFILE '.kube\config'),
+        (Join-Path $env:USERPROFILE '.docker\config.json'))
+    foreach ($credentialFile in $credentialFiles) {
+        if (Test-Path -LiteralPath $credentialFile) { $signals += (Format-SafePath $credentialFile) }
+    }
+    foreach ($credentialDir in @((Join-Path $env:USERPROFILE '.azure'))) {
+        if (Test-Path -LiteralPath $credentialDir -PathType Container) { $signals += (Format-SafePath $credentialDir) }
+    }
+
+    # Workspace git remotes -> inventory, userinfo stripped.
+    $remotes = @()
+    $wsGitConfig = Join-Path $script:WorkspacePath '.git\config'
+    if (Test-Path -LiteralPath $wsGitConfig) {
+        foreach ($line in @(Select-String -LiteralPath $wsGitConfig -Pattern '^\s*url\s*=\s*(.+)$' -ErrorAction SilentlyContinue)) {
+            $remotes += (Protect-Text $line.Matches[0].Groups[1].Value.Trim())
+        }
+    }
+    $script:Inventory['gitRemotes'] = @($remotes | Select-Object -Unique)
+
+    if ($signals.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-REMOTE-DELEGATED' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "$($signals.Count) remote credential source(s) present for the agent identity; effective scopes unknown."
+        Add-Finding -Check REMOTE -Criterion 'A-REMOTE-DELEGATED' -Target ($signals -join '; ') `
+            -Capability 'usable remote credential source' -Result observed -Method inventory -Scope 'remote' `
+            -Impact 'Agent may act against remote services; granted scope unknown.' -Severity high
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-REMOTE-DELEGATED' -Outcome 'met' -Method 'inventory' `
+            -Reason 'No git credential helper or known tool login material was found for the agent identity.'
+    }
+
+    # A-TOOL-SCOPE: declared MCP/tool servers. Local declarations only. Parsed
+    # as a hashtable (PowerShell 7) so a .claude.json with keys differing only
+    # by case (real-world project paths) still parses.
+    $mcpCount = 0
+    $parseFailed = $false
+    $claudeJson = Join-Path $env:USERPROFILE '.claude.json'
+    if (Test-Path -LiteralPath $claudeJson -ErrorAction SilentlyContinue) {
+        try {
+            $config = Get-Content -LiteralPath $claudeJson -Raw | ConvertFrom-Json -AsHashtable
+            if ($config.ContainsKey('mcpServers') -and $config['mcpServers'] -is [System.Collections.IDictionary]) {
+                $mcpCount += $config['mcpServers'].Keys.Count
+            }
+            if ($config.ContainsKey('projects') -and $config['projects'] -is [System.Collections.IDictionary]) {
+                foreach ($project in $config['projects'].Values) {
+                    if ($project -is [System.Collections.IDictionary] -and $project.ContainsKey('mcpServers') -and
+                        $project['mcpServers'] -is [System.Collections.IDictionary]) {
+                        $mcpCount += $project['mcpServers'].Keys.Count
+                    }
+                }
+            }
+        }
+        catch {
+            $parseFailed = $true
+            Add-AssessmentError -Check REMOTE -Category 'parse' -Message "Could not parse .claude.json: $($_.Exception.Message)"
+        }
+    }
+    $wsMcp = Join-Path $script:WorkspacePath '.mcp.json'
+    if (Test-Path -LiteralPath $wsMcp -ErrorAction SilentlyContinue) {
+        try {
+            $config = Get-Content -LiteralPath $wsMcp -Raw | ConvertFrom-Json -AsHashtable
+            if ($config.ContainsKey('mcpServers') -and $config['mcpServers'] -is [System.Collections.IDictionary]) {
+                $mcpCount += $config['mcpServers'].Keys.Count
+            }
+        }
+        catch {
+            $parseFailed = $true
+            Add-AssessmentError -Check REMOTE -Category 'parse' -Message "Could not parse .mcp.json: $($_.Exception.Message)"
+        }
+    }
+    $script:Inventory['toolScope'] = 'partial (local declarations only)'
+    $script:Inventory['mcpServerCount'] = $mcpCount
+    if ($mcpCount -gt 0) {
+        Set-CriterionOutcome -Id 'A-TOOL-SCOPE' -Outcome 'unknown' -Method 'inventory' `
+            -Reason "$mcpCount MCP/tool server(s) declared locally; their authority is not assessed by this OS-process scope."
+    }
+    elseif ($parseFailed) {
+        Set-CriterionOutcome -Id 'A-TOOL-SCOPE' -Outcome 'unknown' -Method 'inventory' `
+            -Reason 'Local MCP/tool declarations could not be parsed; tool scope is undetermined.'
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-TOOL-SCOPE' -Outcome 'met' -Method 'inventory' `
+            -Reason 'No local MCP/tool server declarations were found.'
+    }
+
+    # A-REMOTE-DOMAIN: domain / Entra membership widens reachable identities.
+    $domain = Get-DomainIdentity
+    $script:Inventory['domainIdentity'] = $domain
+    if ($domain.partOfDomain -or $domain.azureAdJoined) {
+        $kinds = @(
+            if ($domain.partOfDomain) { "AD domain-joined ($($domain.domain))" }
+            if ($domain.azureAdJoined) { 'Entra/Azure AD-joined' }
+        ) -join ', '
+        $scopeNote = if ($domain.agentAccountScope -eq 'domain') {
+            ' The agent runs as a domain account, which widens reachable identities and resources.'
+        }
+        else { ' The agent runs as a local account, so domain reach is limited but not necessarily zero.' }
+        Set-CriterionOutcome -Id 'A-REMOTE-DOMAIN' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "Device is $kinds.$scopeNote Effective domain authority is unknown without further evidence."
+        Add-Finding -Check REMOTE -Criterion 'A-REMOTE-DOMAIN' -Target $kinds -Capability 'domain-joined device' `
+            -Result observed -Method inventory -Scope 'remote' `
+            -Impact 'Domain membership can expand reachable identities and resources; effective scope unknown.' -Severity high
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-REMOTE-DOMAIN' -Outcome 'met' -Method 'inventory' `
+            -Reason "Standalone or workgroup device (workgroup $($domain.workgroup)); no domain-reachable authority."
+    }
+}
+
+# --- PROCESSES ----------------------------------------------------------------
+
+function Invoke-ProcessesCheck {
+    $ownSid = $null
+    $privileges = @()
+    try {
+        $token = [AgentSandboxAssessmentNative]::GetCurrentToken()
+        $ownSid = $token.UserSid
+        $privileges = @($token.Privileges | ForEach-Object { $_.Name })
+    }
+    catch { }
+    # A denied OpenProcess only proves denial for the token as currently
+    # configured. A token that merely *holds* a DACL-bypass privilege (even
+    # disabled) can self-grant the access: SeDebugPrivilege bypasses process
+    # DACLs outright; SeTakeOwnership/SeRestore can seize the object and rewrite
+    # its DACL. So "none granted" is only a pass when no such privilege is held.
+    $hasDebug = $privileges -contains 'SeDebugPrivilege'
+    $selfGrantPrivileges = @($privileges | Where-Object {
+            @('SeDebugPrivilege', 'SeTakeOwnershipPrivilege', 'SeRestorePrivilege') -contains $_ })
+    $canSelfGrant = $selfGrantPrivileges.Count -gt 0
+
+    # The exposure is the possibility: a granted PROCESS_VM_READ / _TERMINATE
+    # handle is proof of the capability (the handle is closed, never used). So
+    # the right is probed on every non-own process, whether or not its owner can
+    # be attributed. Own processes are skipped (the owner's default DACL always
+    # grants them, which is not a cross-identity exposure); because we can always
+    # open our own processes, any process we cannot attribute is, by definition,
+    # not ours.
+    $examined = 0
+    $ownerUnknown = 0
+    $vmReadHits = @()
+    $vmReadCritical = $false
+    $terminateHits = @()
+    $injectHits = @()
+    $injectCritical = $false
+    # Injection-capable rights; each is requested on its own and the handle is
+    # closed without use. Any one grants a code-injection or handle-theft path.
+    $injectRights = @(
+        @{ Name = 'VM_WRITE'; Mask = 0x20 }
+        @{ Name = 'CREATE_THREAD'; Mask = 0x2 }
+        @{ Name = 'DUP_HANDLE'; Mask = 0x40 }
+        @{ Name = 'WRITE_DAC'; Mask = 0x40000 }
+    )
+
+    foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
+        if ($proc.Id -le 4 -or $proc.Id -eq $PID) { continue }
+        $info = [AgentSandboxAssessmentNative]::GetProcessToken($proc.Id)
+        if ($info -and $info.UserSid -eq $ownSid) { continue }   # own process: not a cross-identity exposure
+        if (-not $info -or -not $info.UserSid) { $ownerUnknown++ }
+        $examined++
+        $session = $proc.SessionId
+        $isInteractive = ($session -ne 0)
+        $owner = if ($info -and $info.UserSid) { $info.UserSid } else { 'owner-unknown' }
+        $label = "$($proc.ProcessName) ($($proc.Id)) [session $session, $owner]"
+
+        if ([AgentSandboxAssessmentNative]::ProbeProcess($proc.Id, 0x10) -eq 0) {
+            # PROCESS_VM_READ
+            $vmReadHits += $proc.Id
+            if ($isInteractive) { $vmReadCritical = $true }
+            Add-Finding -Check PROCESSES -Criterion 'R-PROC-READ' -Target $label `
+                -Capability 'PROCESS_VM_READ on another identity''s process' -Result granted -Method access-request `
+                -Scope 'cross-process' -Impact 'Can read another identity''s process memory (plaintext, tokens).' `
+                -Severity $(if ($isInteractive) { 'critical' } else { 'high' })
+        }
+        if ([AgentSandboxAssessmentNative]::ProbeProcess($proc.Id, 0x1) -eq 0) {
+            # PROCESS_TERMINATE
+            $terminateHits += $proc.Id
+            Add-Finding -Check PROCESSES -Criterion 'A-PROC-CONTROL' -Target $label `
+                -Capability 'PROCESS_TERMINATE on another identity''s process' -Result granted -Method access-request `
+                -Scope 'cross-process' -Impact 'Can terminate another identity''s process (data loss, disruption).' -Severity medium
+        }
+        $grantedInject = @()
+        foreach ($right in $injectRights) {
+            if ([AgentSandboxAssessmentNative]::ProbeProcess($proc.Id, [uint32]$right.Mask) -eq 0) { $grantedInject += $right.Name }
+        }
+        if ($grantedInject.Count -gt 0) {
+            $injectHits += $proc.Id
+            if ($isInteractive) { $injectCritical = $true }
+            Add-Finding -Check PROCESSES -Criterion 'A-PROC-INJECT' -Target $label `
+                -Capability "injection rights on another identity's process: $($grantedInject -join ', ')" -Result granted -Method access-request `
+                -Scope 'cross-process' -Impact 'Can inject code or steal handles in another identity''s process.' `
+                -Severity $(if ($isInteractive) { 'critical' } else { 'high' })
+        }
+    }
+    $script:Inventory['processes'] = [ordered]@{
+        otherProcessesProbed = $examined; ownerUnattributed = $ownerUnknown
+        vmReadGranted = $vmReadHits.Count; terminateGranted = $terminateHits.Count
+        injectGranted = $injectHits.Count
+    }
+
+    # R-PROC-READ
+    if ($vmReadHits.Count -gt 0 -and $vmReadCritical) {
+        Set-CriterionOutcome -Id 'R-PROC-READ' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "$($vmReadHits.Count) other process(es) granted PROCESS_VM_READ, including interactive-session targets." `
+            -Critical -CriticalReason 'Readable memory of a more-privileged or human-session process.'
+    }
+    elseif ($vmReadHits.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-PROC-READ' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "$($vmReadHits.Count) other process(es) granted PROCESS_VM_READ (session 0 only)."
+    }
+    elseif ($canSelfGrant) {
+        # No handle granted as configured, but the token can bypass/rewrite
+        # process security to grant itself read. SeDebug reaches any process,
+        # including human-session memory, so that case is critical.
+        Add-Finding -Check PROCESSES -Criterion 'R-PROC-READ' -Target "token privileges: $($selfGrantPrivileges -join ', ')" `
+            -Capability 'self-grantable process read (DACL bypass)' -Result observed -Method permission-analysis `
+            -Scope 'cross-process' -Impact 'Agent can enable a held privilege to read other processes'' memory despite DACLs.' `
+            -Severity $(if ($hasDebug) { 'critical' } else { 'high' })
+        if ($hasDebug) {
+            Set-CriterionOutcome -Id 'R-PROC-READ' -Outcome 'unmet' -Method 'permission-analysis' `
+                -Reason "No handle granted as configured, but the token holds SeDebugPrivilege, which bypasses process DACLs to read any process (including human-session memory)." `
+                -Critical -CriticalReason 'SeDebugPrivilege self-grants read of any process, including human-session memory.'
+        }
+        else {
+            Set-CriterionOutcome -Id 'R-PROC-READ' -Outcome 'unmet' -Method 'permission-analysis' `
+                -Reason "No handle granted as configured, but the token holds $($selfGrantPrivileges -join ', '), which can seize a process object and rewrite its DACL to self-grant read."
+        }
+    }
+    elseif ($examined -gt 0) {
+        Set-CriterionOutcome -Id 'R-PROC-READ' -Outcome 'met' -Method 'access-request' `
+            -Reason "Probed $examined other process(es) for PROCESS_VM_READ; none granted a handle and the token holds no DACL-bypass privilege ($ownerUnknown owner(s) unattributable but probed directly; broader escalation is assessed under A-ID-PRIVS)."
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-PROC-READ' -Outcome 'unknown' -Method 'access-request' `
+            -Reason 'No other process was present to probe.'
+    }
+
+    # A-PROC-CONTROL
+    if ($terminateHits.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-PROC-CONTROL' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "$($terminateHits.Count) other process(es) granted PROCESS_TERMINATE."
+    }
+    elseif ($canSelfGrant) {
+        Set-CriterionOutcome -Id 'A-PROC-CONTROL' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "No handle granted as configured, but the token holds $($selfGrantPrivileges -join ', '), which can self-grant terminate rights over other processes."
+        Add-Finding -Check PROCESSES -Criterion 'A-PROC-CONTROL' -Target "token privileges: $($selfGrantPrivileges -join ', ')" `
+            -Capability 'self-grantable process terminate (DACL bypass)' -Result observed -Method permission-analysis `
+            -Scope 'cross-process' -Impact 'Agent can enable a held privilege to terminate other processes despite DACLs.' -Severity medium
+    }
+    elseif ($examined -gt 0) {
+        Set-CriterionOutcome -Id 'A-PROC-CONTROL' -Outcome 'met' -Method 'access-request' `
+            -Reason "Probed $examined other process(es) for PROCESS_TERMINATE; none granted and the token holds no DACL-bypass privilege."
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-PROC-CONTROL' -Outcome 'unknown' -Method 'access-request' `
+            -Reason 'No other process was present to probe.'
+    }
+
+    # A-PROC-INJECT
+    if ($injectHits.Count -gt 0 -and $injectCritical) {
+        Set-CriterionOutcome -Id 'A-PROC-INJECT' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "$($injectHits.Count) other process(es) granted injection rights (VM_WRITE/CREATE_THREAD/DUP_HANDLE/WRITE_DAC), including interactive-session targets." `
+            -Critical -CriticalReason 'Code injection into a more-privileged or human-session process.'
+    }
+    elseif ($injectHits.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-PROC-INJECT' -Outcome 'unmet' -Method 'access-request' `
+            -Reason "$($injectHits.Count) other process(es) granted injection rights (session 0 only)."
+    }
+    elseif ($canSelfGrant) {
+        Add-Finding -Check PROCESSES -Criterion 'A-PROC-INJECT' -Target "token privileges: $($selfGrantPrivileges -join ', ')" `
+            -Capability 'self-grantable process injection (DACL bypass)' -Result observed -Method permission-analysis `
+            -Scope 'cross-process' -Impact 'Agent can enable a held privilege to inject into other processes despite DACLs.' `
+            -Severity $(if ($hasDebug) { 'critical' } else { 'high' })
+        if ($hasDebug) {
+            Set-CriterionOutcome -Id 'A-PROC-INJECT' -Outcome 'unmet' -Method 'permission-analysis' `
+                -Reason 'No handle granted as configured, but the token holds SeDebugPrivilege, which grants PROCESS_ALL_ACCESS (including injection) over any process.' `
+                -Critical -CriticalReason 'SeDebugPrivilege self-grants full access, including code injection into any process.'
+        }
+        else {
+            Set-CriterionOutcome -Id 'A-PROC-INJECT' -Outcome 'unmet' -Method 'permission-analysis' `
+                -Reason "No handle granted as configured, but the token holds $($selfGrantPrivileges -join ', '), which can seize a process object and rewrite its DACL to self-grant injection rights."
+        }
+    }
+    elseif ($examined -gt 0) {
+        Set-CriterionOutcome -Id 'A-PROC-INJECT' -Outcome 'met' -Method 'access-request' `
+            -Reason "Probed $examined other process(es) for write/thread/handle-duplication/DACL rights; none granted and the token holds no DACL-bypass privilege."
+    }
+    else {
+        Set-CriterionOutcome -Id 'A-PROC-INJECT' -Outcome 'unknown' -Method 'access-request' `
+            -Reason 'No other process was present to probe.'
+    }
+}
+
+# --- SECRETS ------------------------------------------------------------------
+
+function Invoke-SecretsCheck {
+    # R-SECRETS-ENV: report only names, never values.
+    $pattern = '(?i)(token|secret|passwd|password|api[_-]?key|apikey|credential|client[_-]?secret|\bpat\b|access[_-]?key|\bpwd\b)'
+    $envHits = @()
+    foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
+        if (($entry.Key -match $pattern) -and -not [string]::IsNullOrEmpty([string]$entry.Value)) {
+            $envHits += [string]$entry.Key
+        }
+    }
+    $envHits = @($envHits | Sort-Object -Unique)
+    if ($envHits.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-SECRETS-ENV' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "$($envHits.Count) environment variable name(s) look secret-bearing: $($envHits -join ', ')."
+        Add-Finding -Check SECRETS -Criterion 'R-SECRETS-ENV' -Target ($envHits -join ', ') `
+            -Capability 'secret-bearing environment variable (name only)' -Result observed -Method inventory `
+            -Scope 'secrets' -Impact 'A token or credential may be exposed to the agent via the environment.' -Severity high
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-SECRETS-ENV' -Outcome 'met' -Method 'inventory' `
+            -Reason 'No secret-bearing environment variable names were found.'
+    }
+
+    # R-SECRETS-KNOWN: existence + readability only; no file contents are read.
+    $expectedCredential = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+    $candidates = @('.git-credentials', '.netrc', '_netrc', '.npmrc', '.pypirc',
+        '.aws\credentials', '.kube\config', '.docker\config.json') |
+    ForEach-Object { Join-Path $env:USERPROFILE $_ }
+    $candidates += @((Join-Path $env:USERPROFILE '.azure'), (Join-Path $env:USERPROFILE '.config\gcloud'),
+        (Join-Path $env:APPDATA 'GitHub CLI\hosts.yml'), (Join-Path $env:APPDATA 'gcloud'))
+    $sshDir = Join-Path $env:USERPROFILE '.ssh'
+    if (Test-Path -LiteralPath $sshDir) {
+        $candidates += @(Get-ChildItem -LiteralPath $sshDir -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { @('.pub', '.cer', '.crt') -notcontains $_.Extension -and @('known_hosts', 'config') -notcontains $_.Name } |
+            ForEach-Object { $_.FullName })
+    }
+
+    $present = 0
+    $readable = @()
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        $present++
+        if ((Get-PathAccess -Path $candidate).Read -eq 'granted') {
+            $readable += $candidate
+            Add-Finding -Check SECRETS -Criterion 'R-SECRETS-KNOWN' -Target (Format-SafePath $candidate) `
+                -Capability 'readable credential location' -Result granted -Method permission-analysis `
+                -Scope 'secrets' -Impact 'A stored credential file is readable by the agent identity.' -Severity high
+        }
+    }
+    $agentCredentialPresent = Test-Path -LiteralPath $expectedCredential
+    if ($agentCredentialPresent) {
+        Add-Finding -Check SECRETS -Criterion 'R-SECRETS-KNOWN' -Target (Format-SafePath $expectedCredential) `
+            -Capability 'agent operating credential (expected)' -Result observed -Method inventory `
+            -Scope 'secrets' -Impact 'Expected: the agent''s own credential; not counted against this criterion.' -Severity info
+    }
+    $script:Inventory['secrets'] = [ordered]@{
+        envNameHits = $envHits.Count; credentialFilesPresent = $present
+        credentialFilesReadable = $readable.Count; agentCredentialPresent = [bool]$agentCredentialPresent
+    }
+    if ($readable.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-SECRETS-KNOWN' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "$($readable.Count) of $present known credential location(s) are readable (agent's own credential excluded)."
+    }
+    elseif ($present -eq 0) {
+        Set-CriterionOutcome -Id 'R-SECRETS-KNOWN' -Outcome 'met' -Method 'permission-analysis' `
+            -Reason 'No known third-party credential locations are present.'
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-SECRETS-KNOWN' -Outcome 'met' -Method 'permission-analysis' `
+            -Reason "$present known credential location(s) present but none readable by the agent identity."
+    }
+
+    # R-SECRETS-CREDMAN: enumerate stored credentials by type and target name
+    # only; the credential blobs are never read. Guarded so an unavailable
+    # method (e.g. a stale Add-Type class cached in a reused session) degrades
+    # to unknown instead of aborting the whole SECRETS check.
+    $credError = 0
+    $credentials = $null
+    try { $credentials = [AgentSandboxAssessmentNative]::GetCredentialEntries([ref]$credError) }
+    catch { $credentials = $null }
+    if ($null -eq $credentials) {
+        Set-CriterionOutcome -Id 'R-SECRETS-CREDMAN' -Outcome 'unknown' -Method 'inventory' `
+            -Reason 'Credential Manager enumeration is unavailable in this session; if the script was edited mid-session, re-run it in a fresh shell.'
+    }
+    elseif ($credentials.Count -gt 0) {
+        # Report provider prefix + type only; drop the user-identifying tail of
+        # each target name (account ids, emails) so no PII is emitted.
+        $typeNames = @{ 1 = 'generic'; 2 = 'domain-password'; 3 = 'domain-certificate'
+            4 = 'domain-visible-password'; 5 = 'generic-certificate'; 6 = 'domain-extended'
+        }
+        $byType = @{}
+        $providers = @()
+        foreach ($credential in $credentials) {
+            $key = if ($typeNames.ContainsKey([int]$credential.Type)) { $typeNames[[int]$credential.Type] } else { "type-$($credential.Type)" }
+            $byType[$key] = 1 + [int]$byType[$key]
+            $prefix = (([string]$credential.TargetName) -split '[:/|\\]', 2)[0]
+            if ([string]::IsNullOrWhiteSpace($prefix)) { $prefix = 'unnamed' }
+            $prefix = [regex]::Replace((Protect-Text $prefix), '\S+@\S+', '<redacted>')
+            $providers += $prefix
+        }
+        $typeSummary = @($byType.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
+        $providerList = @($providers | Select-Object -Unique)
+        Set-CriterionOutcome -Id 'R-SECRETS-CREDMAN' -Outcome 'unmet' -Method 'inventory' `
+            -Reason "$($credentials.Count) Credential Manager entr$(if ($credentials.Count -eq 1) { 'y is' } else { 'ies are' }) available to the agent identity ($typeSummary)."
+        Add-Finding -Check SECRETS -Criterion 'R-SECRETS-CREDMAN' -Target (($providerList | Select-Object -First 15) -join '; ') `
+            -Capability 'Credential Manager entries (providers, metadata only)' -Result observed -Method inventory -Scope 'secrets' `
+            -Impact 'Stored credentials usable by the agent via the credential APIs; secret values not read.' -Severity medium
+    }
+    elseif ($credError -eq 0 -or $credError -eq 1168) {
+        # 1168 = ERROR_NOT_FOUND: the store holds no credentials.
+        Set-CriterionOutcome -Id 'R-SECRETS-CREDMAN' -Outcome 'met' -Method 'inventory' `
+            -Reason 'No Credential Manager entries are present for the agent identity.'
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-SECRETS-CREDMAN' -Outcome 'unknown' -Method 'inventory' `
+            -Reason "Credential Manager enumeration failed (win32-$credError)."
+    }
+
+    # R-SECRETS-SCAN is resolved by Invoke-SecretContentScan below.
+    Invoke-SecretContentScan
+}
+
+function Invoke-SecretContentScan {
+    # Bounded content scan for likely secrets in the workspace and a short list
+    # of plain-text profile config files. Reports only the sanitized location,
+    # the suspected category and a match count -- never the matched value, a
+    # snippet or surrounding text. Honors file/byte/time limits and records them.
+    $maxFiles = 5000
+    $maxFileBytes = 1MB
+    $maxTotalBytes = 32MB
+    $budgetSeconds = 30
+
+    $patterns = @(
+        @{ Category = 'private-key'; Confidence = 'high'; Regex = '-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----' }
+        @{ Category = 'aws-access-key-id'; Confidence = 'high'; Regex = '\bAKIA[0-9A-Z]{16}\b' }
+        @{ Category = 'github-token'; Confidence = 'high'; Regex = '\bgh[pousr]_[A-Za-z0-9]{36,}\b' }
+        @{ Category = 'google-api-key'; Confidence = 'high'; Regex = '\bAIza[0-9A-Za-z_\-]{35}\b' }
+        @{ Category = 'slack-token'; Confidence = 'high'; Regex = '\bxox[baprs]-[A-Za-z0-9-]{10,}' }
+        @{ Category = 'jwt'; Confidence = 'medium'; Regex = '\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}' }
+        @{ Category = 'assigned-secret'; Confidence = 'medium'; Regex = '(?i)(?:api[_-]?key|secret|token|password|passwd|client[_-]?secret|access[_-]?key|connection[_ ]?string)\s*[:=]\s*["'']?[A-Za-z0-9._/+\-]{16,}' }
+    )
+    $textExtensions = @('.env', '.json', '.yaml', '.yml', '.xml', '.config', '.ini', '.txt', '.ps1', '.psm1',
+        '.psd1', '.cmd', '.bat', '.sh', '.cfg', '.conf', '.properties', '.toml', '.pem', '.key', '.md', '.tf', '.tfvars')
+    $configNames = @('.npmrc', '.netrc', '_netrc', '.pypirc', '.gitconfig', '.env')
+    $skipDirectories = @('.git', 'node_modules', 'obj', 'bin', '.vs', 'dist', 'build', 'packages', '.venv', 'venv', '__pycache__')
+
+    # Candidate collection (workspace tree + a few profile config files).
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $filesConsidered = 0
+    $limitHit = $null
+    foreach ($item in (Get-ChildItem -LiteralPath $script:WorkspacePath -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+        if ($candidates.Count -ge $maxFiles) { $limitHit = 'max-files'; break }
+        $segments = $item.FullName -split '[\\/]'
+        if ($segments | Where-Object { $skipDirectories -contains $_ }) { continue }
+        if (($textExtensions -contains $item.Extension) -or ($configNames -contains $item.Name)) {
+            $candidates.Add($item.FullName) | Out-Null
+        }
+    }
+    foreach ($name in $configNames) {
+        $profileFile = Join-Path $env:USERPROFILE $name
+        if ((Test-Path -LiteralPath $profileFile -ErrorAction SilentlyContinue) -and ($candidates -notcontains $profileFile)) {
+            $candidates.Add($profileFile) | Out-Null
+        }
+    }
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $totalBytes = 0L
+    $scanned = 0
+    $hitsByCategory = @{}
+    $hitFiles = @()
+
+    foreach ($path in $candidates) {
+        if ($stopwatch.Elapsed.TotalSeconds -ge $budgetSeconds) { $limitHit = 'time-budget'; break }
+        if ($totalBytes -ge $maxTotalBytes) { $limitHit = 'max-total-bytes'; break }
+        $text = $null
+        try {
+            $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                $toRead = [int][Math]::Min([long]$maxFileBytes, $stream.Length)
+                if ($toRead -gt 0) {
+                    $buffer = New-Object byte[] $toRead
+                    $read = $stream.Read($buffer, 0, $toRead)
+                    $totalBytes += $read
+                    $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+                }
+            }
+            finally { $stream.Dispose() }
+        }
+        catch { continue }
+        $filesConsidered++
+        if ([string]::IsNullOrEmpty($text)) { $scanned++; continue }
+        $scanned++
+        $fileCategories = @()
+        foreach ($pattern in $patterns) {
+            if ([regex]::IsMatch($text, $pattern.Regex)) { $fileCategories += $pattern.Category }
+        }
+        if ($fileCategories.Count -gt 0) {
+            foreach ($category in $fileCategories) { $hitsByCategory[$category] = 1 + ([int]$hitsByCategory[$category]) }
+            $hitFiles += $path
+            Add-Finding -Check SECRETS -Criterion 'R-SECRETS-SCAN' -Target (Format-SafePath $path) `
+                -Capability "suspected secret ($($fileCategories -join ', '))" -Result observed -Method 'observed-operation' `
+                -Scope 'secrets' -Impact 'A file readable by the agent contains a token-like string (value not shown).' -Severity high
+        }
+    }
+    $stopwatch.Stop()
+
+    $script:Inventory['secretScan'] = [ordered]@{
+        candidateFiles = $candidates.Count; filesScanned = $scanned
+        bytesScanned = $totalBytes; limitReached = $limitHit
+        categories = @($hitsByCategory.Keys | Sort-Object)
+    }
+
+    if ($hitFiles.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'unmet' -Method 'observed-operation' `
+            -Reason "$($hitFiles.Count) file(s) contain suspected secrets ($(@($hitsByCategory.Keys | Sort-Object) -join ', ')); values not shown."
+    }
+    elseif ($candidates.Count -eq 0) {
+        Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'met' -Method 'observed-operation' `
+            -Reason 'No candidate text or config files were found to scan.'
+    }
+    elseif ($limitHit) {
+        Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'unknown' -Method 'observed-operation' `
+            -Reason "Scan stopped at the $limitHit limit after $scanned of $($candidates.Count) files; no secret found in the scanned subset (coverage incomplete)."
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'met' -Method 'observed-operation' `
+            -Reason "Scanned $scanned candidate file(s); no suspected secrets detected."
+    }
+}
+
+# --- Scoring and verdict ------------------------------------------------------
+
+function Measure-Assessment {
+    $dimensionResults = @()
+    $sumLower = 0.0
+    $sumUpper = 0.0
+    $totalMet = 0
+    $totalUnmet = 0
+    $totalApplicable = 0
+    foreach ($dim in $Dimensions) {
+        $items = @($script:Criteria.Values | Where-Object { $_.Dimension -eq $dim })
+        $applicable = @($items | Where-Object { $_.Outcome -ne 'na' })
+        $met = @($applicable | Where-Object { $_.Outcome -eq 'met' }).Count
+        $unmet = @($applicable | Where-Object { $_.Outcome -eq 'unmet' }).Count
+        $unknown = @($applicable | Where-Object { $_.Outcome -eq 'unknown' }).Count
+        if ($applicable.Count -eq 0) {
+            $lowerFrac = 0.0
+            $upperFrac = 1.0
+        }
+        else {
+            $lowerFrac = $met / $applicable.Count
+            $upperFrac = ($met + $unknown) / $applicable.Count
+        }
+        $sumLower += $lowerFrac * 25
+        $sumUpper += $upperFrac * 25
+        $totalMet += $met
+        $totalUnmet += $unmet
+        $totalApplicable += $applicable.Count
+        $dimensionResults += [pscustomobject]@{
+            Dimension   = $dim
+            Applicable  = $applicable.Count
+            Met         = $met
+            Unmet       = $unmet
+            Unknown     = $unknown
+            LowerPoints = [int][math]::Floor($lowerFrac * 25)
+            UpperPoints = [int][math]::Ceiling($upperFrac * 25)
+        }
+    }
+    $scoreLower = [int][math]::Max(0, [math]::Min(100, [math]::Floor($sumLower)))
+    $scoreUpper = [int][math]::Max(0, [math]::Min(100, [math]::Ceiling($sumUpper)))
+    $criticalCriteria = @($script:Criteria.Values | Where-Object { $_.Critical })
+    $criticalApplied = $criticalCriteria.Count -gt 0
+    if ($criticalApplied) {
+        $scoreLower = [math]::Min($scoreLower, 39)
+        $scoreUpper = [math]::Min($scoreUpper, 39)
+    }
+    $coverage = if ($totalApplicable -eq 0) { 0.0 } else { [math]::Round((($totalMet + $totalUnmet) / $totalApplicable), 3) }
+    $essentialUnknowns = @($script:Criteria.Values | Where-Object { $_.Essential -and $_.Outcome -eq 'unknown' })
+
+    if ($criticalApplied) { $verdict = 'Critical exposure' }
+    elseif ($essentialUnknowns.Count -gt 0 -or $coverage -lt $MinimumCoverageForVerdict) { $verdict = 'Incomplete' }
+    elseif ($scoreLower -lt 40) { $verdict = 'Weak' }
+    elseif ($scoreLower -lt 70) { $verdict = 'Partial' }
+    else { $verdict = 'Bounded within tested scope' }
+
+    return [pscustomobject]@{
+        Dimensions         = $dimensionResults
+        ScoreLower         = $scoreLower
+        ScoreUpper         = $scoreUpper
+        CriticalCapApplied = $criticalApplied
+        Coverage           = $coverage
+        Verdict            = $verdict
+        EssentialUnknowns  = $essentialUnknowns
+    }
+}
+
+function Test-Policy {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $policy = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $requireMet = @()
+    if ($policy.PSObject.Properties.Name -contains 'requireMet') { $requireMet = @($policy.requireMet) }
+    $results = foreach ($id in $requireMet) {
+        if (-not $script:Criteria.Contains($id)) { throw "Policy references unknown criterion id: $id" }
+        $criterion = $script:Criteria[$id]
+        $compliance = switch ($criterion.Outcome) {
+            'met' { 'compliant' }
+            'na' { 'compliant' }
+            'unmet' { 'violation' }
+            default { 'unknown' }
+        }
+        [pscustomobject]@{ Criterion = $id; Required = 'met'; Outcome = $criterion.Outcome; Compliance = $compliance }
+    }
+    return [pscustomobject]@{
+        Name    = if ($policy.PSObject.Properties.Name -contains 'name') { $policy.name } else { 'unnamed' }
+        Results = @($results)
+    }
+}
+
+# --- Reporting ----------------------------------------------------------------
+
+function Get-TopFindings {
+    # One representative (the most severe) per criterion, ranked by severity, so
+    # every category with a finding appears once and a single noisy criterion
+    # cannot crowd out the rest. GroupCount reports how many findings that
+    # criterion produced. With $Count > 0 the list is capped; 0 shows all.
+    param([int]$Count = 0)
+
+    $representatives = foreach ($group in ($script:Findings | Group-Object -Property Criterion)) {
+        $top = @($group.Group |
+            Sort-Object -Property @{ Expression = { $SeverityRank[$_.Severity] }; Descending = $true })[0]
+        [pscustomobject]@{
+            Severity   = $top.Severity
+            Capability = $top.Capability
+            Target     = $top.Target
+            Impact     = $top.Impact
+            Criterion  = $top.Criterion
+            GroupCount = $group.Count
+        }
+    }
+    $ranked = @($representatives |
+        Sort-Object -Property @{ Expression = { $SeverityRank[$_.Severity] }; Descending = $true }, Criterion)
+    if ($Count -gt 0) { return @($ranked | Select-Object -First $Count) }
+    return $ranked
+}
+
+function Get-OutcomeColor {
+    param([Parameter(Mandatory)][string]$Outcome)
+
+    switch ($Outcome) {
+        'met' { 'Green' }
+        'unmet' { 'Red' }
+        'na' { 'DarkGray' }
+        default { 'Yellow' }
+    }
+}
+
+function Write-HumanReport {
+    param(
+        [Parameter(Mandatory)][psobject]$Measure,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Context,
+        [switch]$Brief
+    )
+
+    $verdictColor = switch ($Measure.Verdict) {
+        'Critical exposure' { 'Red' }
+        'Incomplete' { 'Yellow' }
+        'Weak' { 'Red' }
+        'Partial' { 'Yellow' }
+        default { 'Green' }
+    }
+    Write-Host ''
+    Write-Host '== Agent sandbox exposure assessment ==' -ForegroundColor Cyan
+    Write-Host ("Identity: {0} (SID {1}), integrity {2}, elevated {3}, session {4}" -f `
+            $Context.userName, $Context.userSid, $Context.integrityLevel, $Context.isElevated, $Context.sessionId)
+    Write-Host ("Profile {0}/{1}  checker {2}  {3}" -f $ProfileId, $ProfileVersion, $CheckerVersion, $Context.timestampUtc) -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host ("Verdict: {0}" -f $Measure.Verdict) -ForegroundColor $verdictColor
+    Write-Host ("Control score: {0}-{1} / 100{2}" -f $Measure.ScoreLower, $Measure.ScoreUpper,
+        $(if ($Measure.CriticalCapApplied) { '  (critical cap applied)' } else { '' }))
+    Write-Host ("Evidence coverage: {0}%" -f [int]($Measure.Coverage * 100))
+    if ($Brief) {
+        Write-Host ''
+        Write-Host 'Dimensions:' -ForegroundColor Cyan
+        foreach ($dim in $Measure.Dimensions) {
+            Write-Host ("  {0,-12} {1,2}-{2,-2} pts   met {3}  unmet {4}  unknown {5}  (applicable {6})" -f `
+                    $dim.Dimension, $dim.LowerPoints, $dim.UpperPoints, $dim.Met, $dim.Unmet, $dim.Unknown, $dim.Applicable)
+        }
+    }
+    else {
+        Write-Host ''
+        Write-Host 'Results (each criterion):' -ForegroundColor Cyan
+        foreach ($dim in $Measure.Dimensions) {
+            $items = @($script:Criteria.Values | Where-Object { $_.Dimension -eq $dim.Dimension })
+            if ($items.Count -eq 0) { continue }
+            $summary = "$($dim.Met)/$($dim.Applicable) met"
+            if ($dim.Unmet -gt 0) { $summary += ", $($dim.Unmet) unmet" }
+            if ($dim.Unknown -gt 0) { $summary += ", $($dim.Unknown) unknown" }
+            Write-Host ("  {0} ({1})" -f $dim.Dimension, $summary) -ForegroundColor White
+            foreach ($criterion in $items) {
+                $tag = "[$($criterion.Outcome.ToUpper())]".PadRight(9)
+                $essential = if ($criterion.Essential) { '*' } else { ' ' }
+                Write-Host ("    {0} {1}{2,-20} {3}" -f $tag, $essential, $criterion.Id, $criterion.Title) `
+                    -ForegroundColor (Get-OutcomeColor $criterion.Outcome)
+                Write-Host ("            why: {0}" -f (Protect-Text $criterion.Reason)) -ForegroundColor DarkGray
+            }
+        }
+        Write-Host ''
+        Write-Host '  * essential criterion (must be met or unmet for a bounded verdict)' -ForegroundColor DarkGray
+    }
+    $top = Get-TopFindings
+    if ($top.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Top findings (one per category):' -ForegroundColor Cyan
+        foreach ($finding in $top) {
+            $more = if ($finding.GroupCount -gt 1) { " (+$($finding.GroupCount - 1) more)" } else { '' }
+            Write-Host ("  [{0}] {1}: {2}{3}" -f $finding.Severity.ToUpper(), $finding.Capability, $finding.Target, $more) -ForegroundColor Yellow
+            if ($finding.Impact) { Write-Host ("        {0}" -f $finding.Impact) -ForegroundColor DarkGray }
+        }
+    }
+    $notEvaluated = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unknown' } |
+        Sort-Object -Property @{ Expression = { -not $_.Essential } }, Id)
+    if ($notEvaluated.Count -gt 0) {
+        Write-Host ''
+        Write-Host "Not evaluated / unknown ($($notEvaluated.Count)):" -ForegroundColor Yellow
+        foreach ($criterion in $notEvaluated) {
+            $tag = if ($criterion.Essential) { 'essential, blocks bounded verdict' } else { 'non-essential' }
+            Write-Host ("  {0} [{1}]  {2}" -f $criterion.Id, $tag, $criterion.Title)
+            Write-Host ("        why: {0}" -f $criterion.Reason) -ForegroundColor DarkGray
+        }
+    }
+    $remediable = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unmet' })
+    if ($remediable.Count -gt 0) {
+        Write-Host ''
+        Write-Host 'Remediation:' -ForegroundColor Cyan
+        foreach ($criterion in $remediable) {
+            Write-Host ("  {0}: {1}" -f $criterion.Id, $criterion.Remediation) -ForegroundColor DarkGray
+        }
+    }
+    Write-Host ''
+    Write-Host 'Inside-only diagnostic. Granted handles prove authorization only; a compromised agent can falsify this report.' -ForegroundColor DarkGray
+}
+
+function Get-MarkdownReport {
+    param([Parameter(Mandatory)][psobject]$Measure, [Parameter(Mandatory)][System.Collections.IDictionary]$Context)
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('# Agent sandbox exposure assessment')
+    $lines.Add('')
+    $lines.Add("- Verdict: **$($Measure.Verdict)**")
+    $lines.Add("- Control score: $($Measure.ScoreLower)-$($Measure.ScoreUpper) / 100" +
+        $(if ($Measure.CriticalCapApplied) { ' (critical cap applied)' } else { '' }))
+    $lines.Add("- Evidence coverage: $([int]($Measure.Coverage * 100))%")
+    $lines.Add("- Identity: $($Context.userName) (integrity $($Context.integrityLevel), elevated $($Context.isElevated))")
+    $lines.Add("- Profile $ProfileId/$ProfileVersion, checker $CheckerVersion, $($Context.timestampUtc)")
+    $lines.Add('')
+    $lines.Add('## Dimensions')
+    $lines.Add('')
+    $lines.Add('| Dimension | Points | Met | Unmet | Unknown | Applicable |')
+    $lines.Add('| --- | --- | --- | --- | --- | --- |')
+    foreach ($dim in $Measure.Dimensions) {
+        $lines.Add("| $($dim.Dimension) | $($dim.LowerPoints)-$($dim.UpperPoints) | $($dim.Met) | $($dim.Unmet) | $($dim.Unknown) | $($dim.Applicable) |")
+    }
+    $lines.Add('')
+    $lines.Add('## Criteria')
+    $lines.Add('')
+    $lines.Add('| ID | Outcome | Essential | Reason |')
+    $lines.Add('| --- | --- | --- | --- |')
+    foreach ($criterion in $script:Criteria.Values) {
+        $lines.Add("| $($criterion.Id) | $($criterion.Outcome) | $($criterion.Essential) | $(Protect-Text $criterion.Reason) |")
+    }
+    return ($lines -join [Environment]::NewLine)
+}
+
+# --- Main ---------------------------------------------------------------------
+
+$script:StartTime = [DateTime]::UtcNow
+
+try {
+    Initialize-NativeProbe
+}
+catch {
+    [Console]::Error.WriteLine("Fatal: native probe initialization failed: $($_.Exception.Message)")
+    exit 1
+}
+
+$script:UserProfile = $env:USERPROFILE
+if ($Workspace) {
+    try { $script:WorkspacePath = (Resolve-Path -LiteralPath $Workspace -ErrorAction Stop).Path }
+    catch { Write-Diag "Workspace not found, using as-is: $Workspace"; $script:WorkspacePath = $Workspace }
+}
+else {
+    $script:WorkspacePath = (Get-Location).Path
+}
+
+if ($PolicyPath -and -not (Test-Path -LiteralPath $PolicyPath -PathType Leaf)) {
+    [Console]::Error.WriteLine("Policy file not found: $PolicyPath")
+    exit 1
+}
+if ($OutputDirectory -and -not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
+    [Console]::Error.WriteLine("Output directory does not exist: $OutputDirectory")
+    exit 1
+}
+# Run order is explicit. Adding a check is one line here plus its criteria in
+# the registry and one Invoke-<Area>Check function; areas with no entry remain
+# "not implemented in v1". Invoke-Check enforces that each listed check resolves
+# every criterion in its area.
+$CheckPlan = @(
+    @{ Area = 'IDENTITY'; Body = { Invoke-IdentityCheck } }
+    @{ Area = 'FILES'; Body = { Invoke-FilesCheck } }
+    @{ Area = 'SECRETS'; Body = { Invoke-SecretsCheck } }
+    @{ Area = 'PROCESSES'; Body = { Invoke-ProcessesCheck } }
+    @{ Area = 'DESKTOP'; Body = { Invoke-DesktopCheck } }
+    @{ Area = 'NETWORK'; Body = { Invoke-NetworkCheck } }
+    @{ Area = 'HANDOFF'; Body = { Invoke-HandoffCheck } }
+    @{ Area = 'INDIRECT'; Body = { Invoke-IndirectCheck } }
+    @{ Area = 'REMOTE'; Body = { Invoke-RemoteCheck } }
+    @{ Area = 'CONTAINMENT'; Body = { Invoke-ContainmentCheck } }
+    @{ Area = 'MONITORING'; Body = { Invoke-MonitoringCheck } }
+)
+foreach ($plan in $CheckPlan) {
+    Invoke-Check -Name $plan.Area -Body $plan.Body
+}
+$implementedAreas = @($CheckPlan | ForEach-Object { $_.Area })
+$notImplementedAreas = @($AllCheckAreas | Where-Object { $implementedAreas -notcontains $_ })
+
+# Checks not implemented in v1 keep their criteria as honest unknowns.
+foreach ($criterion in $script:Criteria.Values) {
+    if ($criterion.Reason -eq 'not evaluated') {
+        Set-CriterionOutcome -Id $criterion.Id -Outcome 'unknown' -Reason 'not implemented in v1'
+    }
+}
+
+$policyResult = $null
+if ($PolicyPath) {
+    try { $policyResult = Test-Policy -Path $PolicyPath }
+    catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+}
+
+$limitationUnimplemented = 'v1 does not implement the secret content scan, Credential Manager inventory or process injection-right probes; those criteria are unknown.'
+if ($notImplementedAreas.Count -gt 0) {
+    $limitationUnimplemented = "v1 does not implement the secret content scan, Credential Manager inventory, process injection-right probes, or these checks: $($notImplementedAreas -join ', '); related criteria are unknown."
+}
+
+$measure = Measure-Assessment
+
+$contextToken = [AgentSandboxAssessmentNative]::GetCurrentToken()
+$parentProcess = $null
+try {
+    $parentId = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop).ParentProcessId
+    $parentProcess = (Get-Process -Id $parentId -ErrorAction Stop).ProcessName
+}
+catch {
+    # Parent process is not always inspectable; launch context stays partial.
+}
+
+$context = [ordered]@{
+    userSid        = $contextToken.UserSid
+    userName       = (Protect-Text (Resolve-SidName $contextToken.UserSid))
+    integrityLevel = (Get-IntegrityLabel $contextToken.IntegritySid)
+    isElevated     = $contextToken.IsElevated
+    sessionId      = $contextToken.SessionId
+    processId      = $PID
+    parentProcess  = $parentProcess
+    psVersion      = $PSVersionTable.PSVersion.ToString()
+    osVersion      = [System.Environment]::OSVersion.Version.ToString()
+    timestampUtc   = $script:StartTime.ToString('o')
+}
+
+$report = [ordered]@{
+    schemaVersion     = $SchemaVersion
+    checkerVersion    = $CheckerVersion
+    profile           = [ordered]@{ id = $ProfileId; version = $ProfileVersion }
+    status            = if ($script:Errors.Count -gt 0) { 'completed-with-errors' } else { 'completed' }
+    durationSeconds   = [math]::Round(([DateTime]::UtcNow - $script:StartTime).TotalSeconds, 2)
+    executionContext  = $context
+    scope             = [ordered]@{
+        workspace            = (Format-SafePath $script:WorkspacePath)
+        checksEvaluated      = @($implementedAreas | Where-Object { $SkipCheck -notcontains $_ })
+        checksSkipped        = @($SkipCheck)
+        checksNotImplemented = @($notImplementedAreas)
+        networkProbed        = $script:NetworkProbed
+        networkTargets       = @($script:NetworkTargetsUsed)
+    }
+    verdict           = $measure.Verdict
+    score             = [ordered]@{ lower = $measure.ScoreLower; upper = $measure.ScoreUpper; criticalCapApplied = $measure.CriticalCapApplied }
+    coverage          = $measure.Coverage
+    dimensions        = @($measure.Dimensions | ForEach-Object {
+            [ordered]@{ dimension = $_.Dimension; applicable = $_.Applicable; met = $_.Met; unmet = $_.Unmet; unknown = $_.Unknown; lowerPoints = $_.LowerPoints; upperPoints = $_.UpperPoints }
+        })
+    criteria          = @($script:Criteria.Values | ForEach-Object {
+            [ordered]@{ id = $_.Id; dimension = $_.Dimension; check = $_.Check; essential = $_.Essential; severity = $_.Severity; title = $_.Title; outcome = $_.Outcome; reason = (Protect-Text $_.Reason); method = $_.Method; critical = $_.Critical; criticalReason = $_.CriticalReason; remediation = $_.Remediation }
+        })
+    findings          = $script:Findings.ToArray()
+    essentialUnknowns = @($measure.EssentialUnknowns | ForEach-Object { $_.Id })
+    notEvaluated      = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unknown' } | ForEach-Object {
+            [ordered]@{ id = $_.Id; title = $_.Title; dimension = $_.Dimension; essential = $_.Essential; reason = (Protect-Text $_.Reason) }
+        })
+    policy            = $policyResult
+    inventory         = $script:Inventory
+    limitations       = @(
+        'Inside-only run: host policy, external log collection and remote authorization cannot be fully established.',
+        'A compromised agent could falsify this report; provenance is recorded but not independently attested.',
+        $limitationUnimplemented,
+        'A granted handle proves authorization only; no destructive operation was performed.'
+    )
+    errors            = $script:Errors.ToArray()
+}
+
+$jsonText = $report | ConvertTo-Json -Depth 12
+
+if ($Json) {
+    [Console]::Out.WriteLine($jsonText)
+}
+else {
+    Write-HumanReport -Measure $measure -Context $context -Brief:$Brief
+}
+
+if ($OutputDirectory) {
+    $stamp = $script:StartTime.ToString('yyyyMMdd-HHmmss')
+    $jsonPath = Join-Path $OutputDirectory "assessment-$stamp.json"
+    $mdPath = Join-Path $OutputDirectory "assessment-$stamp.md"
+    Set-Content -LiteralPath $jsonPath -Value $jsonText -Encoding utf8
+    Set-Content -LiteralPath $mdPath -Value (Get-MarkdownReport -Measure $measure -Context $context) -Encoding utf8
+    Write-Diag "Wrote $jsonPath and $mdPath"
+}
+
+exit 0
