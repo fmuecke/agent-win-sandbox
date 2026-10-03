@@ -213,7 +213,7 @@ try {
         Assert-Equal ($script:Findings | ConvertTo-Json -Depth 8).Contains('A' * 36) $false
     }
     foreach ($case in @(
-            @{ Name = 'a quoted JSON key'; File = 'settings.json'; Text = ('{"api_key": "' + ('x' * 24) + '"}'); Encoding = [Text.UTF8Encoding]::new($false) },
+            @{ Name = 'a quoted JSON key'; File = 'settings.json'; Text = ('{"api_key": "' + ('q7Rt2kLm' * 3) + '"}'); Encoding = [Text.UTF8Encoding]::new($false) },
             @{ Name = 'a fine-grained GitHub token'; File = 'notes.txt'; Text = ('github' + '_pat_' + ('A' * 22) + '_' + ('B' * 59)); Encoding = [Text.UTF8Encoding]::new($false) },
             @{ Name = 'a UTF-16LE file with a byte-order mark'; File = 'out.txt'; Text = ('ghp_' + ('C' * 36)); Encoding = [Text.Encoding]::Unicode },
             @{ Name = 'a UTF-16BE file with a byte-order mark'; File = 'out.txt'; Text = ('ghp_' + ('D' * 36)); Encoding = [Text.Encoding]::BigEndianUnicode })) {
@@ -222,6 +222,17 @@ try {
             Invoke-SecretContentScan
             Assert-Equal $script:Criteria['R-SECRETS-SCAN'].Outcome 'unmet'
         }
+    }
+    Test-Case 'A placeholder value in a generic assignment is not a suspected secret' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkspacePath 'fixture.json'), ('{"password":"' + 'synthetic-' + 'secret-value"}'))
+        Invoke-SecretContentScan
+        Assert-Equal $script:Criteria['R-SECRETS-SCAN'].Outcome 'met'
+        Assert-Equal $script:Inventory['secretScan'].placeholderMatches 1
+    }
+    Test-Case 'A placeholder word does not hide a known token format' {
+        [IO.File]::WriteAllText((Join-Path $script:WorkspacePath 'fixture.txt'), ('example token: ghp_' + ('E' * 36)))
+        Invoke-SecretContentScan
+        Assert-Equal $script:Criteria['R-SECRETS-SCAN'].Outcome 'unmet'
     }
     Test-Case 'Junctions are excluded before scanning their contents' {
         $outside = Join-Path $testRoot ('outside-' + [guid]::NewGuid().ToString('N'))

@@ -3823,8 +3823,13 @@ function Invoke-SecretContentScan {
         @{ Category = 'google-api-key'; Confidence = 'high'; Regex = '\bAIza[0-9A-Za-z_\-]{35}\b' }
         @{ Category = 'slack-token'; Confidence = 'high'; Regex = '\bxox[baprs]-[A-Za-z0-9-]{10,}' }
         @{ Category = 'jwt'; Confidence = 'medium'; Regex = '\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}' }
-        @{ Category = 'assigned-secret'; Confidence = 'medium'; Regex = '(?i)(?:api[_-]?key|secret|token|password|passwd|client[_-]?secret|access[_-]?key|connection[_ ]?string)["'']?\s*[:=]\s*["'']?[A-Za-z0-9._/+\-]{16,}' }
+        # Generic assignments are evidence only when the value is not an
+        # obvious placeholder; known token formats above are never excused.
+        @{ Category = 'assigned-secret'; Confidence = 'medium'; Regex = '(?i)(?:api[_-]?key|secret|token|password|passwd|client[_-]?secret|access[_-]?key|connection[_ ]?string)["'']?\s*[:=]\s*["'']?(?<value>[A-Za-z0-9._/+\-]{16,})'
+            Placeholder = '(?i)example|sample|synthetic|dummy|placeholder|changeme|redacted|fake|your[_-]?(?:api|key|token|secret|password)|x{6,}'
+        }
     )
+    $placeholderMatches = 0
     $textExtensions = @('.env', '.json', '.yaml', '.yml', '.xml', '.config', '.ini', '.txt', '.ps1', '.psm1',
         '.psd1', '.cmd', '.bat', '.sh', '.cfg', '.conf', '.properties', '.toml', '.pem', '.key', '.md', '.tf', '.tfvars')
     $configNames = @('.npmrc', '.netrc', '_netrc', '.pypirc', '.gitconfig', '.env')
@@ -3927,7 +3932,14 @@ function Invoke-SecretContentScan {
         $scanned++
         $fileCategories = @()
         foreach ($pattern in $patterns) {
-            if ([regex]::IsMatch($text, $pattern.Regex)) { $fileCategories += $pattern.Category }
+            if (-not $pattern.ContainsKey('Placeholder')) {
+                if ([regex]::IsMatch($text, $pattern.Regex)) { $fileCategories += $pattern.Category }
+                continue
+            }
+            $matched = @([regex]::Matches($text, $pattern.Regex))
+            $real = @($matched | Where-Object { $_.Groups['value'].Value -notmatch $pattern.Placeholder })
+            $placeholderMatches += $matched.Count - $real.Count
+            if ($real.Count -gt 0) { $fileCategories += $pattern.Category }
         }
         if ($fileCategories.Count -gt 0) {
             foreach ($category in $fileCategories) { $hitsByCategory[$category] = 1 + ([int]$hitsByCategory[$category]) }
@@ -3944,6 +3956,7 @@ function Invoke-SecretContentScan {
         discoveryEntries = $entriesVisited
         bytesScanned = $totalBytes; limitReached = $limitHit
         readErrors = $readErrors; enumerationErrors = $enumerationErrors; partialFiles = $partialFiles
+        placeholderMatches = $placeholderMatches
         exclusions = @($exclusions.ToArray())
         limits = [ordered]@{ maxFiles = $maxFiles; maxFileBytes = $maxFileBytes; maxTotalBytes = $maxTotalBytes; budgetSeconds = $budgetSeconds; maxDiscoveryEntries = $maxDiscoveryEntries }
         excludedDirectories = $skipDirectories
@@ -3960,7 +3973,8 @@ function Invoke-SecretContentScan {
     }
     else {
         Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'met' -Method 'observed-operation' `
-            -Reason "Scanned $scanned candidate file(s); no suspected secrets detected."
+            -Reason ("Scanned $scanned candidate file(s); no suspected secrets detected." +
+                $(if ($placeholderMatches -gt 0) { " $placeholderMatches generic assignment(s) with placeholder values were ignored." } else { '' }))
     }
 }
 
