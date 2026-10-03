@@ -23,18 +23,17 @@
       them.
     - The sandbox username and workspace directory name are baked in
       (AgentSandbox); they are not configurable.
-    - The workspace base directory is prompted for interactively if not passed.
+    - The complete workspace directory is prompted for interactively if not passed.
 #>
 
 [CmdletBinding()]
 param(
-    [string]$BasePath # if omitted, you will be prompted
+    [string]$SandboxPath # if omitted, you will be prompted
 )
 
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
-$SandboxDirectoryName = 'AgentSandbox'   # baked in; not configurable
 $Version = '0.8.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
@@ -55,11 +54,15 @@ $ShellInitScript = Join-Path $BootstrapRoot 'Initialize-AgentSandboxShell.ps1'
 $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapperScript = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapperScript = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
-$LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
-$LaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
-$LaunchAsVersion = 'v1.1.0-preview'
-$LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v1.1.0-preview/launch-as-v1.1.0-preview-win64.zip'
-$LaunchAsSha256 = 'C0ACC919FB8D45E09B0F00B6EAE61CDC674120C2A2CBF7C57FD52ECC17FA237A'
+$LaunchAsInstallRoot = Join-Path $env:ProgramFiles 'launch-as'
+$LaunchAsExe = Join-Path $LaunchAsInstallRoot 'launch-as.exe'
+$LaunchAsAdminExe = Join-Path $LaunchAsInstallRoot 'launch-as-admin.exe'
+$LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
+$LegacyLaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
+$LaunchAsVersion = 'v1.2.0-preview'
+$LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v1.2.0-preview/launch-as-v1.2.0-win64.zip'
+$LaunchAsSha256 = 'A6203CD245C0A3547F1F206A95016EC9D8EAACA10348A48424BB50FC8EE6EF29'
+$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview')
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
@@ -243,8 +246,7 @@ function Install-ClaudeManagedSettings {
 }
 function Install-LaunchAs {
     param(
-        [string]$ClientDestination,
-        [string]$AdminDestination,
+        [string]$InstallRoot,
         [string]$DownloadUri,
         [string]$ExpectedSha256
     )
@@ -272,12 +274,16 @@ function Install-LaunchAs {
             $releaseFiles[$name] = $matches[0]
         }
 
-        Copy-Item -LiteralPath $releaseFiles['launch-as.exe'].FullName -Destination $ClientDestination -Force
-        Copy-Item -LiteralPath $releaseFiles['launch-as-admin.exe'].FullName -Destination $AdminDestination -Force
-
         & $releaseFiles['launch-as-admin.exe'].FullName install
         if ($LASTEXITCODE -ne 0) {
             throw "launch-as broker installation failed with exit code $LASTEXITCODE."
+        }
+
+        foreach ($name in $releaseFiles.Keys) {
+            $installedPath = Join-Path $InstallRoot $name
+            if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
+                throw "launch-as installation did not create the expected file: $installedPath"
+            }
         }
 
         $enrolledAccounts = @(& $releaseFiles['launch-as-admin.exe'].FullName list)
@@ -291,8 +297,9 @@ function Install-LaunchAs {
             }
         }
 
-        Write-Host "  downloaded and verified launch-as client: $ClientDestination" -ForegroundColor Green
-        Write-Host "  installed launch-as-broker and configured '$UserName'" -ForegroundColor Green
+        Write-Host "  downloaded and verified launch-as package" -ForegroundColor Green
+        Write-Host "  installed launch-as service and command-line tools: $InstallRoot" -ForegroundColor Green
+        Write-Host "  configured '$UserName' as a launch-as-managed account" -ForegroundColor Green
     }
     finally {
         if (Test-Path $tempRoot) {
@@ -300,17 +307,34 @@ function Install-LaunchAs {
         }
     }
 }
+function Remove-LegacyLaunchAsCopies {
+    param(
+        [string]$LegacyClientPath,
+        [string]$LegacyAdminPath
+    )
+
+    foreach ($legacyPath in $LegacyClientPath, $LegacyAdminPath) {
+        if (Test-Path -LiteralPath $legacyPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyPath -Force
+            Write-Host "  removed obsolete launch-as copy: $legacyPath" -ForegroundColor Green
+        }
+    }
+}
 function Stop-IfLegacyInstallationPresent {
     $hasConfig = Test-Path -LiteralPath $ConfigFile -PathType Leaf
-    $hasClient = Test-Path -LiteralPath $LaunchAsExe -PathType Leaf
+    $hasInstalledClient = Test-Path -LiteralPath $LaunchAsExe -PathType Leaf
+    $hasLegacyClient = Test-Path -LiteralPath $LegacyLaunchAsExe -PathType Leaf
 
-    if (-not $hasConfig -and -not $hasClient) {
+    if (-not $hasConfig) {
+        if ($hasLegacyClient) {
+            throw "A legacy launch-as copy was found under $ProgramDataRoot without Agent Sandbox configuration. Uninstall the matching earlier Agent Sandbox version first."
+        }
         if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
             throw "The '$UserName' account exists without a launch-as $LaunchAsVersion installation. Treat it as a legacy or incomplete installation and uninstall it before running setup."
         }
         return
     }
-    if (-not $hasConfig -or -not $hasClient) {
+    if (-not $hasInstalledClient -and -not $hasLegacyClient) {
         throw "An incomplete or legacy Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it before installing launch-as $LaunchAsVersion."
     }
 
@@ -322,7 +346,7 @@ function Stop-IfLegacyInstallationPresent {
         throw "An unreadable Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it before installing launch-as $LaunchAsVersion."
     }
 
-    if ($installedVersion -ne $LaunchAsVersion -and $installedVersion -ne "v1.0.0-preview") {
+    if ($installedVersion -notin $SupportedLaunchAsVersions) {
         throw "Agent Sandbox uses launch-as '$installedVersion'. launch-as $LaunchAsVersion cannot share the AgentSandbox account with earlier versions. Uninstall the earlier Agent Sandbox version first, then run setup again."
     }
 }
@@ -343,16 +367,18 @@ Write-Step "Calling user: $callingUser"
 Write-Step "Protecting profile: $callingProfile"
 
 # --- 0b. Resolve sandbox workspace directory interactively -------------------
-if (-not $BasePath) {
-    $baseInput = Read-Host "Base directory where the '$SandboxDirectoryName' workspace folder will be created [C:\dev]"
-    $BasePath = if ([string]::IsNullOrWhiteSpace($baseInput)) { 'C:\dev' } else { $baseInput.Trim() }
+if (-not $SandboxPath) {
+    $workspaceInput = Read-Host 'Sandbox workspace folder [C:\AgentSandbox]'
+    $SandboxPath = if ([string]::IsNullOrWhiteSpace($workspaceInput)) { 'C:\AgentSandbox' } else { $workspaceInput.Trim() }
 }
-$SandboxPath = Join-Path $BasePath $SandboxDirectoryName
+if ((Split-Path -Path $SandboxPath -Leaf) -ne 'AgentSandbox') {
+    throw "Sandbox workspace must be named 'AgentSandbox': $SandboxPath"
+}
 Write-Step "Sandbox workspace: $SandboxPath"
 if (Test-Path $SandboxPath) {
     $answer = Read-Host "Sandbox workspace already exists. Use this existing shared folder? [y/N]"
     if ($answer -notmatch '^(y|yes)$') {
-        Write-Host 'Cancelled. Choose another base directory or review the existing workspace first.' -ForegroundColor Yellow
+        Write-Host 'Cancelled. Choose another workspace folder or review the existing workspace first.' -ForegroundColor Yellow
         exit 1
     }
     Write-Host "  using existing shared workspace: $SandboxPath" -ForegroundColor Yellow
@@ -363,7 +389,7 @@ Write-Step "Installing launch-as $LaunchAsVersion and creating '$UserName'"
 if (-not (Test-Path $ProgramDataRoot)) {
     New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null
 }
-Install-LaunchAs -ClientDestination $LaunchAsExe -AdminDestination $LaunchAsAdminExe `
+Install-LaunchAs -InstallRoot $LaunchAsInstallRoot `
     -DownloadUri $LaunchAsDownloadUri -ExpectedSha256 $LaunchAsSha256
 
 # Hard guard: make sure it is NOT an administrator
@@ -598,13 +624,12 @@ foreach ($protectedFile in @(
         $ShellInitScript,
         $DevShellScript,
         $ClaudeWrapperScript,
-        $CopilotWrapperScript,
-        $LaunchAsExe,
-        $LaunchAsAdminExe
+        $CopilotWrapperScript
     )) {
     icacls $protectedFile /inheritance:r /grant $adminFullAce $systemFullAce $usersReadExecuteAce | Out-Null
 }
 Write-Host "  locked ProgramData artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
+Remove-LegacyLaunchAsCopies -LegacyClientPath $LegacyLaunchAsExe -LegacyAdminPath $LegacyLaunchAsAdminExe
 
 # --- 6b. Desktop shortcut for double-click launch ----------------------------
 Write-Step "Creating desktop shortcut"

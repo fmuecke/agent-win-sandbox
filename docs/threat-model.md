@@ -17,7 +17,7 @@ This threat model covers the current `agent-win-sandbox` implementation:
 - `managed-settings.json`
 - generated state under `C:\ProgramData\agent-win-sandbox`
 - agent CLIs installed per-user under `C:\Users\AgentSandbox`
-- the shared sandbox workspace, normally `C:\dev\AgentSandbox`
+- the shared sandbox workspace, normally `C:\AgentSandbox`
 
 The target scenario is a trusted Windows developer workstation on a dedicated
 developer VLAN, joined to or able to reach a separate Windows domain used for
@@ -69,7 +69,7 @@ Primary assets to protect:
 - Domain credentials and Kerberos/NTLM material belonging to the developer.
 - Development-domain services, repositories, package feeds, shares, and build
   systems reachable from the developer VLAN.
-- Source trees outside `C:\dev\AgentSandbox`.
+- Source trees outside `C:\AgentSandbox`.
 - Trusted launcher files under ProgramData and Claude Code policy under
   Program Files.
 - Agent configuration and credentials scoped to `AgentSandbox`.
@@ -145,7 +145,7 @@ Limitations:
 ### Fixed writable workspace
 
 Setup grants `AgentSandbox` Modify access to the configured workspace, normally
-`C:\dev\AgentSandbox`.
+`C:\AgentSandbox`.
 
 Security effect:
 
@@ -160,12 +160,13 @@ Limitations:
 
 ### Protected control plane
 
-Setup downloads and verifies launch-as, copies the launcher, checker, shell
-initializer, and agent command wrappers, and writes configuration under
-`C:\ProgramData\agent-win-sandbox`, then locks the directory admin-write /
-Users-read-execute. The managed Claude Code policy is also intended to live
-under `C:\Program Files\ClaudeCode\managed-settings.json` with admin-write
-permissions.
+Setup downloads and verifies launch-as, then lets its administrator tool install
+the broker and command-line tools together under `C:\Program Files\launch-as`.
+It copies the launcher, checker, shell initializer, and agent command wrappers,
+and writes configuration under `C:\ProgramData\agent-win-sandbox`, then locks
+that directory admin-write / Users-read-execute. The managed Claude Code policy
+is also intended to live under `C:\Program Files\ClaudeCode\managed-settings.json`
+with admin-write permissions.
 
 Security effect:
 
@@ -425,8 +426,9 @@ For full coverage, run it elevated. Review every WARN and FAIL, especially:
 - `AgentSandbox` is not an administrator and has no risky group memberships.
 - Network and RDP logon deny rights are present.
 - Interactive logon is still allowed.
-- ProgramData config, launcher/launch-as/checker, shell initializer, command
-  wrappers, and the Program Files Claude policy file are admin-write-only.
+- ProgramData config, launcher/checker, shell initializer, command wrappers,
+  the Program Files launch-as component, and the Program Files Claude policy
+  file are admin-write-only.
 - The sandbox workspace exists and grants `AgentSandbox` write access.
 - The developer profile is not readable by Users, Everyone, or Authenticated
   Users.

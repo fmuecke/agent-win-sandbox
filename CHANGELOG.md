@@ -3,6 +3,12 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
+## 0.8.0 - 2026-09-15
+
+- Changed: Updated the pinned `launch-as` release to `v1.2.0-preview`. Setup now verifies the package and lets `launch-as-admin` install the whole component under `C:\Program Files\launch-as`; it no longer copies individual launch-as executables into ProgramData.
+- Changed: Supported brokered installations from `v1.0.0-preview`, `v1.1.0-preview`, and `v1.1.0` update in place. Unknown or incomplete installations still require removal with their matching Agent Sandbox version.
+- Changed: Setup now proposes `C:\AgentSandbox` as the complete workspace path. It no longer treats `C:\dev` as a base directory and appends an `AgentSandbox` child folder.
+
 ## 0.7.1 — 2026-09-13
 
 - Changed: Updated the pinned `launch-as` release to `v1.1.0-preview`. Remove existing v0.6. installs before running setup. Update from 0.7.0 will work.

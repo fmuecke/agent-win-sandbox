@@ -37,17 +37,17 @@ Setup creates `AgentSandbox` when absent and:
 - Denies network and RDP logon; sets password-never-expires and
   user-cannot-change-password; hides the user from the sign-in screen; leaves
   interactive logon enabled because the broker needs it.
-- Prompts for a workspace base directory (default `C:\dev`), creates
-  `C:\dev\AgentSandbox`, and grants that user Modify access to the tree.
+- Proposes `C:\AgentSandbox` as the complete workspace directory and grants
+  that user Modify access to the tree.
 - Warns if your profile is readable by Users or Everyone.
 - Blocks sandbox-account outbound ports `137-139`, `445`, `135`, `3389`, and
   `5985-5986`, while leaving web/HTTPS available for agents, Git, and internal
   services.
-- Records configuration in `C:\ProgramData\agent-win-sandbox\config.json`;
-  installs the launcher, checker, shell commands, and verified `launch-as`
-  client/admin tools under `C:\ProgramData\agent-win-sandbox`; installs the
-  protected broker service under Program Files; and makes its local artifacts
-  admin-write / Users-RX.
+- Records configuration in `C:\ProgramData\agent-win-sandbox\config.json` and
+  installs the launcher, checker, and shell commands there with admin-write /
+  Users-RX permissions. After hash verification, `launch-as-admin` installs the
+  broker and all four launch-as executables together under
+  `C:\Program Files\launch-as` with component-owned protected permissions.
 
 Optional policy deployment writes
 `C:\Program Files\ClaudeCode\managed-settings.json`, makes it admin-write /
@@ -123,9 +123,9 @@ Run from an elevated PowerShell:
 Setup prompts for the workspace base (Enter accepts `C:\dev`), confirmation to
 reuse an existing workspace, and optional managed-settings deployment. It
 installs and enrolls the broker-managed account without displaying its password.
-It refuses a legacy Agent Sandbox installation: uninstall the earlier Agent
-Sandbox version first, then run setup again. This version's removal script also
-refuses legacy state.
+It upgrades supported brokered installations from `v1.0.0-preview`,
+`v1.1.0-preview`, and `v1.1.0`; unknown or incomplete installations require
+removal with their matching Agent Sandbox version first.
 
 Start the sandbox:
 
@@ -160,9 +160,10 @@ This removes the sandbox account and profile, including its per-user agent
 installs, settings, and Copilot PAT environment variable. It also removes
 the broker enrollment, generated ProgramData state, account-scoped firewall rules, hidden-login
 registry value, and desktop shortcuts. It keeps the workspace—for example,
-`C:\dev\AgentSandbox`—and its ACLs. Close all Agent Sandbox terminals first;
+`C:\AgentSandbox`—and its ACLs. Close all Agent Sandbox terminals first;
 removal stops before changing state when the `AgentSandbox` profile is still
-loaded.
+loaded. It leaves the shared `launch-as` component installed because it may
+manage other accounts.
 
 ## Broker-managed account
 

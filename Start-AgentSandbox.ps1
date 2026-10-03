@@ -11,7 +11,7 @@
     Part of agent-win-sandbox. Assumes Setup-AgentSandbox.ps1 has provisioned
     the low-priv user, sandbox ACLs, config, and shell initializer.
 
-    Launch uses the bundled launch-as.exe client and the installed launch-as
+    Launch uses the installed launch-as.exe client and the installed launch-as
     broker service. The broker owns a short-lived account password and starts a
     console in an independent logon session without exposing that credential to
     this script or its caller. The shell exposes commands for the Developer
@@ -30,7 +30,7 @@ $ErrorActionPreference = 'Stop'
 $UserName = 'AgentSandbox'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
 $ShellInitScript = Join-Path (Join-Path $ProgramDataRoot 'bootstrap') 'Initialize-AgentSandboxShell.ps1'
-$LaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
+$LaunchAsExe = Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as.exe'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'

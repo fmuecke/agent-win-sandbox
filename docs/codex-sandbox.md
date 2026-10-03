@@ -142,7 +142,7 @@ group and to the active capability SIDs. It applies deny ACEs where required.
 
 Agent Sandbox implication:
 
-- Today we permanently grant `AgentSandbox` Modify on `C:\dev\AgentSandbox`.
+- Today we permanently grant `AgentSandbox` Modify on `C:\AgentSandbox`.
 - Codex's model is stricter: write access is computed and refreshed.
 - We can adapt this gradually by protecting launcher/config/control paths first,
   then later considering per-root grants.
@@ -279,7 +279,7 @@ Agent Sandbox implication:
 - Keep `C:\Program Files\ClaudeCode\managed-settings.json` admin-write.
 - Do not put trusted launch scripts under the writable workspace.
 - If we add a helper binary, install/copy it to an admin-controlled location,
-  not to `C:\dev\AgentSandbox`.
+  not to `C:\AgentSandbox`.
 
 ## What We Can Adapt Soon
 
