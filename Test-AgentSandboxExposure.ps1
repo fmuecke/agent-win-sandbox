@@ -840,6 +840,52 @@ function Write-Diag {
     [Console]::Error.WriteLine($Message)
 }
 
+# --- Progress spinner ---------------------------------------------------------
+# A background runspace animates a spinner on stderr so a long check (network
+# probes stall on DNS/TCP timeouts) never looks hung. stderr keeps stdout clean
+# for -Json; the spinner is suppressed when stderr is redirected (so 2>$null or
+# a log file never collects spinner frames) or in -Json mode.
+
+function Start-ProgressSpinner {
+    param([string]$Label = 'Working')
+
+    if ($Json -or [Console]::IsErrorRedirected) {
+        return $null
+    }
+    $state = [hashtable]::Synchronized(@{ Label = $Label; Active = $true })
+    $worker = [powershell]::Create()
+    $worker.AddScript({
+            param($State)
+
+            $frames = '|', '/', '-', '\'
+            $index = 0
+            while ($State.Active) {
+                $frame = $frames[$index % $frames.Count]
+                [Console]::Error.Write(("`r{0} {1}" -f $frame, $State.Label).PadRight(70))
+                $index++
+                Start-Sleep -Milliseconds 100
+            }
+        }).AddArgument($state) | Out-Null
+    $handle = $worker.BeginInvoke()
+    return [pscustomobject]@{ Worker = $worker; Handle = $handle; State = $state }
+}
+
+function Update-ProgressSpinner {
+    param($Spinner, [string]$Label)
+
+    if ($Spinner) { $Spinner.State.Label = $Label }
+}
+
+function Stop-ProgressSpinner {
+    param($Spinner)
+
+    if (-not $Spinner) { return }
+    $Spinner.State.Active = $false
+    try { $Spinner.Worker.EndInvoke($Spinner.Handle) } catch { }
+    $Spinner.Worker.Dispose()
+    [Console]::Error.Write(("`r" + (' ' * 70) + "`r"))   # erase the spinner line
+}
+
 function Protect-Text {
     # Final sanitizing pass. Redacts credentials embedded as URL userinfo (for
     # example in a git remote) and the local-part of e-mail addresses (PII that
@@ -2849,7 +2895,6 @@ function Write-HumanReport {
             $items = @($script:Criteria.Values | Where-Object { $_.Dimension -eq $dim.Dimension })
             if ($items.Count -eq 0) { continue }
             $summary = "$($dim.Met)/$($dim.Applicable) met"
-            if ($dim.Unmet -gt 0) { $summary += ", $($dim.Unmet) unmet" }
             if ($dim.Unknown -gt 0) { $summary += ", $($dim.Unknown) unknown" }
             Write-Host ("  {0} ({1})" -f $dim.Dimension, $summary) -ForegroundColor White
             foreach ($criterion in $items) {
@@ -2931,14 +2976,6 @@ function Get-MarkdownReport {
 
 $script:StartTime = [DateTime]::UtcNow
 
-try {
-    Initialize-NativeProbe
-}
-catch {
-    [Console]::Error.WriteLine("Fatal: native probe initialization failed: $($_.Exception.Message)")
-    exit 1
-}
-
 $script:UserProfile = $env:USERPROFILE
 if ($Workspace) {
     try { $script:WorkspacePath = (Resolve-Path -LiteralPath $Workspace -ErrorAction Stop).Path }
@@ -2973,8 +3010,30 @@ $CheckPlan = @(
     @{ Area = 'CONTAINMENT'; Body = { Invoke-ContainmentCheck } }
     @{ Area = 'MONITORING'; Body = { Invoke-MonitoringCheck } }
 )
-foreach ($plan in $CheckPlan) {
-    Invoke-Check -Name $plan.Area -Body $plan.Body
+
+# Native init (Add-Type compile) and the checks are the slow part; a spinner
+# runs across both. The finally guarantees the spinner stops and its line is
+# erased on any exit, including the init-failure exit below.
+$spinner = Start-ProgressSpinner -Label 'Initializing'
+try {
+    try {
+        Initialize-NativeProbe
+    }
+    catch {
+        # The outer finally stops the spinner before the process exits.
+        [Console]::Error.WriteLine("Fatal: native probe initialization failed: $($_.Exception.Message)")
+        exit 1
+    }
+    $checkCount = $CheckPlan.Count
+    $checkIndex = 0
+    foreach ($plan in $CheckPlan) {
+        $checkIndex++
+        Update-ProgressSpinner -Spinner $spinner -Label ("[{0}/{1}] checking {2}" -f $checkIndex, $checkCount, $plan.Area)
+        Invoke-Check -Name $plan.Area -Body $plan.Body
+    }
+}
+finally {
+    Stop-ProgressSpinner -Spinner $spinner
 }
 $implementedAreas = @($CheckPlan | ForEach-Object { $_.Area })
 $notImplementedAreas = @($AllCheckAreas | Where-Object { $implementedAreas -notcontains $_ })
