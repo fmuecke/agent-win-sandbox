@@ -21,10 +21,18 @@
     modifies files, ACLs, services, tasks or the registry. Access probes
     request one right at a time and close the handle immediately.
 
-    Network probes run only with -ProbeNetwork or -NetworkTarget. TCP probes
-    connect and close without sending data. With -ProbeNetwork, each
-    HTTP_PROXY/HTTPS_PROXY proxy also receives one request for example.com
-    (HEAD or CONNECT), of which only the status line is read.
+    Every run probes the documented default Internet targets: DNS for
+    example.com and TCP 443 to example.com, 1.1.1.1 and
+    2606:4700:4700::1111. TCP probes connect and close without sending data.
+    Each HTTP_PROXY/HTTPS_PROXY proxy also receives one request for
+    example.com (HEAD http://example.com/ or CONNECT example.com:443), of
+    which only the status line is read; a proxy URL that carries credentials
+    is not used. Lateral reach is probed from local configuration only: each
+    default gateway (TCP 80, 443, 53), each private-range DNS server (TCP 53)
+    and one loopback port; no other hosts are discovered or scanned. An
+    explicit local denial (WSAEACCES, typically Windows Firewall) counts as a
+    block; a refused connection counts as reach. Use -SkipCheck NETWORK to run
+    without network probes.
 
     It reads bounded candidate text files for suspected secrets and inventories
     Credential Manager metadata. Process probes request individual rights;
@@ -48,19 +56,10 @@
 .PARAMETER Workspace
     The agent workspace. Defaults to the current directory.
 
-.PARAMETER ProbeNetwork
-    Probe the documented default Internet targets: DNS for example.com and
-    TCP 443 to example.com, 1.1.1.1 and 2606:4700:4700::1111. When
-    HTTP_PROXY or HTTPS_PROXY is set, also request example.com through that
-    proxy (HEAD http://example.com/ or CONNECT example.com:443). A proxy URL
-    that carries credentials is not used.
-
 .PARAMETER NetworkTarget
-    Explicit probe targets. Forms: dns:<name>, tcp:<host>:<port>, smb:<host>
-    (TCP 445). Use brackets for IPv6, for example tcp:[::1]:8080. LAN and
-    loopback targets are probed only when listed here. Combined with
-    -ProbeNetwork these add to the Internet defaults; on their own they are the
-    only targets probed.
+    Additional probe targets, for example a NAS or another PC. Forms:
+    dns:<name>, tcp:<host>:<port>, smb:<host> (TCP 445). Use brackets for
+    IPv6, for example tcp:[::1]:8080.
 
 .PARAMETER PolicyPath
     Optional JSON policy: { "name": "...", "requireMet": ["R-NET-INTERNET", ...] }.
@@ -82,8 +81,8 @@
     Prints only the summary, without the per-criterion breakdown.
 
 .EXAMPLE
-    .\Test-AgentSandboxExposure.ps1 -Json -ProbeNetwork 2>$null
-    Emits one JSON assessment including default Internet probes.
+    .\Test-AgentSandboxExposure.ps1 -Json 2>$null
+    Emits one JSON assessment.
 
 .NOTES
     Exit codes: 0 when the assessment completed, regardless of risk;
@@ -96,7 +95,6 @@ param(
     [switch]$Json,
     [switch]$Brief,
     [string]$Workspace,
-    [switch]$ProbeNetwork,
     [string[]]$NetworkTarget = @(),
     [string]$PolicyPath,
     [string]$OutputDirectory,
@@ -165,7 +163,7 @@ $CriterionRegistry = @(
         Remediation = 'Restrict outbound traffic for the agent identity to an allowlist (firewall rules per user SID or an enforced proxy).' 
     }
     @{ Id = 'R-NET-LATERAL'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $false; Severity = 'medium'
-        Title = 'Supplied LAN and loopback targets are unreachable'
+        Title = 'LAN and loopback destinations are unreachable on tested routes'
         Remediation = 'Block LAN and loopback service access for the agent identity where it is not required.' 
     }
     @{ Id = 'R-NET-SHARES'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $false; Severity = 'medium'
@@ -2053,19 +2051,71 @@ function Get-AddressClass {
     return 'internet'
 }
 
+function ConvertTo-ConnectOutcome {
+    # Classifies a failed connect. WSAEACCES (10013) is a local policy denial,
+    # typically Windows Firewall; WSAECONNREFUSED (10061) means the packet
+    # reached the host. Other errors do not show where the attempt stopped.
+    param([int]$SocketError)
+
+    switch ($SocketError) {
+        10013 { 'blocked' }
+        10061 { 'refused' }
+        10060 { 'timeout' }
+        default { 'error' }
+    }
+}
+
 function Invoke-TcpProbe {
-    # Connects and closes without sending any application data.
+    # Connects and closes without sending any application data. Returns
+    # connected, refused, blocked, timeout or error.
     param([Parameter(Mandatory)][string]$HostName, [Parameter(Mandatory)][int]$Port, [int]$TimeoutMs = 3000)
 
     $client = [System.Net.Sockets.TcpClient]::new()
     try {
         $async = $client.BeginConnect($HostName, $Port, $null, $null)
-        if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs)) { return 'timeout' }
         $client.EndConnect($async)
-        return $true
+        return 'connected'
     }
-    catch { return $false }
+    catch {
+        $exception = $_.Exception
+        while ($exception -and $exception -isnot [System.Net.Sockets.SocketException]) { $exception = $exception.InnerException }
+        if ($exception) { return ConvertTo-ConnectOutcome $exception.ErrorCode }
+        return 'error'
+    }
     finally { $client.Close() }
+}
+
+function Get-LateralTargets {
+    # Lateral targets from local configuration only: each default gateway
+    # (TCP 80, 443, 53), each private-range DNS server (TCP 53) and one
+    # loopback port that is not a configured proxy. A blocked or refused
+    # connect is decisive without a listener, so other hosts need not be
+    # discovered. IPv6 link-local addresses need a scope and are skipped, as
+    # are deprecated site-local ones (Windows lists fec0:0:0:ffff::1-3 as
+    # placeholder DNS servers when none is configured).
+    param([string[]]$Gateway = @(), [string[]]$DnsServer = @(), [int[]]$ExcludeLoopbackPort = @())
+
+    $specs = [Collections.Generic.List[string]]::new()
+    $hosts = @(@($Gateway | ForEach-Object { @{ Address = $_; Ports = @(80, 443, 53) } }) +
+        @($DnsServer | ForEach-Object { @{ Address = $_; Ports = @(53) } }))
+    foreach ($entry in $hosts) {
+        $ip = [System.Net.IPAddress]::None
+        if (-not [System.Net.IPAddress]::TryParse([string]$entry.Address, [ref]$ip)) { continue }
+        if ($ip.Equals([System.Net.IPAddress]::Any) -or $ip.Equals([System.Net.IPAddress]::IPv6Any) -or $ip.IsIPv6LinkLocal -or $ip.IsIPv6SiteLocal) { continue }
+        if ((Get-AddressClass -HostOrIp $ip.ToString()) -ne 'lan') { continue }
+        $hostText = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { "[$ip]" } else { "$ip" }
+        foreach ($port in $entry.Ports) { $specs.Add("tcp:${hostText}:$port") }
+    }
+    $loopbackPort = @(49151, 49150 | Where-Object { $_ -notin $ExcludeLoopbackPort })[0]
+    $specs.Add("tcp:127.0.0.1:$loopbackPort")
+    return @($specs | Select-Object -Unique)
+}
+
+function Format-OutcomeCount {
+    param([object[]]$Result)
+
+    return (@($Result | Group-Object -Property Outcome | ForEach-Object { "$($_.Count) $($_.Name)" }) -join ', ')
 }
 
 function Get-EnvironmentProxy {
@@ -2170,12 +2220,13 @@ function Invoke-NetworkCheck {
             -Reason 'No network shares are mapped into the agent session.'
     }
 
-    # Targets: -ProbeNetwork adds the Internet defaults, -NetworkTarget adds
-    # explicit targets, and the two combine so one run can test Internet egress
-    # and a LAN/loopback target together. -NetworkTarget alone (no -ProbeNetwork)
-    # probes only what was supplied.
-    $specs = @()
-    if ($ProbeNetwork) { $specs += @('dns:example.com', 'tcp:example.com:443', 'tcp:1.1.1.1:443', 'tcp:[2606:4700:4700::1111]:443') }
+    # Targets: the documented Internet defaults, the lateral targets from local
+    # configuration, plus any -NetworkTarget.
+    $loopbackProxyPorts = @(Get-EnvironmentProxy | Where-Object { $_.Uri -and $_.Uri.IsLoopback } | ForEach-Object { $_.Uri.Port })
+    $lateralSpecs = @(Get-LateralTargets -Gateway @($interfaces | ForEach-Object { $_.gateways }) `
+            -DnsServer @($interfaces | ForEach-Object { $_.dns }) -ExcludeLoopbackPort $loopbackProxyPorts)
+    $specs = @('dns:example.com', 'tcp:example.com:443', 'tcp:1.1.1.1:443', 'tcp:[2606:4700:4700::1111]:443')
+    $specs += $lateralSpecs
     $specs += @($NetworkTarget)
     $specs = @($specs | Select-Object -Unique)
     $script:NetworkProbed = ($specs.Count -gt 0)
@@ -2189,43 +2240,42 @@ function Invoke-NetworkCheck {
             continue
         }
         if ($target.Kind -eq 'dns') {
-            $ok = $false
-            try { $ok = @([System.Net.Dns]::GetHostAddresses($target.HostName)).Count -gt 0 } catch { $ok = $false }
-            $probeResults += [pscustomobject]@{ Spec = $spec; Kind = 'dns'; Class = 'n/a'; Success = $ok }
+            $outcome = 'error'
+            try { if (@([System.Net.Dns]::GetHostAddresses($target.HostName)).Count -gt 0) { $outcome = 'resolved' } } catch { }
+            $probeResults += [pscustomobject]@{ Spec = $spec; Kind = 'dns'; Class = 'n/a'; Outcome = $outcome }
             continue
         }
         $class = Get-AddressClass -HostOrIp $target.HostName
-        $ok = Invoke-TcpProbe -HostName $target.HostName -Port $target.Port
-        $probeResults += [pscustomobject]@{ Spec = $spec; Kind = 'tcp'; Class = $class; Success = $ok }
-        if ($ok) {
+        $outcome = Invoke-TcpProbe -HostName $target.HostName -Port $target.Port
+        $probeResults += [pscustomobject]@{ Spec = $spec; Kind = 'tcp'; Class = $class; Outcome = $outcome }
+        # A refused connect also proves the packet reached the host.
+        if ($outcome -in 'connected', 'refused') {
             $criterion = if ($class -eq 'internet') { 'R-NET-INTERNET' } else { 'R-NET-LATERAL' }
             $severity = if ($class -eq 'internet') { 'high' } else { 'medium' }
-            Add-Finding -Check NETWORK -Criterion $criterion -Target $spec -Capability "tcp connect ($class)" `
+            Add-Finding -Check NETWORK -Criterion $criterion -Target $spec -Capability "tcp $outcome ($class)" `
                 -Result granted -Method observed-operation -Scope 'egress' `
                 -Impact 'A network destination is reachable from the agent context.' -Severity $severity
         }
     }
     $script:Inventory['networkProbes'] = @($probeResults)
 
-    # Proxy route (-ProbeNetwork only): ask each environment proxy for the
-    # default Internet destination. A proxy URL carrying credentials is not
-    # used, because this assessment never uses discovered credentials.
+    # Proxy route: ask each environment proxy for the default Internet
+    # destination. A proxy URL carrying credentials is not used, because this
+    # assessment never uses discovered credentials.
     $proxyResults = @()
-    if ($ProbeNetwork) {
-        foreach ($proxy in @(Get-EnvironmentProxy)) {
-            $status = 0
-            $result = if (-not $proxy.Uri -or $proxy.Uri.Scheme -ne 'http') { 'unsupported proxy URL' }
-            elseif ($proxy.Uri.UserInfo) { 'not probed: URL carries credentials' }
-            else {
-                $status = Invoke-ProxyProbe -Proxy $proxy.Uri -Variable $proxy.Variable
-                if ($status -ge 200 -and $status -lt 300) { 'reached' } elseif ($status) { "returned $status" } else { 'no HTTP response' }
-            }
-            $proxyResults += [pscustomobject]@{ Variable = $proxy.Variable; Proxy = (Protect-Text $proxy.Value); Status = $status; Result = $result }
-            if ($result -eq 'reached') {
-                Add-Finding -Check NETWORK -Criterion 'R-NET-INTERNET' -Target "$($proxy.Variable) -> example.com" `
-                    -Capability "Internet request via proxy (HTTP $status)" -Result granted -Method observed-operation -Scope 'egress' `
-                    -Impact 'An arbitrary Internet destination is reachable through the configured proxy.' -Severity high
-            }
+    foreach ($proxy in @(Get-EnvironmentProxy)) {
+        $status = 0
+        $result = if (-not $proxy.Uri -or $proxy.Uri.Scheme -ne 'http') { 'unsupported proxy URL' }
+        elseif ($proxy.Uri.UserInfo) { 'not probed: URL carries credentials' }
+        else {
+            $status = Invoke-ProxyProbe -Proxy $proxy.Uri -Variable $proxy.Variable
+            if ($status -ge 200 -and $status -lt 300) { 'reached' } elseif ($status) { "returned $status" } else { 'no HTTP response' }
+        }
+        $proxyResults += [pscustomobject]@{ Variable = $proxy.Variable; Proxy = (Protect-Text $proxy.Value); Status = $status; Result = $result }
+        if ($result -eq 'reached') {
+            Add-Finding -Check NETWORK -Criterion 'R-NET-INTERNET' -Target "$($proxy.Variable) -> example.com" `
+                -Capability "Internet request via proxy (HTTP $status)" -Result granted -Method observed-operation -Scope 'egress' `
+                -Impact 'An arbitrary Internet destination is reachable through the configured proxy.' -Severity high
         }
     }
     $script:Inventory['proxyProbes'] = @($proxyResults)
@@ -2239,45 +2289,60 @@ function Invoke-NetworkCheck {
     }
     else { '' }
 
-    # R-NET-INTERNET: a DNS resolution alone never decides this.
+    # R-NET-INTERNET: a DNS resolution alone never decides this. Connected or
+    # refused proves reach; only an explicit local denial (blocked) or an
+    # explicit proxy refusal is enforcement evidence.
     $internetTcp = @($probeResults | Where-Object { $_.Kind -eq 'tcp' -and $_.Class -eq 'internet' })
-    $internetOk = @($internetTcp | Where-Object { $_.Success })
-    if ($internetOk.Count -gt 0) {
-        $reason = 'A direct TCP connection to an Internet destination succeeded.'
+    $internetReached = @($internetTcp | Where-Object { $_.Outcome -in 'connected', 'refused' })
+    $internetBlocked = @($internetTcp | Where-Object { $_.Outcome -eq 'blocked' })
+    $proxiesClosed = @($proxyResults | Where-Object { $_.Status -notin 403, 451 }).Count -eq 0
+    $directNote = " Direct probes: $(Format-OutcomeCount $internetTcp)."
+    if ($internetReached.Count -gt 0) {
+        $reason = 'A direct TCP connection reached an Internet destination.'
         if ($proxyConfigured) { $reason += ' A proxy is configured, so this is a bypass on the tested route.' }
-        Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unmet' -Method 'observed-operation' -Reason ($reason + $proxyNote)
+        Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unmet' -Method 'observed-operation' -Reason ($reason + $directNote + $proxyNote)
     }
     elseif ($proxyReached.Count -gt 0) {
         Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unmet' -Method 'observed-operation' `
-            -Reason "An arbitrary Internet destination (example.com) is reachable through the configured proxy.$proxyNote"
+            -Reason "An arbitrary Internet destination (example.com) is reachable through the configured proxy.$directNote$proxyNote"
+    }
+    elseif ($internetTcp.Count -gt 0 -and $internetBlocked.Count -eq $internetTcp.Count -and $proxiesClosed) {
+        Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'met' -Method 'observed-operation' `
+            -Reason "All $($internetTcp.Count) direct Internet TCP probes were blocked by local policy.$proxyNote"
     }
     elseif ($internetTcp.Count -gt 0 -and $proxyRefused.Count -gt 0 -and $proxyUntested.Count -eq 0) {
         Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'met' -Method 'observed-operation' `
-            -Reason "All $($internetTcp.Count) direct Internet TCP probes failed and the configured proxy explicitly refused an arbitrary destination.$proxyNote"
+            -Reason "No direct Internet TCP probe reached its host and the configured proxy explicitly refused an arbitrary destination.$directNote$proxyNote"
     }
     elseif ($internetTcp.Count -gt 0) {
         Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unknown' -Method 'observed-operation' `
-            -Reason "All $($internetTcp.Count) Internet TCP probes failed; refusal, timeout, DNS or routing failure does not establish enforced restriction.$proxyNote"
+            -Reason "No Internet TCP probe reached its host, but timeouts and other errors do not establish enforced restriction.$directNote$proxyNote"
     }
     else {
         Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unknown' -Method 'observed-operation' `
-            -Reason 'No Internet TCP targets were probed; pass -ProbeNetwork or -NetworkTarget.'
+            -Reason 'No Internet TCP target could be probed.'
     }
 
-    # R-NET-LATERAL
+    # R-NET-LATERAL: same evidence rules for gateway, DNS, loopback and
+    # supplied LAN targets.
     $lateralTcp = @($probeResults | Where-Object { $_.Kind -eq 'tcp' -and ($_.Class -eq 'lan' -or $_.Class -eq 'loopback') })
-    $lateralOk = @($lateralTcp | Where-Object { $_.Success })
+    $lateralReached = @($lateralTcp | Where-Object { $_.Outcome -in 'connected', 'refused' })
+    $lateralBlocked = @($lateralTcp | Where-Object { $_.Outcome -eq 'blocked' })
     if ($lateralTcp.Count -eq 0) {
         Set-CriterionOutcome -Id 'R-NET-LATERAL' -Outcome 'unknown' -Method 'observed-operation' `
-            -Reason 'No LAN or loopback targets were supplied to probe.'
+            -Reason 'No LAN or loopback target was available to probe.'
     }
-    elseif ($lateralOk.Count -gt 0) {
+    elseif ($lateralReached.Count -gt 0) {
         Set-CriterionOutcome -Id 'R-NET-LATERAL' -Outcome 'unmet' -Method 'observed-operation' `
-            -Reason "$($lateralOk.Count) of $($lateralTcp.Count) supplied LAN/loopback targets are reachable."
+            -Reason "$($lateralReached.Count) of $($lateralTcp.Count) LAN/loopback probes reached their host (connected or refused)."
+    }
+    elseif ($lateralBlocked.Count -eq $lateralTcp.Count) {
+        Set-CriterionOutcome -Id 'R-NET-LATERAL' -Outcome 'met' -Method 'observed-operation' `
+            -Reason "All $($lateralTcp.Count) LAN/loopback probes (gateway, DNS server, loopback, supplied targets) were blocked by local policy."
     }
     else {
         Set-CriterionOutcome -Id 'R-NET-LATERAL' -Outcome 'unknown' -Method 'observed-operation' `
-            -Reason "All $($lateralTcp.Count) supplied LAN/loopback targets failed; enforced restriction is unverified."
+            -Reason "No LAN/loopback probe reached its host, but timeouts and other errors do not establish enforced restriction. Probes: $(Format-OutcomeCount $lateralTcp)."
     }
 }
 
@@ -3572,11 +3637,6 @@ function Write-HumanReport {
     Write-Host ("Identity: {0} (SID {1}), integrity {2}, elevated {3}, session {4}" -f `
             $Context.userName, $Context.userSid, $Context.integrityLevel, $Context.isElevated, $Context.sessionId)
     Write-Host ("Profile {0}/{1}  checker {2}  {3}" -f $ProfileId, $ProfileVersion, $CheckerVersion, $Context.timestampUtc) -ForegroundColor DarkGray
-    Write-Host ''
-    Write-Host ("Verdict: {0}" -f $Measure.Verdict) -ForegroundColor $verdictColor
-    Write-Host ("Control score: {0}-{1} / 100{2}" -f $Measure.ScoreLower, $Measure.ScoreUpper,
-        $(if ($Measure.CriticalCapApplied) { '  (critical cap applied)' } else { '' }))
-    Write-Host ("Evidence coverage: {0}%" -f [int]($Measure.Coverage * 100))
     if ($Brief) {
         Write-Host ''
         Write-Host 'Dimensions:' -ForegroundColor Cyan
@@ -3605,7 +3665,7 @@ function Write-HumanReport {
         Write-Host ''
         Write-Host '  * essential criterion (must be met or unmet for a bounded verdict)' -ForegroundColor DarkGray
     }
-    $top = Get-TopFindings
+    $top = @(Get-TopFindings)
     if ($top.Count -gt 0) {
         Write-Host ''
         Write-Host 'Top findings (one per category):' -ForegroundColor Cyan
@@ -3626,6 +3686,20 @@ function Write-HumanReport {
             Write-Host ("        why: {0}" -f (Protect-Text $criterion.Reason)) -ForegroundColor DarkGray
         }
     }
+    # The verdict concludes the evidence above and leads into remediation.
+    # Show the whole verdict scale; the current verdict is raised and colored.
+    Write-Host ''
+    Write-Host 'Verdict: ' -NoNewline
+    $scale = @('Critical exposure', 'Weak', 'Incomplete', 'Partial', 'Bounded within tested scope')
+    for ($i = 0; $i -lt $scale.Count; $i++) {
+        if ($i -gt 0) { Write-Host ' | ' -NoNewline -ForegroundColor DarkGray }
+        if ($scale[$i] -eq $Measure.Verdict) { Write-Host $scale[$i].ToUpperInvariant() -NoNewline -ForegroundColor $verdictColor }
+        else { Write-Host $scale[$i] -NoNewline -ForegroundColor DarkGray }
+    }
+    Write-Host ''
+    Write-Host ("Control score: {0}-{1} / 100{2}" -f $Measure.ScoreLower, $Measure.ScoreUpper,
+        $(if ($Measure.CriticalCapApplied) { '  (critical cap applied)' } else { '' }))
+    Write-Host ("Evidence coverage: {0}%" -f [int]($Measure.Coverage * 100))
     $remediable = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unmet' })
     if ($remediable.Count -gt 0) {
         Write-Host ''

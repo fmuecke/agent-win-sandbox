@@ -366,9 +366,8 @@ try {
         Assert-Equal (@([AgentSandboxAssessmentNative]::ServiceRequests | Where-Object { $_ -notin 2, 0x20 }).Count) 0
     }
     Test-Case 'Failed TCP probes leave both route criteria unknown' {
-        $script:ProbeNetwork = $false
         $script:NetworkTarget = @('tcp:1.1.1.1:443', 'tcp:8.8.8.8:443', 'tcp:127.0.0.1:1')
-        function Invoke-TcpProbe { $false }
+        function Invoke-TcpProbe { 'timeout' }
         function Get-CimInstance { @() }
         function Get-ItemProperty { throw 'No synthetic proxy' }
         Invoke-NetworkCheck
@@ -376,10 +375,9 @@ try {
         Assert-Equal $script:Criteria['R-NET-LATERAL'].Outcome 'unknown'
     }
     Test-Case 'An Internet request answered through the environment proxy is unmet' {
-        $script:ProbeNetwork = $true
         $script:NetworkTarget = @()
         $env:HTTP_PROXY = 'http://localhost:8080'
-        function Invoke-TcpProbe { $false }
+        function Invoke-TcpProbe { 'timeout' }
         function Invoke-ProxyProbe { 200 }
         function Get-CimInstance { @() }
         function Get-ItemProperty { throw 'No synthetic proxy' }
@@ -388,10 +386,9 @@ try {
         Assert-Equal (@($script:Findings | Where-Object { $_.Criterion -eq 'R-NET-INTERNET' }).Count) 1
     }
     Test-Case 'An explicit proxy refusal with failed direct routes is met' {
-        $script:ProbeNetwork = $true
         $script:NetworkTarget = @()
         $env:HTTPS_PROXY = 'localhost:8080'
-        function Invoke-TcpProbe { $false }
+        function Invoke-TcpProbe { 'timeout' }
         function Invoke-ProxyProbe { 403 }
         function Get-CimInstance { @() }
         function Get-ItemProperty { throw 'No synthetic proxy' }
@@ -401,10 +398,9 @@ try {
     }
     foreach ($status in @(407, 502, 0)) {
         Test-Case "A proxy status $status is not an enforced refusal" {
-            $script:ProbeNetwork = $true
             $script:NetworkTarget = @()
             $env:HTTP_PROXY = 'http://localhost:8080'
-            function Invoke-TcpProbe { $false }
+            function Invoke-TcpProbe { 'timeout' }
             function Invoke-ProxyProbe { $status }
             function Get-CimInstance { @() }
             function Get-ItemProperty { throw 'No synthetic proxy' }
@@ -413,11 +409,10 @@ try {
         }
     }
     Test-Case 'A refusal does not cover an untested proxy route' {
-        $script:ProbeNetwork = $true
         $script:NetworkTarget = @()
         $env:HTTP_PROXY = 'http://user:pass@localhost:8081'
         $env:HTTPS_PROXY = 'http://localhost:8080'
-        function Invoke-TcpProbe { $false }
+        function Invoke-TcpProbe { 'timeout' }
         function Invoke-ProxyProbe { 403 }
         function Get-CimInstance { @() }
         function Get-ItemProperty { throw 'No synthetic proxy' }
@@ -425,11 +420,10 @@ try {
         Assert-Equal $script:Criteria['R-NET-INTERNET'].Outcome 'unknown'
     }
     Test-Case 'A proxy URL with credentials is never used' {
-        $script:ProbeNetwork = $true
         $script:NetworkTarget = @()
         $env:HTTP_PROXY = 'http://user:pass@localhost:8080'
         $script:proxyCalls = 0
-        function Invoke-TcpProbe { $false }
+        function Invoke-TcpProbe { 'timeout' }
         function Invoke-ProxyProbe { $script:proxyCalls++; 200 }
         function Get-CimInstance { @() }
         function Get-ItemProperty { throw 'No synthetic proxy' }
@@ -438,17 +432,81 @@ try {
         Assert-Equal $script:Criteria['R-NET-INTERNET'].Outcome 'unknown'
         Assert-Equal ($script:Criteria['R-NET-INTERNET'].Reason -match 'pass') $false
     }
-    Test-Case 'Proxies are not contacted without -ProbeNetwork' {
-        $script:ProbeNetwork = $false
-        $script:NetworkTarget = @('tcp:1.1.1.1:443')
+    Test-Case 'Default Internet targets and proxies are probed on every run' {
+        $script:NetworkTarget = @()
         $env:HTTP_PROXY = 'http://localhost:8080'
         $script:proxyCalls = 0
-        function Invoke-TcpProbe { $false }
-        function Invoke-ProxyProbe { $script:proxyCalls++; 200 }
+        $script:tcpHosts = @()
+        function Invoke-TcpProbe { param($HostName, $Port) $script:tcpHosts += $HostName; 'timeout' }
+        function Invoke-ProxyProbe { $script:proxyCalls++; 403 }
         function Get-CimInstance { @() }
         function Get-ItemProperty { throw 'No synthetic proxy' }
         Invoke-NetworkCheck
-        Assert-Equal $script:proxyCalls 0
+        Assert-Equal ($script:tcpHosts -contains 'example.com') $true
+        Assert-Equal $script:proxyCalls 1
+    }
+    Test-Case 'Socket errors map to connect outcomes' {
+        Assert-Equal (ConvertTo-ConnectOutcome 10013) 'blocked'
+        Assert-Equal (ConvertTo-ConnectOutcome 10061) 'refused'
+        Assert-Equal (ConvertTo-ConnectOutcome 10060) 'timeout'
+        Assert-Equal (ConvertTo-ConnectOutcome 10051) 'error'
+    }
+    Test-Case 'Lateral targets come from gateways, private DNS servers and loopback' {
+        $specs = @(Get-LateralTargets -Gateway '192.168.2.1', 'fe80::1', '0.0.0.0' -DnsServer '192.168.2.1', '8.8.8.8', 'fec0:0:0:ffff::1' -ExcludeLoopbackPort 49151)
+        foreach ($expected in @('tcp:192.168.2.1:80', 'tcp:192.168.2.1:443', 'tcp:192.168.2.1:53', 'tcp:127.0.0.1:49150')) {
+            Assert-Equal ($specs -contains $expected) $true
+        }
+        Assert-Equal (@($specs | Where-Object { $_ -match '8\.8\.8\.8|fe80|fec0|0\.0\.0\.0|:49151$' }).Count) 0
+        Assert-Equal $specs.Count (@($specs | Select-Object -Unique).Count)
+    }
+    foreach ($case in @(
+            @{ Name = 'all blocked'; Outcome = { 'blocked' }; Expected = 'met' },
+            @{ Name = 'a refused gateway port'; Outcome = { param($HostName) if ($HostName -eq '192.168.2.1') { 'refused' } else { 'blocked' } }; Expected = 'unmet' },
+            @{ Name = 'a timeout'; Outcome = { param($HostName) if ($HostName -eq '192.168.2.1') { 'timeout' } else { 'blocked' } }; Expected = 'unknown' })) {
+        Test-Case "Lateral reach with $($case.Name) is $($case.Expected)" {
+            $script:NetworkTarget = @()
+            function Get-LateralTargets { 'tcp:192.168.2.1:80', 'tcp:127.0.0.1:49151' }
+            Set-Item -Path Function:\Invoke-TcpProbe -Value $case.Outcome
+            function Get-CimInstance { @() }
+            function Get-ItemProperty { throw 'No synthetic proxy' }
+            Invoke-NetworkCheck
+            Assert-Equal $script:Criteria['R-NET-LATERAL'].Outcome $case.Expected
+        }
+    }
+    Test-Case 'Explicitly blocked direct Internet probes are met without a proxy' {
+        $script:NetworkTarget = @()
+        function Get-LateralTargets { @() }
+        function Invoke-TcpProbe { 'blocked' }
+        function Get-CimInstance { @() }
+        function Get-ItemProperty { throw 'No synthetic proxy' }
+        Invoke-NetworkCheck
+        Assert-Equal $script:Criteria['R-NET-INTERNET'].Outcome 'met'
+    }
+    Test-Case 'A refused Internet connection reached its host and is unmet' {
+        $script:NetworkTarget = @()
+        function Get-LateralTargets { @() }
+        function Invoke-TcpProbe { param($HostName) if ($HostName -eq '1.1.1.1') { 'refused' } else { 'blocked' } }
+        function Get-CimInstance { @() }
+        function Get-ItemProperty { throw 'No synthetic proxy' }
+        Invoke-NetworkCheck
+        Assert-Equal $script:Criteria['R-NET-INTERNET'].Outcome 'unmet'
+    }
+    Test-Case 'The verdict line shows the whole scale with the current verdict raised' {
+        $context = @{ userName = 'synthetic'; userSid = 'S-1-5-21-0'; integrityLevel = 'medium'; isElevated = $false; sessionId = 0; timestampUtc = 'now' }
+        # Rebuild host lines: each Write-Host -NoNewline segment is its own record.
+        $report = -join (& { Write-HumanReport -Measure ([pscustomobject]@{ Verdict = 'Partial'; ScoreLower = 50; ScoreUpper = 60; CriticalCapApplied = $false; Coverage = 0.9; Dimensions = @() }) -Context $context } 6>&1 |
+            ForEach-Object { $_.MessageData.Message + $(if ($_.MessageData.NoNewLine) { '' } else { "`n" }) })
+        $line = @($report -split "`r?`n" | Where-Object { $_ -like 'Verdict:*' })[0]
+        Assert-Equal $line 'Verdict: Critical exposure | Weak | Incomplete | PARTIAL | Bounded within tested scope'
+    }
+    Test-Case 'The verdict block follows the findings and precedes remediation' {
+        $script:Criteria['A-ID-ADMIN'].Outcome = 'unmet'
+        $context = @{ userName = 'synthetic'; userSid = 'S-1-5-21-0'; integrityLevel = 'medium'; isElevated = $false; sessionId = 0; timestampUtc = 'now' }
+        $report = (& { Write-HumanReport -Measure (Measure-Assessment) -Context $context } 6>&1 | Out-String)
+        $verdict = $report.IndexOf('Verdict:')
+        Assert-Equal ($verdict -gt $report.IndexOf('Not evaluated / unknown')) $true
+        Assert-Equal ($verdict -lt $report.IndexOf('Remediation:')) $true
+        Assert-Equal ($report.IndexOf('Evidence coverage:') -lt $report.IndexOf('Remediation:')) $true
     }
     foreach ($variable in @('HTTP_PROXY', 'HTTPS_PROXY')) {
         Test-Case "The $variable probe sends one request and reads the proxy status" {
