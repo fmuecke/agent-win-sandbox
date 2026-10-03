@@ -39,7 +39,12 @@ An inside-only run cannot establish complete host policy, external monitoring co
 - For existing files, access probes must not truncate, create, replace or delete anything. Unexercised create/delete/rename behavior is inferred from permissions or reported unknown, rather than presented as functionally tested.
 - Network discovery is local inventory. Active probes use a bounded, documented target list supplied or selected by the operator; do not automatically contact arbitrary discovered URLs or shares. Avoid credentials, client certificates, implicit Windows authentication, redirects to unapproved targets and uploads.
 - Network success establishes the tested route. A timeout or absent UDP reply does not establish a firewall denial. Name resolution alone does not demonstrate unrestricted DNS egress or a complete DNS restriction.
+- A configured proxy's explicit policy refusal (HTTP 403 or 451) for an arbitrary Internet destination is enforcement evidence. Internet egress counts as restricted only when all direct Internet probes failed, every configured proxy was probed, at least one refused explicitly and none reached the destination. This accepts the failed direct routes as blocked; the proxy refusal is the only explicit evidence. An authentication challenge (407), gateway error or missing response is not a refusal, and a proxy URL that carries credentials is not used, so its route stays unknown.
 - Failed enumeration, unsupported APIs, vanished targets, file sharing conflicts and scan limits must not become a pass result.
+- An explicit access-denied error on each individually requested right resolves those rights as denied. It does not depend on attributing the target's owner or consumer identity: attribution only selects targets and grades severity, unattributed targets stay in scope, and an isolated identity typically cannot attribute any of them. Any other error leaves the right unknown.
+- When a security descriptor cannot be read, request each right on its own open of the existing object and close it at once. The read-only attribute denies data writes and deletion on files regardless of the DACL, so those denials are conclusive only when the agent cannot clear the attribute.
+- A denied directory listing is a resolved sample, not an incomplete one: the read denial is recorded and nothing beneath it is visible. A location behind a denied ancestor is probed directly. A sample location that does not exist is skipped; confirm absence natively, because shell APIs also report hidden items as missing.
+- A missing service or task execution file is assessed by whether the agent could create it, using the create right on the nearest existing ancestor. Task paths expand only machine-wide environment variables; per-user variables depend on the task principal and stay unresolved.
 
 ## Secret scanning
 
@@ -108,6 +113,7 @@ Examples:
 - Another user's process grants memory-read access: observed cross-user confidentiality exposure, even if memory-write access is denied.
 - A token-like string appears in a readable configuration file: suspected credential exposure; service permissions unknown.
 - A direct connection succeeds while proxy use is expected: evidence of a bypass on that tested route.
+- All direct Internet probes fail and the configured proxy answers 403 for an arbitrary destination: Internet egress restricted on the tested routes, with the direct failures accepted rather than proven denials.
 - Build inputs are writable and the consuming user's elevation is unknown: downstream execution exposure; escalation impact unknown.
 - No monitoring configuration is visible: monitoring unverified, not absent.
 
