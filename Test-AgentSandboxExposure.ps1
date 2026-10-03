@@ -222,7 +222,7 @@ $CriterionRegistry = @(
     }
     @{ Id = 'C-TOOL-POLICY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
         Title = 'Agent tool permissions come from a managed policy'
-        Remediation = 'Deploy an admin-owned managed-settings.json so agent-writable settings cannot widen tool permissions.' 
+        Remediation = 'Deploy the agent''s admin-owned managed policy and restrict it to managed permission rules (Claude Code: allowManagedPermissionRulesOnly in managed-settings.json) so agent-writable settings cannot widen tool permissions.'
     }
     @{ Id = 'C-JOB'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
         Title = 'Process tree is confined to a kill-on-close job without breakaway'
@@ -1451,6 +1451,12 @@ function Test-ManagedSettingsPresent {
     return (Test-Path -LiteralPath 'C:\Program Files\ClaudeCode\managed-settings.json' -PathType Leaf)
 }
 
+function Get-OwnerSid {
+    param([Parameter(Mandatory)][string]$Path)
+
+    return (Get-Acl -LiteralPath $Path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+}
+
 function Get-ControlTargets {
     # Bounded walk of an installed control tree; never execute its contents.
     param([string[]]$Root, [int]$MaxTargets = 200)
@@ -1518,27 +1524,48 @@ function Invoke-ContainmentCheck {
             -Reason 'Control-tree discovery was incomplete or reached its target limit.'
     }
 
-    # C-TOOL-POLICY
-    $managedPresent = Test-ManagedSettingsPresent
+    # C-TOOL-POLICY: managed policy differs per agent (Claude Code, Codex,
+    # Copilot CLI), so only the agent running this check is assessed, and only
+    # Claude Code (CLAUDECODE=1) is implemented. Results carry that scope.
     $claudeHome = Join-Path $env:USERPROFILE '.claude'
-    if ($managedPresent) {
-        $managedAccess = Get-PathAccess 'C:\Program Files\ClaudeCode\managed-settings.json'
+    $managedPath = 'C:\Program Files\ClaudeCode\managed-settings.json'
+    # C-PERSIST-SELF below also uses these, whichever agent is running.
+    $managedPresent = Test-ManagedSettingsPresent
+    $managedAccess = if ($managedPresent) { Get-PathAccess $managedPath } else { $null }
+    if ($env:CLAUDECODE -ne '1') {
+        Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome 'unknown' -Method 'inventory' `
+            -Reason 'Tool policy is assessed only for Claude Code; this run is not under Claude Code, and other agents use different policy mechanisms.'
+    }
+    elseif ($managedPresent) {
+        $owner = $null
+        try { $owner = Get-OwnerSid -Path $managedPath } catch { }
+        $settings = $null
+        try { $settings = Get-Content -LiteralPath $managedPath -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop } catch { }
+        $trustedOwners = @('S-1-5-32-544', 'S-1-5-18', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
         if (Test-AnyWrite $managedAccess) {
             Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome unmet -Method permission-analysis `
-                -Reason 'Managed settings are present but agent-writable.'
+                -Reason 'Claude Code managed settings are present but agent-writable.'
+        }
+        elseif ((Test-UnknownWrite $managedAccess) -or $owner -notin $trustedOwners -or $settings -isnot [System.Collections.IDictionary]) {
+            Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome unknown -Method permission-analysis `
+                -Reason 'Claude Code managed settings are present, but their write access, administrative ownership or content could not be verified.'
+        }
+        elseif ($settings['allowManagedPermissionRulesOnly'] -eq $true) {
+            Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome met -Method permission-analysis `
+                -Reason 'Claude Code managed settings are admin-owned, not agent-writable and allow only managed permission rules. Scope: Claude Code only; application by the tool is not observed.'
         }
         else {
-            Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome unknown -Method permission-analysis `
-                -Reason 'Managed settings are present; policy content, trusted ownership and application by the tool are unverified.'
+            Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome unmet -Method permission-analysis `
+                -Reason 'Claude Code managed settings do not set allowManagedPermissionRulesOnly, so user or project settings the agent can write may add allow rules; managed deny rules still apply. Scope: Claude Code only.'
         }
     }
     elseif (Test-Path -LiteralPath $claudeHome) {
         Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome 'unmet' -Method 'inventory' `
-            -Reason 'Agent settings exist without a managed policy to constrain tool permissions.'
+            -Reason 'Claude Code settings exist without a managed policy to constrain tool permissions.'
     }
     else {
         Set-CriterionOutcome -Id 'C-TOOL-POLICY' -Outcome 'unknown' -Method 'inventory' `
-            -Reason 'No managed policy and no agent settings directory were found.'
+            -Reason 'No Claude Code managed policy and no agent settings directory were found.'
     }
 
     # C-JOB
@@ -1602,7 +1629,10 @@ function Invoke-ContainmentCheck {
         -MetReason 'No evaluated startup/persistence paths are agent-writable.' `
         -UnmetReasonFormat '{0} startup/persistence paths are agent-writable.' | Out-Null
 
-    # C-PROXY-INTEGRITY
+    # C-PROXY-INTEGRITY: the agent can always change its own environment and
+    # HKCU proxy settings, and can ignore any proxy setting. A change only
+    # matters if it opens a route, so this is decided by the NETWORK evidence
+    # (which runs first): no direct Internet route reached its host.
     $envProxy = $env:HTTPS_PROXY -or $env:HTTP_PROXY -or $env:ALL_PROXY
     $userProxy = $false
     try {
@@ -1612,27 +1642,43 @@ function Invoke-ContainmentCheck {
     catch {
         # No per-user WinINET configuration present.
     }
-    $machinePolicyKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings'
-    $machinePolicy = Test-Path -LiteralPath $machinePolicyKey
+    # The policy key also holds unrelated defaults such as CallLegacyWCMPolicies;
+    # only proxy values make it a machine proxy policy.
+    $machinePolicy = $false
+    try {
+        $policy = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+        $machinePolicy = @($policy.PSObject.Properties.Name |
+            Where-Object { $_ -in 'ProxySettingsPerUser', 'ProxyEnable', 'ProxyServer', 'AutoConfigURL' }).Count -gt 0
+    }
+    catch {
+        # No machine proxy policy present.
+    }
+    $directReached = @()
+    if ($script:Inventory.Contains('networkProbes')) {
+        $directReached = @($script:Inventory['networkProbes'] |
+            Where-Object { $_.Kind -eq 'tcp' -and $_.Class -eq 'internet' -and $_.Outcome -in 'connected', 'refused' })
+    }
+    $policyWritable = $machinePolicy -and [AgentSandboxAssessmentNative]::ProbeRegistryKey(
+        2, 'SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings', 0x2) -eq 0
     if (-not $envProxy -and -not $userProxy -and -not $machinePolicy) {
         Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'na' -Method 'inventory' `
             -Reason 'No proxy is configured for this identity.'
     }
-    elseif ($machinePolicy) {
-        $policyWritable = [AgentSandboxAssessmentNative]::ProbeRegistryKey(
-            2, 'SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\Internet Settings', 0x2) -eq 0
-        if ($policyWritable) {
-            Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unmet' -Method 'access-request' `
-                -Reason 'Machine proxy policy key is agent-writable.'
-        }
-        else {
-            Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unknown' -Method 'access-request' `
-                -Reason 'A machine proxy policy key exists; its settings, application and direct-egress restrictions are unverified.'
-        }
+    elseif ($policyWritable) {
+        Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unmet' -Method 'access-request' `
+            -Reason 'Machine proxy policy key is agent-writable.'
+    }
+    elseif ($directReached.Count -gt 0) {
+        Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unmet' -Method 'observed-operation' `
+            -Reason 'A direct Internet route reached its host, so the agent can bypass the configured proxy.'
+    }
+    elseif ($script:Criteria['R-NET-INTERNET'].Outcome -eq 'met') {
+        Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'met' -Method 'observed-operation' `
+            -Reason 'The agent can change its own proxy settings, but no direct Internet route reached its host, so a change cannot widen egress on tested routes.'
     }
     else {
-        Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unmet' -Method 'inventory' `
-            -Reason 'Proxy is configured only via environment or HKCU, which the agent can change.'
+        Set-CriterionOutcome -Id 'C-PROXY-INTEGRITY' -Outcome 'unknown' -Method 'observed-operation' `
+            -Reason 'The agent can change its own proxy settings; whether that widens egress is unresolved because direct Internet routes were not established as restricted.'
     }
 }
 
@@ -1663,23 +1709,32 @@ function Invoke-MonitoringCheck {
     # M-OS-LOGGING and discovery for M-TAMPER
     $loggingSignals = @()
     $scriptLoggingEnabled = $false
+    $processMonitorRunning = @()
     $monitoringServices = @()
+    # An installed but stopped sensor records nothing; only a running one counts.
     foreach ($serviceName in @('Sysmon', 'Sysmon64', 'Sense')) {
         $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-        if ($service) { $loggingSignals += "service:$serviceName"; $monitoringServices += $serviceName }
+        if (-not $service) { continue }
+        $monitoringServices += $serviceName
+        $running = ($service.PSObject.Properties.Name -contains 'Status') -and "$($service.Status)" -eq 'Running'
+        $loggingSignals += "service:$serviceName ($(if ($running) { 'running' } else { 'not running' }))"
+        if ($running) { $processMonitorRunning += $serviceName }
     }
-    $scriptBlockKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    # Windows PowerShell and PowerShell 7 read separate policy keys.
     $loggingPolicyKeys = @()
-    try {
-        $sbl = Get-ItemProperty -Path $scriptBlockKey -ErrorAction Stop
-        if (($sbl.PSObject.Properties.Name -contains 'EnableScriptBlockLogging') -and $sbl.EnableScriptBlockLogging -eq 1) {
-            $loggingSignals += 'policy:ScriptBlockLogging'
-            $scriptLoggingEnabled = $true
-            $loggingPolicyKeys += 'SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    foreach ($policyRoot in @('Windows\PowerShell', 'PowerShellCore')) {
+        $scriptBlockKey = "SOFTWARE\Policies\Microsoft\$policyRoot\ScriptBlockLogging"
+        try {
+            $sbl = Get-ItemProperty -Path "HKLM:\$scriptBlockKey" -ErrorAction Stop
+            if (($sbl.PSObject.Properties.Name -contains 'EnableScriptBlockLogging') -and $sbl.EnableScriptBlockLogging -eq 1) {
+                $loggingSignals += "policy:ScriptBlockLogging ($policyRoot)"
+                $scriptLoggingEnabled = $true
+                $loggingPolicyKeys += $scriptBlockKey
+            }
         }
-    }
-    catch {
-        # Policy not configured.
+        catch {
+            # Policy not configured.
+        }
     }
     $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
     try {
@@ -1695,13 +1750,18 @@ function Invoke-MonitoringCheck {
     }
     $script:Inventory['loggingSignals'] = $loggingSignals
 
-    if ($scriptLoggingEnabled) {
+    if ($scriptLoggingEnabled -or $processMonitorRunning.Count -gt 0) {
+        $what = @(
+            if ($scriptLoggingEnabled) { 'PowerShell script-block logging policy is enabled' }
+            if ($processMonitorRunning.Count -gt 0) { "process monitoring is running ($($processMonitorRunning -join ', '))" }
+        ) -join '; '
         Set-CriterionOutcome -Id 'M-OS-LOGGING' -Outcome 'met' -Method 'inventory' `
-            -Reason 'PowerShell script-block logging policy is enabled; event delivery and external collection are unverified.'
+            -Reason "$what. Event delivery and external collection are unverified."
     }
     else {
+        $hints = if ($loggingSignals.Count -gt 0) { $loggingSignals -join ', ' } else { 'none' }
         Set-CriterionOutcome -Id 'M-OS-LOGGING' -Outcome 'unknown' -Method 'inventory' `
-            -Reason "Active process/script logging is unverified. Visible hints: $($loggingSignals -join ', '). Service presence or command-line inclusion alone does not establish auditing."
+            -Reason "Active process/script logging is unverified. Visible hints: $hints. A stopped sensor, command-line inclusion or audit policy this identity cannot read does not establish logging."
     }
 
     # M-TAMPER
@@ -3540,11 +3600,11 @@ function Measure-Assessment {
     $coverage = [math]::Round(($sumCoverage / $Dimensions.Count), 3)
     $essentialUnknowns = @($script:Criteria.Values | Where-Object { $_.Essential -and $_.Outcome -eq 'unknown' })
 
-    if ($criticalApplied) { $verdict = 'Critical exposure' }
+    if ($criticalApplied) { $verdict = 'Critical' }
     elseif ($essentialUnknowns.Count -gt 0 -or $coverage -lt $MinimumCoverageForVerdict) { $verdict = 'Incomplete' }
     elseif ($scoreLower -lt 40) { $verdict = 'Weak' }
     elseif ($scoreLower -lt 70) { $verdict = 'Partial' }
-    else { $verdict = 'Bounded within tested scope' }
+    else { $verdict = 'Strong' } # Bounded within tested scope
 
     return [pscustomobject]@{
         Dimensions         = $dimensionResults
@@ -3626,7 +3686,7 @@ function Write-HumanReport {
     )
 
     $verdictColor = switch ($Measure.Verdict) {
-        'Critical exposure' { 'Red' }
+        'Critical' { 'Red' }
         'Incomplete' { 'Yellow' }
         'Weak' { 'Red' }
         'Partial' { 'Yellow' }
@@ -3690,7 +3750,7 @@ function Write-HumanReport {
     # Show the whole verdict scale; the current verdict is raised and colored.
     Write-Host ''
     Write-Host 'Verdict: ' -NoNewline
-    $scale = @('Critical exposure', 'Weak', 'Incomplete', 'Partial', 'Bounded within tested scope')
+    $scale = @('Critical', 'Incomplete', 'Weak', 'Partial', 'Strong')
     for ($i = 0; $i -lt $scale.Count; $i++) {
         if ($i -gt 0) { Write-Host ' | ' -NoNewline -ForegroundColor DarkGray }
         if ($scale[$i] -eq $Measure.Verdict) { Write-Host $scale[$i].ToUpperInvariant() -NoNewline -ForegroundColor $verdictColor }

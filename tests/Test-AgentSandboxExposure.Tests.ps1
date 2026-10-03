@@ -59,6 +59,7 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('exposure-regression-' + [guid
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $savedProfile = $env:USERPROFILE
 $savedProxies = @{ HTTP_PROXY = $env:HTTP_PROXY; HTTPS_PROXY = $env:HTTPS_PROXY }
+$savedClaudeCode = $env:CLAUDECODE
 $failures = [Collections.Generic.List[string]]::new()
 
 function Assert-Equal {
@@ -73,6 +74,7 @@ function Test-Case {
     $env:USERPROFILE = Join-Path $testRoot 'empty-profile'
     $env:HTTP_PROXY = $null
     $env:HTTPS_PROXY = $null
+    $env:CLAUDECODE = $null
     $script:Findings.Clear()
     $script:Errors.Clear()
     $script:Inventory.Clear()
@@ -591,15 +593,72 @@ try {
         Invoke-MonitoringCheck
         Assert-Equal $script:Criteria['M-OS-LOGGING'].Outcome 'unknown'
     }
-    Test-Case 'A proxy policy key alone does not prove enforced routing' {
+    Test-Case 'A proxy policy key without proxy values is not a proxy policy' {
         function Test-Path { $true }
         function Get-ChildItem { @() }
-        function Get-ItemProperty { [pscustomobject]@{} }
+        function Get-ItemProperty { [pscustomobject]@{ CallLegacyWCMPolicies = 0 } }
         function Get-Content { '{"allowManagedHooksOnly":true}' }
         function Get-PathAccess { [pscustomobject]@{ Exists = $true; IsDirectory = $false; Method = 'permission-analysis'; ErrorCategory = $null; Read = 'denied'; Write = 'denied'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
         Invoke-ContainmentCheck
-        Assert-Equal $script:Criteria['C-PROXY-INTEGRITY'].Outcome 'unknown'
-        Assert-Equal $script:Criteria['C-TOOL-POLICY'].Outcome 'unknown'
+        Assert-Equal $script:Criteria['C-PROXY-INTEGRITY'].Outcome 'na'
+    }
+    # Containment fixtures: a protected managed-settings file and an
+    # environment proxy; each case varies the network evidence or policy.
+    function Set-ContainmentFixture {
+        param([string]$Settings = '{"allowManagedPermissionRulesOnly":true}', [string]$Owner = 'S-1-5-32-544', [string]$Write = 'denied')
+        $script:fixtureSettings = $Settings
+        $script:fixtureOwner = $Owner
+        $script:fixtureWrite = $Write
+    }
+    function Invoke-ContainmentFixture {
+        function Test-Path { $true }
+        function Get-ChildItem { @() }
+        function Get-ItemProperty { throw 'No synthetic registry value' }
+        function Get-Content { $script:fixtureSettings }
+        function Get-OwnerSid { $script:fixtureOwner }
+        function Get-PathAccess { [pscustomobject]@{ Exists = $true; IsDirectory = $false; Method = 'permission-analysis'; ErrorCategory = $null; Read = 'denied'; Write = $script:fixtureWrite; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
+        Invoke-ContainmentCheck
+    }
+    foreach ($case in @(
+            @{ Name = 'met Internet restriction'; Internet = 'met'; Probe = 'blocked'; Expected = 'met' },
+            @{ Name = 'a direct route that reached its host'; Internet = 'unmet'; Probe = 'connected'; Expected = 'unmet' },
+            @{ Name = 'unresolved direct routes'; Internet = 'unknown'; Probe = 'timeout'; Expected = 'unknown' })) {
+        Test-Case "An agent-changeable proxy with $($case.Name) is $($case.Expected)" {
+            $env:HTTP_PROXY = 'http://127.0.0.1:8080'
+            $script:Criteria['R-NET-INTERNET'].Outcome = $case.Internet
+            $script:Inventory['networkProbes'] = @([pscustomobject]@{ Spec = 'tcp:1.1.1.1:443'; Kind = 'tcp'; Class = 'internet'; Outcome = $case.Probe })
+            Set-ContainmentFixture
+            Invoke-ContainmentFixture
+            Assert-Equal $script:Criteria['C-PROXY-INTEGRITY'].Outcome $case.Expected
+        }
+    }
+    foreach ($case in @(
+            @{ Name = 'is not assessed outside Claude Code'; ClaudeCode = $null; Settings = '{"allowManagedPermissionRulesOnly":true}'; Owner = 'S-1-5-32-544'; Write = 'denied'; Expected = 'unknown' },
+            @{ Name = 'allowing only managed permission rules is met'; ClaudeCode = '1'; Settings = '{"allowManagedPermissionRulesOnly":true}'; Owner = 'S-1-5-32-544'; Write = 'denied'; Expected = 'met' },
+            @{ Name = 'merging user permission rules is unmet'; ClaudeCode = '1'; Settings = '{"permissions":{"deny":["WebFetch"]}}'; Owner = 'S-1-5-32-544'; Write = 'denied'; Expected = 'unmet' },
+            @{ Name = 'writable by the agent is unmet'; ClaudeCode = '1'; Settings = '{"allowManagedPermissionRulesOnly":true}'; Owner = 'S-1-5-32-544'; Write = 'granted'; Expected = 'unmet' },
+            @{ Name = 'owned by an untrusted account is unknown'; ClaudeCode = '1'; Settings = '{"allowManagedPermissionRulesOnly":true}'; Owner = 'S-1-5-21-101-102-103-1002'; Write = 'denied'; Expected = 'unknown' },
+            @{ Name = 'that cannot be parsed is unknown'; ClaudeCode = '1'; Settings = '{ not json'; Owner = 'S-1-5-32-544'; Write = 'denied'; Expected = 'unknown' })) {
+        Test-Case "Claude Code managed settings $($case.Name)" {
+            $env:CLAUDECODE = $case.ClaudeCode
+            Set-ContainmentFixture -Settings $case.Settings -Owner $case.Owner -Write $case.Write
+            Invoke-ContainmentFixture
+            Assert-Equal $script:Criteria['C-TOOL-POLICY'].Outcome $case.Expected
+        }
+    }
+    Test-Case 'PowerShell 7 script-block logging counts as configured logging' {
+        function Get-Service { @() }
+        function Get-ItemProperty { param($Path) if ($Path -like '*PowerShellCore*') { [pscustomobject]@{ EnableScriptBlockLogging = 1 } } else { throw 'No synthetic policy' } }
+        function Test-Path { $false }
+        Invoke-MonitoringCheck
+        Assert-Equal $script:Criteria['M-OS-LOGGING'].Outcome 'met'
+    }
+    Test-Case 'A running process-monitoring service counts as configured logging' {
+        function Get-Service { param($Name) if ($Name -eq 'Sysmon64') { [pscustomobject]@{ Name = $Name; Status = 'Running' } } }
+        function Get-ItemProperty { throw 'No synthetic policy' }
+        function Test-Path { $false }
+        Invoke-MonitoringCheck
+        Assert-Equal $script:Criteria['M-OS-LOGGING'].Outcome 'met'
     }
     Test-Case 'A file can be deleted through its parent directory rights' {
         $path = Join-Path $script:WorkspacePath 'protected.json'
@@ -1070,6 +1129,7 @@ finally {
     $env:USERPROFILE = $savedProfile
     $env:HTTP_PROXY = $savedProxies.HTTP_PROXY
     $env:HTTPS_PROXY = $savedProxies.HTTPS_PROXY
+    $env:CLAUDECODE = $savedClaudeCode
     # Verify the recursive cleanup stays within this test's unique temp root.
     $resolved = [IO.Path]::GetFullPath($testRoot)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
