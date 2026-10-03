@@ -1121,19 +1121,19 @@ try {
         Assert-Equal $script:Criteria['A-SVC'].Outcome 'met'
     }
     Test-Case 'A writable svchost ServiceDll for SYSTEM is critical' {
-        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\svc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Unresolved = $null } }
+        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\svc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Inferred = $false; Unresolved = $null } }
         Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k netsvcs' -Grants @{ 'C:\synthetic\svc.dll' = 'Write' }
         Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
         Assert-Equal $script:Criteria['A-SVC'].Critical $true
     }
     Test-Case 'A writable ServiceDll Parameters key for SYSTEM is critical' {
-        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\svc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Unresolved = $null } }
+        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\svc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Inferred = $false; Unresolved = $null } }
         [AgentSandboxAssessmentNative]::RegistryGrantedPath = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'
         Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k netsvcs'
         Assert-Equal $script:Criteria['A-SVC'].Critical $true
     }
     Test-Case 'An unreadable ServiceDll leaves services unknown and is named' {
-        function Get-ServiceDll { [pscustomobject]@{ Path = $null; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Unresolved = 'ServiceDll key unreadable' } }
+        function Get-ServiceDll { [pscustomobject]@{ Path = $null; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Inferred = $false; Unresolved = 'ServiceDll key unreadable' } }
         Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k netsvcs'
         Assert-Equal $script:Criteria['A-SVC'].Outcome 'unknown'
         Assert-Equal $script:Criteria['A-SVC'].Reason.Contains('synthetic (ServiceDll key unreadable)') $true
@@ -1142,6 +1142,37 @@ try {
         function Get-ServiceDll { throw 'must not be called' }
         Invoke-ServiceFixture -PathName 'C:\Windows\Microsoft.NET\SMSvcHost.exe'
         Assert-Equal $script:Criteria['A-SVC'].Outcome 'met'
+    }
+    Test-Case 'A hidden ServiceDll is inferred from the service name resource' {
+        function Read-RegistryValue {
+            param($Path, $Name)
+            if ($Path -like '*\Parameters') { return [pscustomobject]@{ State = 'denied'; Value = $null } }
+            if ($Name -eq 'DisplayName') { return [pscustomobject]@{ State = 'present'; Value = '@%SystemRoot%\system32\lmhsvc.dll,-101' } }
+            [pscustomobject]@{ State = 'present'; Value = $null }
+        }
+        $dll = Get-ServiceDll -Name 'lmhosts'
+        Assert-Equal $dll.Path (Join-Path $env:SystemRoot 'system32\lmhsvc.dll')
+        Assert-Equal $dll.Inferred $true
+        Assert-Equal $dll.Key 'SYSTEM\CurrentControlSet\Services\lmhosts\Parameters'
+    }
+    Test-Case 'A hidden ServiceDll without a name resource stays unresolved' {
+        function Read-RegistryValue {
+            param($Path, $Name)
+            if ($Path -like '*\Parameters') { return [pscustomobject]@{ State = 'denied'; Value = $null } }
+            [pscustomobject]@{ State = 'present'; Value = $(if ($Name -eq 'DisplayName') { 'Plain name' }) }
+        }
+        Assert-Equal (Get-ServiceDll -Name 'lmhosts').Unresolved 'ServiceDll key unreadable'
+    }
+    Test-Case 'A protected inferred ServiceDll earns credit and is named in the reason' {
+        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\lmhsvc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Inferred = $true; Unresolved = $null } }
+        Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k LocalService'
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'met'
+        Assert-Equal $script:Criteria['A-SVC'].Reason.Contains('inferred from the service''s name resource: synthetic') $true
+    }
+    Test-Case 'A writable inferred ServiceDll is still a finding' {
+        function Get-ServiceDll { [pscustomobject]@{ Path = 'C:\synthetic\lmhsvc.dll'; Key = 'SYSTEM\CurrentControlSet\Services\synthetic\Parameters'; Inferred = $true; Unresolved = $null } }
+        Invoke-ServiceFixture -PathName 'C:\Windows\system32\svchost.exe -k LocalService' -Grants @{ 'C:\synthetic\lmhsvc.dll' = 'Write' }
+        Assert-Equal $script:Criteria['A-SVC'].Critical $true
     }
     Test-Case 'A per-user service instance resolves its ServiceDll through the template' {
         function Read-RegistryValue {

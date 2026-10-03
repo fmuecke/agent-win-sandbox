@@ -2962,22 +2962,36 @@ function Get-ServiceDll {
     # svchost runs the DLL named by ServiceDll in the service's Parameters key
     # or its root key. A per-user service instance (name_<hex>) is configured
     # by its template service. Key is the subkey holding (or hiding) the value.
+    # When Windows hides that key from this identity, the DLL named by the
+    # service's own DisplayName/Description resource (@<dll>,-<id>) stands in,
+    # marked Inferred: a ServiceDll differing from it is not seen.
     param([Parameter(Mandatory)][string]$Name)
 
     $names = @($Name)
     if ($Name -match '^(.+)_[0-9a-f]+$') { $names += $Matches[1] }
+    $hiddenKey = $null
     foreach ($serviceName in $names) {
         foreach ($sub in @("SYSTEM\CurrentControlSet\Services\$serviceName\Parameters", "SYSTEM\CurrentControlSet\Services\$serviceName")) {
             $value = Read-RegistryValue "Registry::HKEY_LOCAL_MACHINE\$sub" -Name 'ServiceDll'
             if ($value.Value) {
                 $path = Expand-MachinePath ([string]$value.Value)
-                if ($path -match '^[A-Za-z]:[\\/]') { return [pscustomobject]@{ Path = $path; Key = $sub; Unresolved = $null } }
-                return [pscustomobject]@{ Path = $null; Key = $sub; Unresolved = 'ServiceDll is not an absolute path' }
+                if ($path -match '^[A-Za-z]:[\\/]') { return [pscustomobject]@{ Path = $path; Key = $sub; Inferred = $false; Unresolved = $null } }
+                return [pscustomobject]@{ Path = $null; Key = $sub; Inferred = $false; Unresolved = 'ServiceDll is not an absolute path' }
             }
-            if ($value.State -eq 'denied') { return [pscustomobject]@{ Path = $null; Key = $sub; Unresolved = 'ServiceDll key unreadable' } }
+            if ($value.State -eq 'denied' -and -not $hiddenKey) { $hiddenKey = $sub }
         }
     }
-    return [pscustomobject]@{ Path = $null; Key = $null; Unresolved = 'no ServiceDll found' }
+    if (-not $hiddenKey) { return [pscustomobject]@{ Path = $null; Key = $null; Inferred = $false; Unresolved = 'no ServiceDll found' } }
+    foreach ($serviceName in $names) {
+        foreach ($valueName in 'DisplayName', 'Description') {
+            $resource = [string](Read-RegistryValue "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\$serviceName" -Name $valueName).Value
+            if ($resource -match '^@(?<dll>[^,]+\.dll),-\d+$') {
+                $path = Expand-MachinePath $Matches['dll']
+                if ($path -match '^[A-Za-z]:[\\/]') { return [pscustomobject]@{ Path = $path; Key = $hiddenKey; Inferred = $true; Unresolved = $null } }
+            }
+        }
+    }
+    return [pscustomobject]@{ Path = $null; Key = $hiddenKey; Inferred = $false; Unresolved = 'ServiceDll key unreadable' }
 }
 
 function Invoke-IndirectCheck {
@@ -2989,6 +3003,7 @@ function Invoke-IndirectCheck {
     $criticalHit = $false
     $incomplete = $false
     $unresolvedServices = @()
+    $inferredServices = @()
 
     # Services
     try {
@@ -3017,7 +3032,10 @@ function Invoke-IndirectCheck {
             if ((Split-Path -Leaf $exe) -ieq 'svchost.exe') {
                 $serviceDll = Get-ServiceDll -Name $service.Name
                 if ($serviceDll.Key -and $serviceDll.Key -notin $registryKeys) { $registryKeys += $serviceDll.Key }
-                if ($serviceDll.Path) { $files += @{ Path = $serviceDll.Path; Label = 'ServiceDll'; Neighbors = $false } }
+                if ($serviceDll.Path) {
+                    $files += @{ Path = $serviceDll.Path; Label = $(if ($serviceDll.Inferred) { 'ServiceDll (inferred)' } else { 'ServiceDll' }); Neighbors = $false }
+                    if ($serviceDll.Inferred) { $inferredServices += $service.Name }
+                }
                 else { $incomplete = $true; $unresolvedServices += "$($service.Name) ($($serviceDll.Unresolved))" }
             }
             $fileChanges = @()
@@ -3161,7 +3179,8 @@ function Invoke-IndirectCheck {
     }
     else {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'met' -Method 'permission-analysis' `
-            -Reason "No service or task binary, config or parent directory is agent-writable ($probed probed)."
+            -Reason ("No service or task binary, config or parent directory is agent-writable ($probed probed)." +
+                $(if ($inferredServices.Count -gt 0) { " ServiceDll hidden from this identity and inferred from the service's name resource: $($inferredServices -join ', ')." } else { '' }))
     }
 }
 
