@@ -28,8 +28,10 @@
     example.com (HEAD http://example.com/ or CONNECT example.com:443), of
     which only the status line is read; a proxy URL that carries credentials
     is not used. Lateral reach is probed from local configuration only: each
-    default gateway (TCP 80, 443, 53), each private-range DNS server (TCP 53)
-    and one loopback port; no other hosts are discovered or scanned. An
+    default gateway (TCP 80, 443, 53), each private-range DNS server (TCP 53),
+    one loopback port and each local TCP listener on a loopback or wildcard
+    address, probed through loopback; no other hosts are discovered or
+    scanned. An
     explicit local denial (WSAEACCES, typically Windows Firewall) counts as a
     block; a refused connection counts as reach. Use -SkipCheck NETWORK to run
     without network probes.

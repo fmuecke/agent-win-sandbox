@@ -51,6 +51,10 @@ Run once from an elevated PowerShell:
 .\Setup-AgentSandbox.ps1
 ```
 
+Run setup and removal only from a reviewed release or a clone the agent
+cannot write. An elevated script in an agent-writable checkout runs whatever
+the agent changed in it, with administrator rights.
+
 Setup optionally deploys the Claude Code managed settings to
 `C:\Program Files\ClaudeCode\managed-settings.json`; it asks before replacing an
 existing file because this policy is machine-wide and shared by every Claude

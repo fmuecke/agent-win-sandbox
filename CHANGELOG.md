@@ -3,6 +3,13 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
+## Unreleased
+
+- Added: `Test-AgentSandboxExposure.ps1` profile `default/5` reports write access outside the workspace (`R-FILES-WRITE`), readable credential files found by name outside the workspace (`R-FILES-SECRETS`) and missing enforced application control (`C-EXEC-POLICY`).
+- Changed: The exposure checker now also flags agent-writable programs and build scripts outside Program Files, every TCP listener reachable through loopback, and agent-writable git hooks or config in a workspace repository owned by another user. Scores from profile `default/4` are not comparable.
+- Changed: The README warns against running setup or removal from a checkout the agent can write.
+- Added: Agent sandbox exposure checker: `Test-AgentSandboxExposure.ps1`
+
 ## 0.8.0 - 2026-09-15
 
 - Changed: Updated the pinned `launch-as` release to `v1.2.0-preview`. Setup now verifies the package and lets `launch-as-admin` install the whole component under `C:\Program Files\launch-as`; it no longer copies individual launch-as executables into ProgramData.
