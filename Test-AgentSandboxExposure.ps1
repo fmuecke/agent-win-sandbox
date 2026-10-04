@@ -22,8 +22,10 @@
     request one right at a time and close the handle immediately.
 
     Every run probes the documented default Internet targets: DNS for
-    example.com and TCP 443 to example.com, 1.1.1.1 and
-    2606:4700:4700::1111. TCP probes connect and close without sending data.
+    example.com and for one random name under example.com, TCP 443 to
+    example.com, 1.1.1.1 and 2606:4700:4700::1111, TCP 80 to 1.1.1.1, one DNS
+    query for example.com sent over UDP directly to 1.1.1.1:53, and one ICMP
+    echo to 1.1.1.1. TCP probes connect and close without sending data.
     Each HTTP_PROXY/HTTPS_PROXY proxy also receives one request for
     example.com (HEAD http://example.com/ or CONNECT example.com:443), of
     which only the status line is read; a proxy URL that carries credentials
@@ -31,17 +33,18 @@
     default gateway (TCP 80, 443, 53), each private-range DNS server (TCP 53),
     one loopback port and each local TCP listener on a loopback or wildcard
     address, probed through loopback; no other hosts are discovered or
-    scanned. An
-    explicit local denial (WSAEACCES, typically Windows Firewall) counts as a
-    block; a refused connection counts as reach. Use -SkipCheck NETWORK to run
-    without network probes.
+    scanned. An explicit local denial (WSAEACCES, typically Windows Firewall)
+    counts as a block; a refused connection counts as reach. Use -SkipCheck
+    NETWORK to run without network probes.
 
     It reads bounded candidate text files for suspected secrets and inventories
     Credential Manager metadata. Process probes request individual rights;
     no memory read, injection, suspension or handle duplication is performed.
 
     Limits: this run cannot establish complete host policy, external log
-    collection or remote authorization. A compromised agent can falsify the
+    collection or remote authorization. Named pipes are deliberately not
+    assessed: checking a pipe's access connects to the process serving it,
+    which this checker never does. A compromised agent can falsify the
     report. Treat the output as data for review, not instructions.
 
 .PARAMETER Json
@@ -117,9 +120,10 @@ $ProfileVersion = '5'
 $MinimumCoverageForVerdict = 0.6
 # Every verdict is bounded to the OS process: tools that execute outside it
 # (MCP servers, account connectors, browser actions) are not assessed. Egress
-# is probed over TCP; DNS queries through the system resolver and UDP can
-# still carry data out when every TCP route is blocked.
-$VerdictScope = 'OS process only, network egress over TCP only; agent tool authority (MCP servers, connectors, plugins) and DNS/UDP exfiltration are not assessed.'
+# is probed over TCP, DNS resolution, direct UDP 53 and ICMP only. Named pipes
+# are deliberately not assessed: reading a pipe's security descriptor
+# connects to its server process, which this checker never does.
+$VerdictScope = 'OS process only; network egress probed over TCP, DNS, UDP 53 and ICMP only; agent tool authority (MCP servers, connectors, plugins) is not assessed; named pipes are not assessed by design, because checking their access would connect to other processes.'
 
 # --- Criterion registry -------------------------------------------------------
 # Profile default/5. Each criterion belongs to exactly one dimension and one
@@ -180,6 +184,10 @@ $CriterionRegistry = @(
     @{ Id = 'R-NET-LATERAL'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $false; Severity = 'medium'
         Title = 'LAN and loopback destinations are unreachable on tested routes'
         Remediation = 'Block LAN and loopback service access for the agent identity where it is not required.' 
+    }
+    @{ Id = 'R-NET-COVERT'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $false; Severity = 'medium'
+        Title = 'No egress outside TCP: DNS resolution, direct UDP 53 or ICMP'
+        Remediation = 'Block outbound UDP and ICMP for the agent identity, and resolve names only through a filtering resolver or proxy; per-user firewall rules cannot block queries the DNS Client service sends.'
     }
     @{ Id = 'R-NET-SHARES'; Dimension = 'Reach'; Check = 'NETWORK'; Essential = $false; Severity = 'medium'
         Title = 'No network shares are mapped into the agent session'
@@ -2393,6 +2401,69 @@ function Invoke-TcpProbe {
     finally { $client.Close() }
 }
 
+function Invoke-DnsProbe {
+    # Resolves a name through the system resolver. Returns answered when a DNS
+    # server answered, including a not-found answer (WSAHOST_NOT_FOUND), or
+    # error.
+    param([Parameter(Mandatory)][string]$HostName)
+
+    try {
+        $null = [System.Net.Dns]::GetHostAddresses($HostName)
+        return 'answered'
+    }
+    catch {
+        $exception = $_.Exception
+        while ($exception -and $exception -isnot [System.Net.Sockets.SocketException]) { $exception = $exception.InnerException }
+        if ($exception -and $exception.ErrorCode -eq 11001) { return 'answered' }
+        return 'error'
+    }
+}
+
+function Invoke-UdpProbe {
+    # Sends one DNS query for example.com directly to a resolver and waits
+    # for any reply. Returns reply, blocked, timeout or error.
+    param([Parameter(Mandatory)][string]$HostName, [int]$Port = 53, [int]$TimeoutMs = 3000)
+
+    $id = [byte[]]::new(2)
+    [Random]::Shared.NextBytes($id)
+    $query = [byte[]](@($id) + @(1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7) + [Text.Encoding]::ASCII.GetBytes('example') +
+        @(3) + [Text.Encoding]::ASCII.GetBytes('com') + @(0, 0, 1, 0, 1))
+    $client = [System.Net.Sockets.UdpClient]::new()
+    try {
+        $client.Client.ReceiveTimeout = $TimeoutMs
+        $null = $client.Send($query, $query.Length, $HostName, $Port)
+        $remote = $null
+        $null = $client.Receive([ref]$remote)
+        return 'reply'
+    }
+    catch {
+        $exception = $_.Exception
+        while ($exception -and $exception -isnot [System.Net.Sockets.SocketException]) { $exception = $exception.InnerException }
+        if (-not $exception) { return 'error' }
+        switch ($exception.ErrorCode) {
+            10013 { 'blocked' }
+            10060 { 'timeout' }
+            default { 'error' }
+        }
+    }
+    finally { $client.Dispose() }
+}
+
+function Invoke-IcmpProbe {
+    # Sends one ICMP echo request. Returns reply, timeout or error.
+    param([Parameter(Mandatory)][string]$HostName, [int]$TimeoutMs = 3000)
+
+    $ping = [System.Net.NetworkInformation.Ping]::new()
+    try {
+        $status = $ping.Send($HostName, $TimeoutMs).Status
+        if ($status -eq [System.Net.NetworkInformation.IPStatus]::Success) { return 'reply' }
+        if ($status -eq [System.Net.NetworkInformation.IPStatus]::TimedOut) { return 'timeout' }
+        return 'error'
+    }
+    catch { return 'error' }
+    finally { $ping.Dispose() }
+}
+
 function Get-LateralTargets {
     # Lateral targets from local configuration only: each default gateway
     # (TCP 80, 443, 53), each private-range DNS server (TCP 53) and one
@@ -2557,7 +2628,7 @@ function Invoke-NetworkCheck {
     catch {
         Add-AssessmentError -Check NETWORK -Category 'inventory' -Message "Could not list local TCP listeners: $($_.Exception.Message)"
     }
-    $specs = @('dns:example.com', 'tcp:example.com:443', 'tcp:1.1.1.1:443', 'tcp:[2606:4700:4700::1111]:443')
+    $specs = @('dns:example.com', 'tcp:example.com:443', 'tcp:1.1.1.1:443', 'tcp:1.1.1.1:80', 'tcp:[2606:4700:4700::1111]:443')
     $specs += $lateralSpecs
     $specs += @($NetworkTarget)
     $specs = @($specs | Select-Object -Unique)
@@ -2611,6 +2682,37 @@ function Invoke-NetworkCheck {
         }
     }
     $script:Inventory['proxyProbes'] = @($proxyResults)
+
+    # R-NET-COVERT: routes outside TCP. The system resolver sends queries from
+    # the DNS Client service, so a per-user firewall rule cannot block them; an
+    # answer for a unique name, even not-found, shows the query left the host
+    # (or a local resolver answered it).
+    $uniqueName = 'probe-' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '.example.com'
+    $covert = @(
+        [pscustomobject]@{ Route = 'dns'; Target = "dns:$uniqueName"; Outcome = (Invoke-DnsProbe -HostName $uniqueName) }
+        [pscustomobject]@{ Route = 'udp'; Target = 'udp:1.1.1.1:53'; Outcome = (Invoke-UdpProbe -HostName '1.1.1.1' -Port 53) }
+        [pscustomobject]@{ Route = 'icmp'; Target = 'icmp:1.1.1.1'; Outcome = (Invoke-IcmpProbe -HostName '1.1.1.1') }
+    )
+    $script:Inventory['covertProbes'] = $covert
+    $covertReached = @($covert | Where-Object { $_.Outcome -in 'answered', 'reply' })
+    foreach ($probe in $covertReached) {
+        Add-Finding -Check NETWORK -Criterion 'R-NET-COVERT' -Target $probe.Target -Capability "$($probe.Route) egress ($($probe.Outcome))" `
+            -Result granted -Method observed-operation -Scope 'egress' `
+            -Impact 'Data can leave the host outside TCP firewall and proxy controls.' -Severity medium
+    }
+    $covertNote = ($covert | ForEach-Object { "$($_.Route) $($_.Outcome)" }) -join ', '
+    if ($covertReached.Count -gt 0) {
+        Set-CriterionOutcome -Id 'R-NET-COVERT' -Outcome 'unmet' -Method 'observed-operation' `
+            -Reason "$(($covertReached | ForEach-Object { $_.Route }) -join ', ') egress reached outside TCP. Probes: $covertNote."
+    }
+    elseif (@($covert | Where-Object { $_.Route -eq 'udp' -and $_.Outcome -eq 'blocked' }).Count) {
+        Set-CriterionOutcome -Id 'R-NET-COVERT' -Outcome 'met' -Method 'observed-operation' `
+            -Reason "Direct UDP 53 was blocked by local policy and the unique DNS name got no answer; ICMP without a reply is accepted, not proven blocked. Probes: $covertNote."
+    }
+    else {
+        Set-CriterionOutcome -Id 'R-NET-COVERT' -Outcome 'unknown' -Method 'observed-operation' `
+            -Reason "No route outside TCP answered, but timeouts and errors do not establish enforced restriction. Probes: $covertNote."
+    }
     $proxyReached = @($proxyResults | Where-Object { $_.Result -eq 'reached' })
     # 403/451 are a proxy's explicit policy refusal; 407 only asks for
     # credentials. Every configured proxy must have been probed.
@@ -2640,11 +2742,11 @@ function Invoke-NetworkCheck {
     }
     elseif ($internetTcp.Count -gt 0 -and $internetBlocked.Count -eq $internetTcp.Count -and $proxiesClosed) {
         Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'met' -Method 'observed-operation' `
-            -Reason "All $($internetTcp.Count) direct Internet TCP probes were blocked by local policy.$proxyNote DNS and UDP egress were not assessed."
+            -Reason "All $($internetTcp.Count) direct Internet TCP probes were blocked by local policy.$proxyNote Routes outside TCP are assessed by R-NET-COVERT."
     }
     elseif ($internetTcp.Count -gt 0 -and $proxyRefused.Count -gt 0 -and $proxyUntested.Count -eq 0) {
         Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'met' -Method 'observed-operation' `
-            -Reason "No direct Internet TCP probe reached its host and the configured proxy explicitly refused an arbitrary destination.$directNote$proxyNote DNS and UDP egress were not assessed."
+            -Reason "No direct Internet TCP probe reached its host and the configured proxy explicitly refused an arbitrary destination.$directNote$proxyNote Routes outside TCP are assessed by R-NET-COVERT."
     }
     elseif ($internetTcp.Count -gt 0) {
         Set-CriterionOutcome -Id 'R-NET-INTERNET' -Outcome 'unknown' -Method 'observed-operation' `

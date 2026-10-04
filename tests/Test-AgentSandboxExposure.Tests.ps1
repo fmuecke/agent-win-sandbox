@@ -7,6 +7,11 @@ $start = $ast.ParamBlock.Extent.EndOffset
 $end = $source.IndexOf('# --- Main ')
 Invoke-Expression $source.Substring($start, $end - $start)
 
+# Offline defaults for probes outside TCP; cases override them locally.
+function Invoke-DnsProbe { 'error' }
+function Invoke-UdpProbe { 'timeout' }
+function Invoke-IcmpProbe { 'timeout' }
+
 Add-Type -TypeDefinition @'
 using System.Collections.Generic;
 public sealed class TestAccessResult { public uint Granted; public int Error; }
@@ -1512,7 +1517,7 @@ finally {
         function Invoke-UdpProbe { param($HostName, $Port) $script:probes.Add("udp:${HostName}:$Port"); 'blocked' }
         function Invoke-IcmpProbe { param($HostName) $script:probes.Add("icmp:$HostName"); 'blocked' }
     }
-    Test-Case 'Unique DNS names, direct UDP, ICMP and a non-443 TCP port are probed on every run' -Pending {
+    Test-Case 'Unique DNS names, direct UDP, ICMP and a non-443 TCP port are probed on every run' {
         . Set-BlockedEgressMocks
         Invoke-NetworkCheck
         $dnsNames = @($script:probes | Where-Object { $_ -like 'dns:*' -and $_ -ne 'dns:example.com' })
@@ -1523,10 +1528,10 @@ finally {
         Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome 'met'
     }
     foreach ($case in @(
-            @{ Name = 'a resolved unique DNS name'; Mock = 'Invoke-DnsProbe'; Result = 'resolved' },
+            @{ Name = 'an answered unique DNS name'; Mock = 'Invoke-DnsProbe'; Result = 'answered' },
             @{ Name = 'a direct UDP reply'; Mock = 'Invoke-UdpProbe'; Result = 'reply' },
             @{ Name = 'an ICMP echo reply'; Mock = 'Invoke-IcmpProbe'; Result = 'reply' })) {
-        Test-Case "Covert egress through $($case.Name) is unmet while TCP is blocked" -Pending {
+        Test-Case "Covert egress through $($case.Name) is unmet while TCP is blocked" {
             . Set-BlockedEgressMocks
             Set-Item -Path "Function:\$($case.Mock)" -Value ([scriptblock]::Create("'$($case.Result)'"))
             Invoke-NetworkCheck
@@ -1534,15 +1539,16 @@ finally {
             Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome 'unmet'
         }
     }
-    Test-Case 'Timed-out UDP and ICMP probes leave covert egress unknown' -Pending {
+    Test-Case 'Timed-out UDP and ICMP probes leave covert egress unknown' {
         . Set-BlockedEgressMocks
         function Invoke-UdpProbe { 'timeout' }
         function Invoke-IcmpProbe { 'timeout' }
         Invoke-NetworkCheck
         Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome 'unknown'
     }
-    Test-Case 'The verdict scope no longer excludes DNS and UDP egress' -Pending {
+    Test-Case 'The verdict scope covers DNS and UDP and states that named pipes are not assessed' {
         Assert-Equal ($VerdictScope -match 'DNS/UDP') $false
+        Assert-Equal ($VerdictScope -match 'named pipes are not assessed by design') $true
     }
 
     # Medium: loopback services.
@@ -1638,19 +1644,6 @@ finally {
         function Get-AppLockerPolicy { throw [System.Management.Automation.CommandNotFoundException]::new('module could not be loaded') }
         Invoke-ExecutionPolicyCheck
         Assert-Equal $script:Criteria['C-EXEC-POLICY'].Outcome 'unknown'
-    }
-
-    # Low: named pipe ACLs. Scheduled-task persistence needs a registration and
-    # belongs in Test-AgentSandboxAttackSurfaces.ps1, not this read-only checker.
-    Test-Case 'A named pipe that grants the agent write access is reported' -Pending {
-        function Get-Process { @() }
-        function Get-NamedPipes { 'codex-ipc', 'other-pipe' }
-        [AgentSandboxAssessmentNative]::NamedPath = '\\.\pipe\codex-ipc'
-        [AgentSandboxAssessmentNative]::NamedGranted = 0x2
-        Invoke-ProcessesCheck
-        Assert-Equal $script:Criteria['A-IPC-PIPES'].Outcome 'unmet'
-        $targets = @($script:Findings | Where-Object { $_.Criterion -eq 'A-IPC-PIPES' } | ForEach-Object { $_.Target })
-        Assert-Equal ($targets -join ',') '\\.\pipe\codex-ipc'
     }
 
     # Low: git trust. Git refuses repositories owned by another account unless

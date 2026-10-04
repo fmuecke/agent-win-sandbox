@@ -7,6 +7,7 @@ Git log.
 
 - Added: `Test-AgentSandboxExposure.ps1` profile `default/5` reports write access outside the workspace (`R-FILES-WRITE`), readable credential files found by name outside the workspace (`R-FILES-SECRETS`) and missing enforced application control (`C-EXEC-POLICY`).
 - Changed: The exposure checker now also flags agent-writable programs and build scripts outside Program Files, every TCP listener reachable through loopback, and agent-writable git hooks or config in a workspace repository owned by another user. Scores from profile `default/4` are not comparable.
+- Added: The exposure checker reports egress outside TCP (`R-NET-COVERT`): DNS answers for a unique random name, one direct UDP 53 query and one ICMP echo, plus TCP 80 as an extra default Internet target. Every verdict states that named pipes are not assessed by design.
 - Changed: The README warns against running setup or removal from a checkout the agent can write.
 - Added: Agent sandbox exposure checker: `Test-AgentSandboxExposure.ps1`
 
