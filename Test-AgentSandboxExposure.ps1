@@ -61,6 +61,12 @@
 .PARAMETER Workspace
     The agent workspace. Defaults to the current directory.
 
+.PARAMETER SandboxPath
+    Folders the agent owns and may fully use, such as C:\AgentSandbox. Like
+    the workspace, they are not counted as reach outside the workspace.
+    Drive roots and system folders are ignored. Every report lists the
+    folders used, so a reviewer can see what was excluded.
+
 .PARAMETER NetworkTarget
     Additional probe targets, for example a NAS or another PC. Forms:
     dns:<name>, tcp:<host>:<port>, smb:<host> (TCP 445). Use brackets for
@@ -100,6 +106,7 @@ param(
     [switch]$Json,
     [switch]$Brief,
     [string]$Workspace,
+    [string[]]$SandboxPath = @(),
     [string[]]$NetworkTarget = @(),
     [string]$PolicyPath,
     [string]$OutputDirectory,
@@ -982,6 +989,7 @@ $script:Errors = New-Object System.Collections.Generic.List[object]
 $script:Inventory = [ordered]@{}
 $script:UserProfile = $null
 $script:WorkspacePath = $null
+$script:SandboxPaths = @()
 $script:OtherProfiles = @()
 $script:NetworkProbed = $false
 $script:NetworkTargetsUsed = @()
@@ -2021,6 +2029,31 @@ function Invoke-MonitoringCheck {
 
 # --- FILES --------------------------------------------------------------------
 
+function Resolve-SandboxPaths {
+    # Full paths of the declared agent-owned folders. A drive root or system
+    # folder would hide everything beneath it, so those are ignored.
+    param([string[]]$Path)
+
+    $systemRoots = @($env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
+        (Join-Path $env:SystemDrive 'Users')) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') }
+    foreach ($candidate in @($Path | Where-Object { $_ })) {
+        $full = [IO.Path]::GetFullPath($candidate).TrimEnd('\')
+        if ($full -match '^[A-Za-z]:$' -or $full -match '^\\\\[^\\]+\\[^\\]+$' -or $systemRoots -contains $full) {
+            Write-Diag "Ignored sandbox path (drive root or system folder): $candidate"
+            continue
+        }
+        $full
+    }
+}
+
+function Test-InSandboxPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $full = $Path.TrimEnd('\')
+    return [bool]@($script:SandboxPaths | Where-Object {
+            $full -eq $_ -or $full.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) }).Count
+}
+
 function Get-AdjacentDirectories {
     param([string[]]$DriveRoot, [int]$MaxTargets = 200)
 
@@ -2053,7 +2086,8 @@ function Get-AdjacentDirectories {
         foreach ($directory in $children) {
             $full = $directory.FullName.TrimEnd('\')
             if ($systemRoots -contains $full -or $ancestors -contains $full -or
-                $full.StartsWith($workspace + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+                $full.StartsWith($workspace + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                (Test-InSandboxPath $full)) { continue }
             if ($paths.Contains($directory.FullName)) { continue }
             if ($paths.Count -ge $MaxTargets) { $incomplete = $true; break }
             $paths.Add($directory.FullName)
@@ -4426,6 +4460,9 @@ function Write-HumanReport {
     Write-Host ("Identity: {0} (SID {1}), integrity {2}, elevated {3}, session {4}" -f `
             $Context.userName, $Context.userSid, $Context.integrityLevel, $Context.isElevated, $Context.sessionId)
     Write-Host ("Profile {0}/{1}  checker {2}  {3}" -f $ProfileId, $ProfileVersion, $CheckerVersion, $Context.timestampUtc) -ForegroundColor DarkGray
+    if ($script:SandboxPaths.Count -gt 0) {
+        Write-Host ("Sandbox folders (agent-owned, not counted as reach): {0}" -f ($script:SandboxPaths -join ', ')) -ForegroundColor DarkGray
+    }
     if ($Brief) {
         Write-Host ''
         Write-Host 'Dimensions:' -ForegroundColor Cyan
@@ -4515,6 +4552,9 @@ function Get-MarkdownReport {
     $lines.Add("- Evidence coverage: $([int]($Measure.Coverage * 100))%")
     $lines.Add("- Identity: $($Context.userName) (integrity $($Context.integrityLevel), elevated $($Context.isElevated))")
     $lines.Add("- Profile $ProfileId/$ProfileVersion, checker $CheckerVersion, $($Context.timestampUtc)")
+    if ($script:SandboxPaths.Count -gt 0) {
+        $lines.Add("- Sandbox folders (agent-owned, not counted as reach): $($script:SandboxPaths -join ', ')")
+    }
     $lines.Add('')
     $lines.Add('## Dimensions')
     $lines.Add('')
@@ -4546,6 +4586,7 @@ if ($Workspace) {
 else {
     $script:WorkspacePath = (Get-Location).Path
 }
+$script:SandboxPaths = @(Resolve-SandboxPaths -Path $SandboxPath)
 
 if ($PolicyPath -and -not (Test-Path -LiteralPath $PolicyPath -PathType Leaf)) {
     Write-Diag "Policy file not found: $PolicyPath"
@@ -4652,6 +4693,7 @@ $report = [ordered]@{
     executionContext  = $context
     scope             = [ordered]@{
         workspace            = (Format-SafePath $script:WorkspacePath)
+        sandboxPaths         = @($script:SandboxPaths | ForEach-Object { Format-SafePath $_ })
         checksEvaluated      = @($implementedAreas | Where-Object { $SkipCheck -notcontains $_ })
         checksSkipped        = @($SkipCheck)
         checksNotImplemented = @($notImplementedAreas)

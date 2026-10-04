@@ -105,6 +105,7 @@ function Test-Case {
     $env:HTTP_PROXY = $null
     $env:HTTPS_PROXY = $null
     $env:CLAUDECODE = $null
+    $script:SandboxPaths = @()
     $script:Findings.Clear()
     $script:Errors.Clear()
     $script:Inventory.Clear()
@@ -833,6 +834,21 @@ try {
         $result = Get-AdjacentDirectories -DriveRoot @()
         Assert-Equal (@($result.Paths) -contains $sibling) $true
         Assert-Equal (@($result.Paths) -contains $script:WorkspacePath) $false
+    }
+    Test-Case 'Declared sandbox folders are not adjacent reach' {
+        $script:WorkspacePath = Join-Path $testRoot 'sandbox-ws\workspace'
+        $sandbox = Join-Path $testRoot 'sandbox-ws\agent-owned'
+        $other = Join-Path $testRoot 'sandbox-ws\other'
+        New-Item -ItemType Directory -Path $script:WorkspacePath, $sandbox, $other -Force | Out-Null
+        $script:SandboxPaths = @(Resolve-SandboxPaths -Path ($sandbox + '\'))
+        $result = Get-AdjacentDirectories -DriveRoot @()
+        Assert-Equal (@($result.Paths) -contains $sandbox) $false
+        Assert-Equal (@($result.Paths) -contains $other) $true
+    }
+    Test-Case 'Drive roots and system folders are not accepted as sandbox folders' {
+        $kept = Join-Path $testRoot 'agent-owned'
+        $resolved = @(Resolve-SandboxPaths -Path 'C:\', 'D:', $env:SystemRoot, $env:ProgramFiles, (Join-Path $env:SystemDrive 'Users'), '\\server\share', $kept 6>$null 2>$null)
+        Assert-Equal ($resolved -join ',') $kept
     }
     Test-Case 'Nested control files are checked independently' {
         $nested = Join-Path $script:WorkspacePath 'bootstrap'

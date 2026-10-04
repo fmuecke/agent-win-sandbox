@@ -5,17 +5,27 @@ Git log.
 
 ## Unreleased
 
-- Added: `Test-AgentSandboxExposure.ps1` profile `default/5` reports write access outside the workspace (`R-FILES-WRITE`), readable credential files found by name outside the workspace (`R-FILES-SECRETS`) and missing enforced application control (`C-EXEC-POLICY`).
-- Changed: The exposure checker now also flags agent-writable programs and build scripts outside Program Files, every TCP listener reachable through loopback, and agent-writable git hooks or config in a workspace repository owned by another user. Scores from profile `default/4` are not comparable.
-- Added: The exposure checker reports egress outside TCP (`R-NET-COVERT`): DNS answers for a unique random name, one direct UDP 53 query and one ICMP echo, plus TCP 80 as an extra default Internet target. Every verdict states that named pipes are not assessed by design.
+- Changed: `Test-AgentSandboxExposure.ps1` advances to checker `0.2.0`, profile `default/5`, with evidence coverage weighted equally across dimensions. Scores from earlier profiles are not comparable.
+- Added: Bounded secret-content scanning and Credential Manager metadata inventory. The scanner handles quoted JSON keys and UTF-16, excludes links and detectable cloud placeholders, and reports suspected secret locations without values.
+- Added: Individual cross-process permission probes, including higher-integrity processes of the same account, and comparisons of held handles against the current token's authority. Granted permissions are reported without claiming successful injection.
+- Added: Checks for write access and credential files outside the workspace, agent-writable programs and build scripts in adjacent trees, and writable git hooks or config in a workspace repository owned by another user. Credential discovery in adjacent trees uses file names only.
+- Changed: Network probes run by default; `-ProbeNetwork` is removed. Use `-SkipCheck NETWORK` to disable them. Targets include configured proxies, gateways, private DNS servers and loopback TCP listeners; connection refusals count as reach, explicit local denials as blocks, and timeouts as unknown.
+- Added: Egress checks beyond TCP: unique-name DNS, one direct UDP 53 query and one ICMP echo, plus TCP 80 as an extra Internet target. Every verdict states its OS-process scope, excludes external agent-tool authority, and identifies named pipes as unassessed by design.
+- Changed: Policy checks now require enforced WDAC or AppLocker for application control, validate Claude Code managed-policy ownership and permission rules, and assess proxy bypass using route evidence. Logging detection recognizes PowerShell 7 policy and running process-monitoring sensors.
+- Changed: Service and scheduled-task checks cover unquoted executable paths, service DLLs, script arguments, COM handlers and creation rights for missing executables. Service permissions are requested individually.
+- Fixed: Unresolved access, failed enumeration and incomplete secret scans remain unknown instead of earning protection credit. Reports and diagnostics redact token-bearing metadata; Git credential helpers without stored credentials and obvious placeholder secrets no longer produce exposure findings.
+- Fixed: A loaded native probe from an older checker now stops the run with instructions to start a fresh PowerShell session.
+- Added: A progress indicator during initialization and checks, suppressed in JSON mode and when stderr is redirected.
+- Added: `-SandboxPath` declares agent-owned folders, such as `C:\AgentSandbox`, that the exposure checker treats like the workspace. Reports list them; drive roots and system folders are ignored.
+- Added: Native Python WSL diagnostics in `tools/check-wsl-containment.py` and `tools/test_wsl_sandbox_exposure.py`, with human and JSON reports for Windows bridges, Linux authority and containment. The broader checker also provides bounded secret scanning, optional TCP probes and policy comparison; its scores are separate from the Windows profile.
 - Changed: The README warns against running setup or removal from a checkout the agent can write.
-- Added: Agent sandbox exposure checker: `Test-AgentSandboxExposure.ps1`
 
 ## 0.8.0 - 2026-09-15
 
 - Changed: Updated the pinned `launch-as` release to `v1.2.0-preview`. Setup now verifies the package and lets `launch-as-admin` install the whole component under `C:\Program Files\launch-as`; it no longer copies individual launch-as executables into ProgramData.
 - Changed: Supported brokered installations from `v1.0.0-preview`, `v1.1.0-preview`, and `v1.1.0` update in place. Unknown or incomplete installations still require removal with their matching Agent Sandbox version.
-- Changed: Setup now proposes `C:\AgentSandbox` as the complete workspace path. It no longer treats `C:\dev` as a base directory and appends an `AgentSandbox` child folder.
+- Changed: Setup replaces `-BasePath` with `-SandboxPath` and proposes `C:\AgentSandbox` as the complete workspace path. It no longer appends an `AgentSandbox` child folder to a base directory.
+- Changed: Removal supports the known broker versions and leaves the shared `launch-as` component installed for other managed accounts. The installed-state checker verifies its Program Files directory and executable permissions.
 
 ## 0.7.1 — 2026-09-13
 
