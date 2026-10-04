@@ -80,8 +80,20 @@ function Assert-Equal {
     if ($Actual -ne $Expected) { throw "Expected '$Expected', got '$Actual'." }
 }
 
+function New-PathAccessFixture {
+    param([string]$Path, [string]$Read = 'denied', [string]$Write = 'denied')
+    [pscustomobject]@{
+        Path = $Path; Exists = $true; IsDirectory = $false; Method = 'permission-analysis'; ErrorCategory = $null
+        Read = $Read; Create = 'denied'; Write = $Write; Delete = 'denied'
+        ChangeAcl = 'denied'; TakeOwnership = 'denied'; DeleteChild = 'denied'
+    }
+}
+
 function Test-Case {
-    param([string]$Name, [scriptblock]$Body)
+    # -Pending marks a known checker gap (docs/exposure-checker-gaps.md): its
+    # failure is reported, not counted. A pending case that passes fails the
+    # run so the marker is removed when the gap is closed.
+    param([string]$Name, [scriptblock]$Body, [switch]$Pending)
     $script:WorkspacePath = Join-Path $testRoot ([guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $script:WorkspacePath | Out-Null
     $env:USERPROFILE = Join-Path $testRoot 'empty-profile'
@@ -115,12 +127,21 @@ function Test-Case {
     [AgentSandboxAssessmentNative]::Handles.Clear()
     try {
         & $Body
+        if ($Pending) {
+            $failures.Add("${Name}: passes now; remove -Pending.")
+            Write-Host "FAIL $Name (pending case passed)"
+            return
+        }
         Write-Host "PASS $Name"
     }
     catch {
         # 'SKIP: <reason>' marks an environment precondition, not a failure.
         if ($_.Exception.Message -like 'SKIP:*') {
             Write-Host "SKIP $Name ($($_.Exception.Message.Substring(5).Trim()))"
+            return
+        }
+        if ($Pending) {
+            Write-Host "PENDING $Name ($($_.Exception.Message))"
             return
         }
         $failures.Add("${Name}: $($_.Exception.Message)")
@@ -1397,6 +1418,257 @@ finally {
             if ($process.ExitCode -ne 0) { throw "Native fixture check failed: $diagnostics" }
         }
         finally { $process.Dispose() }
+    }
+
+    # --- Known checker gaps (docs/exposure-checker-gaps.md) -------------------
+    # New criterion IDs and probe seams below are proposals; rename them here
+    # when the implementation chooses differently.
+
+    function New-AdjacentFixture {
+        param([string[]]$File = @())
+        $root = Join-Path $testRoot ('adjacent-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root | Out-Null
+        foreach ($relative in $File) {
+            $path = Join-Path $root $relative
+            New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+            [IO.File]::WriteAllText($path, 'synthetic')
+        }
+        return $root
+    }
+
+    # High: write reach outside the workspace.
+    foreach ($case in @(@{ Write = 'granted'; Expected = 'unmet' }, @{ Write = 'denied'; Expected = 'met' })) {
+        Test-Case "Write reach to an adjacent directory ($($case.Write)) is $($case.Expected)" {
+            $script:adjacent = New-AdjacentFixture -File 'data.txt'
+            function Get-AdjacentDirectories { [pscustomobject]@{ Paths = @($script:adjacent); Incomplete = $false; MaxTargets = 200 } }
+            function Get-PathAccess {
+                param($Path)
+                New-PathAccessFixture -Path $Path -Write $(if ($Path -like "$script:adjacent*") { $case.Write } else { 'denied' })
+            }
+            Invoke-FilesCheck
+            Assert-Equal $script:Criteria['R-FILES-WRITE'].Outcome $case.Expected
+        }
+    }
+
+    # High: handoff through binaries and repos the human runs.
+    Test-Case 'An agent-writable program in an adjacent tree is a shared execution location' {
+        $script:adjacent = New-AdjacentFixture -File 'tool.exe', 'lib\helper.dll', 'readme.txt'
+        $script:OtherProfiles = @()
+        function Get-AdjacentDirectories { [pscustomobject]@{ Paths = @($script:adjacent); Incomplete = $false; MaxTargets = 200 } }
+        function Get-PathAccess {
+            param($Path)
+            New-PathAccessFixture -Path $Path -Write $(if ($Path -like "$script:adjacent\*") { 'granted' } else { 'denied' })
+        }
+        Invoke-HandoffCheck
+        Assert-Equal $script:Criteria['A-HANDOFF-SHARED'].Outcome 'unmet'
+        $targets = @($script:Findings | Where-Object { $_.Criterion -eq 'A-HANDOFF-SHARED' } | ForEach-Object { $_.Target })
+        Assert-Equal (@($targets | Where-Object { $_ -like '*tool.exe' }).Count) 1
+        Assert-Equal (@($targets | Where-Object { $_ -like '*helper.dll' }).Count) 1
+        Assert-Equal (@($targets | Where-Object { $_ -like '*readme.txt' }).Count) 0
+    }
+    Test-Case 'The adjacent program search is bounded per root and reports its limit' {
+        $large = New-AdjacentFixture -File 'a.exe', 'b.exe', 'sub\c.dll', 'notes.txt'
+        $small = New-AdjacentFixture -File 'tool.exe'
+        $result = Get-HandoffArtifacts -Root $large, $small -MaxPerRoot 2
+        Assert-Equal $result.Paths.Count 3
+        Assert-Equal (@($result.Paths) -contains (Join-Path $small 'tool.exe')) $true
+        Assert-Equal $result.Incomplete $true
+        $all = Get-HandoffArtifacts -Root $large
+        Assert-Equal $all.Paths.Count 3
+        Assert-Equal $all.Incomplete $false
+    }
+    Test-Case 'Writable build entry points of an adjacent repository are shared execution locations' {
+        $script:adjacent = New-AdjacentFixture -File 'build.ps1', 'CMakeLists.txt', '.git\hooks\pre-commit.sample'
+        $script:OtherProfiles = @()
+        function Get-AdjacentDirectories { [pscustomobject]@{ Paths = @($script:adjacent); Incomplete = $false; MaxTargets = 200 } }
+        function Get-PathAccess {
+            param($Path)
+            New-PathAccessFixture -Path $Path -Write $(if ($Path -like "$script:adjacent\*") { 'granted' } else { 'denied' })
+        }
+        Invoke-HandoffCheck
+        $targets = @($script:Findings | Where-Object { $_.Criterion -eq 'A-HANDOFF-SHARED' } | ForEach-Object { $_.Target })
+        foreach ($name in @('*build.ps1', '*CMakeLists.txt', '*.git\hooks')) {
+            if (-not @($targets | Where-Object { $_ -like $name }).Count) { throw "No A-HANDOFF-SHARED finding for $name." }
+        }
+    }
+
+    # High: workspace control scripts.
+    Test-Case 'The control-integrity remediation names running elevated scripts from an agent-writable checkout' {
+        Assert-Equal ($script:Criteria['C-POLICY-INTEGRITY'].Remediation -match 'elevated') $true
+    }
+
+    # Medium: egress outside TCP 443. DNS through the system resolver is sent by
+    # the DNS Client service, so a per-user firewall rule cannot block it.
+    # Dot-source so the mocks stay local to the calling case.
+    function Set-BlockedEgressMocks {
+        $script:NetworkTarget = @()
+        $script:probes = [Collections.Generic.List[string]]::new()
+        function Get-LateralTargets { @() }
+        function Get-CimInstance { @() }
+        function Get-ItemProperty { throw 'No synthetic proxy' }
+        function Get-NetTCPConnection { @() }
+        function Invoke-TcpProbe { param($HostName, $Port) $script:probes.Add("tcp:${HostName}:$Port"); 'blocked' }
+        function Invoke-DnsProbe { param($HostName) $script:probes.Add("dns:$HostName"); 'error' }
+        function Invoke-UdpProbe { param($HostName, $Port) $script:probes.Add("udp:${HostName}:$Port"); 'blocked' }
+        function Invoke-IcmpProbe { param($HostName) $script:probes.Add("icmp:$HostName"); 'blocked' }
+    }
+    Test-Case 'Unique DNS names, direct UDP, ICMP and a non-443 TCP port are probed on every run' -Pending {
+        . Set-BlockedEgressMocks
+        Invoke-NetworkCheck
+        $dnsNames = @($script:probes | Where-Object { $_ -like 'dns:*' -and $_ -ne 'dns:example.com' })
+        if (-not $dnsNames.Count) { throw 'No unique DNS name was probed.' }
+        if (-not @($script:probes | Where-Object { $_ -like 'udp:*:53' }).Count) { throw 'No direct UDP 53 probe.' }
+        if (-not @($script:probes | Where-Object { $_ -like 'icmp:*' }).Count) { throw 'No ICMP probe.' }
+        if (-not @($script:probes | Where-Object { $_ -match '^tcp:(?!127\.).*:(?!443$)\d+$' }).Count) { throw 'No non-443 Internet TCP probe.' }
+        Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome 'met'
+    }
+    foreach ($case in @(
+            @{ Name = 'a resolved unique DNS name'; Mock = 'Invoke-DnsProbe'; Result = 'resolved' },
+            @{ Name = 'a direct UDP reply'; Mock = 'Invoke-UdpProbe'; Result = 'reply' },
+            @{ Name = 'an ICMP echo reply'; Mock = 'Invoke-IcmpProbe'; Result = 'reply' })) {
+        Test-Case "Covert egress through $($case.Name) is unmet while TCP is blocked" -Pending {
+            . Set-BlockedEgressMocks
+            Set-Item -Path "Function:\$($case.Mock)" -Value ([scriptblock]::Create("'$($case.Result)'"))
+            Invoke-NetworkCheck
+            Assert-Equal $script:Criteria['R-NET-INTERNET'].Outcome 'met'
+            Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome 'unmet'
+        }
+    }
+    Test-Case 'Timed-out UDP and ICMP probes leave covert egress unknown' -Pending {
+        . Set-BlockedEgressMocks
+        function Invoke-UdpProbe { 'timeout' }
+        function Invoke-IcmpProbe { 'timeout' }
+        Invoke-NetworkCheck
+        Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome 'unknown'
+    }
+    Test-Case 'The verdict scope no longer excludes DNS and UDP egress' -Pending {
+        Assert-Equal ($VerdictScope -match 'DNS/UDP') $false
+    }
+
+    # Medium: loopback services.
+    Test-Case 'Every loopback and wildcard TCP listener is probed through loopback' {
+        . Set-BlockedEgressMocks
+        function Get-NetTCPConnection {
+            [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 2179; OwningProcess = 101; State = 'Listen' }
+            [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 3240; OwningProcess = 102; State = 'Listen' }
+            [pscustomobject]@{ LocalAddress = '::'; LocalPort = 3389; OwningProcess = 103; State = 'Listen' }
+            [pscustomobject]@{ LocalAddress = '192.168.2.10'; LocalPort = 5000; OwningProcess = 104; State = 'Listen' }
+        }
+        Invoke-NetworkCheck
+        foreach ($expected in @('tcp:127.0.0.1:2179', 'tcp:127.0.0.1:3240', 'tcp:::1:3389')) {
+            if ($script:probes -notcontains $expected) { throw "Listener not probed: $expected." }
+        }
+        Assert-Equal (@($script:probes | Where-Object { $_ -like '*:5000' }).Count) 0
+        Assert-Equal $script:Criteria['R-NET-LATERAL'].Outcome 'met'
+    }
+    Test-Case 'A loopback proxy listener is not probed as lateral reach' {
+        . Set-BlockedEgressMocks
+        $env:HTTP_PROXY = 'http://127.0.0.1:8080'
+        function Invoke-ProxyProbe { 403 }
+        function Get-NetTCPConnection { [pscustomobject]@{ LocalAddress = '127.0.0.1'; LocalPort = 8080; OwningProcess = 101; State = 'Listen' } }
+        Invoke-NetworkCheck
+        Assert-Equal ($script:probes -contains 'tcp:127.0.0.1:8080') $false
+    }
+    Test-Case 'An unreadable listener table is recorded without failing the network check' {
+        . Set-BlockedEgressMocks
+        function Get-NetTCPConnection { throw 'synthetic CIM failure' }
+        Invoke-NetworkCheck
+        Assert-Equal (@($script:Errors | Where-Object { $_.Message -like '*TCP listeners*' }).Count) 1
+    }
+
+    # Medium: high-value files outside the scan scope.
+    Test-Case 'Adjacent trees without credential container names meet the name search' {
+        $script:adjacent = New-AdjacentFixture -File 'notes.txt', 'keys\id_ed25519.pub'
+        function Get-AdjacentDirectories { [pscustomobject]@{ Paths = @($script:adjacent); Incomplete = $false; MaxTargets = 200 } }
+        function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Read granted }
+        Invoke-FilesCheck
+        Assert-Equal $script:Criteria['R-FILES-SECRETS'].Outcome 'met'
+    }
+    Test-Case 'Credential containers in adjacent trees are found by name without reading them' {
+        $script:adjacent = New-AdjacentFixture -File 'signing.pfx', 'keys\id_ed25519', 'vault\db.kdbx', 'notes.txt'
+        # Exclusive handles make any content read fail; a name-only search succeeds.
+        $locks = @('signing.pfx', 'keys\id_ed25519', 'vault\db.kdbx') |
+            ForEach-Object { [IO.File]::Open((Join-Path $script:adjacent $_), 'Open', 'Read', 'None') }
+        try {
+            function Get-AdjacentDirectories { [pscustomobject]@{ Paths = @($script:adjacent); Incomplete = $false; MaxTargets = 200 } }
+            function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Read granted }
+            Invoke-FilesCheck
+            Assert-Equal $script:Criteria['R-FILES-SECRETS'].Outcome 'unmet'
+            $targets = @($script:Findings | Where-Object { $_.Criterion -eq 'R-FILES-SECRETS' } | ForEach-Object { $_.Target })
+            foreach ($name in @('*signing.pfx', '*id_ed25519', '*db.kdbx')) {
+                if (-not @($targets | Where-Object { $_ -like $name }).Count) { throw "No R-FILES-SECRETS finding for $name." }
+            }
+            Assert-Equal (@($targets | Where-Object { $_ -like '*notes.txt' }).Count) 0
+        }
+        finally { $locks | ForEach-Object { $_.Dispose() } }
+    }
+
+    # Medium: code execution policy.
+    foreach ($case in @(
+            @{ Name = 'UMCI off without AppLocker'; Umci = 0; Mode = 'NotConfigured'; Service = 'Stopped'; Expected = 'unmet' },
+            @{ Name = 'UMCI in audit mode'; Umci = 1; Mode = 'NotConfigured'; Service = 'Stopped'; Expected = 'unmet' },
+            @{ Name = 'enforced UMCI'; Umci = 2; Mode = 'NotConfigured'; Service = 'Stopped'; Expected = 'met' },
+            @{ Name = 'enforced AppLocker exe rules'; Umci = 0; Mode = 'Enabled'; Service = 'Running'; Expected = 'met' },
+            @{ Name = 'AppLocker rules without AppIDSvc'; Umci = 0; Mode = 'Enabled'; Service = 'Stopped'; Expected = 'unmet' },
+            @{ Name = 'audit-only AppLocker rules'; Umci = 0; Mode = 'AuditOnly'; Service = 'Running'; Expected = 'unmet' })) {
+        Test-Case "Execution policy with $($case.Name) is $($case.Expected)" {
+            function Get-CimInstance { [pscustomobject]@{ UsermodeCodeIntegrityPolicyEnforcementStatus = $case.Umci } }
+            function Get-AppLockerPolicy {
+                [pscustomobject]@{ RuleCollections = @([pscustomobject]@{ RuleCollectionType = 'Exe'; EnforcementMode = $case.Mode; Count = 3 }) }
+            }
+            function Get-Service { [pscustomobject]@{ Status = $case.Service } }
+            Invoke-ExecutionPolicyCheck
+            Assert-Equal $script:Criteria['C-EXEC-POLICY'].Outcome $case.Expected
+        }
+    }
+    Test-Case 'An unreadable WDAC status without enforced AppLocker leaves execution policy unknown' {
+        function Get-CimInstance { throw 'synthetic access denied' }
+        function Get-AppLockerPolicy { [pscustomobject]@{ RuleCollections = @() } }
+        Invoke-ExecutionPolicyCheck
+        Assert-Equal $script:Criteria['C-EXEC-POLICY'].Outcome 'unknown'
+    }
+    Test-Case 'Missing AppLocker cmdlets count as no AppLocker policy' {
+        function Get-CimInstance { [pscustomobject]@{ UsermodeCodeIntegrityPolicyEnforcementStatus = 0 } }
+        function Get-Command { $null }
+        Invoke-ExecutionPolicyCheck
+        Assert-Equal $script:Criteria['C-EXEC-POLICY'].Outcome 'unmet'
+    }
+    Test-Case 'An AppLocker cmdlet that fails to load leaves execution policy unknown' {
+        function Get-CimInstance { [pscustomobject]@{ UsermodeCodeIntegrityPolicyEnforcementStatus = 0 } }
+        function Get-AppLockerPolicy { throw [System.Management.Automation.CommandNotFoundException]::new('module could not be loaded') }
+        Invoke-ExecutionPolicyCheck
+        Assert-Equal $script:Criteria['C-EXEC-POLICY'].Outcome 'unknown'
+    }
+
+    # Low: named pipe ACLs. Scheduled-task persistence needs a registration and
+    # belongs in Test-AgentSandboxAttackSurfaces.ps1, not this read-only checker.
+    Test-Case 'A named pipe that grants the agent write access is reported' -Pending {
+        function Get-Process { @() }
+        function Get-NamedPipes { 'codex-ipc', 'other-pipe' }
+        [AgentSandboxAssessmentNative]::NamedPath = '\\.\pipe\codex-ipc'
+        [AgentSandboxAssessmentNative]::NamedGranted = 0x2
+        Invoke-ProcessesCheck
+        Assert-Equal $script:Criteria['A-IPC-PIPES'].Outcome 'unmet'
+        $targets = @($script:Findings | Where-Object { $_.Criterion -eq 'A-IPC-PIPES' } | ForEach-Object { $_.Target })
+        Assert-Equal ($targets -join ',') '\\.\pipe\codex-ipc'
+    }
+
+    # Low: git trust. Git refuses repositories owned by another account unless
+    # safe.directory allows them, so the dangerous case is a repository owned
+    # by another identity whose hooks the agent can write.
+    foreach ($case in @(
+            @{ Owner = 'S-1-5-21-101-102-103-1002'; Expected = 1 },
+            @{ Owner = 'S-1-5-21-101-102-103-1001'; Expected = 0 })) {
+        $ownerLabel = if ($case.Expected) { 'another identity' } else { 'the agent' }
+        Test-Case "Writable hooks in a workspace repository owned by $ownerLabel are reported ($($case.Expected))" {
+            New-Item -ItemType Directory -Path (Join-Path $script:WorkspacePath '.git\hooks') | Out-Null
+            $script:OtherProfiles = @()
+            function Get-OwnerSid { $case.Owner }
+            function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Write granted }
+            Invoke-HandoffCheck
+            $hookFindings = @($script:Findings | Where-Object { $_.Criterion -eq 'A-HANDOFF-WORKSPACE' -and $_.Target -like '*.git\hooks' })
+            Assert-Equal $hookFindings.Count $case.Expected
+        }
     }
 }
 finally {

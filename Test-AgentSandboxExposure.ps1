@@ -111,7 +111,7 @@ $WarningPreference = 'SilentlyContinue'
 $SchemaVersion = 'agent-sandbox-assessment/1'
 $CheckerVersion = '0.2.0'
 $ProfileId = 'default'
-$ProfileVersion = '4'
+$ProfileVersion = '5'
 $MinimumCoverageForVerdict = 0.6
 # Every verdict is bounded to the OS process: tools that execute outside it
 # (MCP servers, account connectors, browser actions) are not assessed. Egress
@@ -120,7 +120,7 @@ $MinimumCoverageForVerdict = 0.6
 $VerdictScope = 'OS process only, network egress over TCP only; agent tool authority (MCP servers, connectors, plugins) and DNS/UDP exfiltration are not assessed.'
 
 # --- Criterion registry -------------------------------------------------------
-# Profile default/4. Each criterion belongs to exactly one dimension and one
+# Profile default/5. Each criterion belongs to exactly one dimension and one
 # check area. Essential criteria must be resolved (met or unmet) before a
 # bounded verdict is awarded. Monitoring criteria are nonessential because an
 # inside-only run usually cannot resolve them.
@@ -134,6 +134,14 @@ $CriterionRegistry = @(
     @{ Id = 'R-FILES-ADJACENT'; Dimension = 'Reach'; Check = 'FILES'; Essential = $true; Severity = 'high'
         Title = 'No read access to tested adjacent files or directory listings'
         Remediation = 'Restrict Users/Authenticated Users read ACEs on non-system drive-root folders and workspace siblings, or move the workspace to an isolated tree.' 
+    }
+    @{ Id = 'R-FILES-WRITE'; Dimension = 'Reach'; Check = 'FILES'; Essential = $false; Severity = 'high'
+        Title = 'No write access to tested adjacent files or directories'
+        Remediation = 'Remove Modify ACEs for Authenticated Users or Users inherited from non-system volume roots and drive-root folders, or deny the agent identity write access there.'
+    }
+    @{ Id = 'R-FILES-SECRETS'; Dimension = 'Reach'; Check = 'FILES'; Essential = $false; Severity = 'high'
+        Title = 'No readable credential containers outside the workspace, found by file name'
+        Remediation = 'Move certificates, private keys, password databases, VPN and RDP profiles out of agent-readable folders, or remove the agent identity''s read access to them.'
     }
     @{ Id = 'R-REG-OTHERS'; Dimension = 'Reach'; Check = 'FILES'; Essential = $false; Severity = 'medium'
         Title = 'Other users'' registry hives and SAM/SECURITY are not readable'
@@ -206,11 +214,11 @@ $CriterionRegistry = @(
     }
     @{ Id = 'A-HANDOFF-SHARED'; Dimension = 'Authority'; Check = 'HANDOFF'; Essential = $true; Severity = 'high'
         Title = 'No agent-writable location is executed by other identities'
-        Remediation = 'Remove write/create rights for the agent identity on machine PATH directories, startup locations, Run keys, program directories and other profiles.' 
+        Remediation = 'Remove write/create rights for the agent identity on machine PATH directories, startup locations, Run keys, program directories, other profiles, and programs, DLLs or build scripts outside Program Files that other users run or build.'
     }
     @{ Id = 'A-HANDOFF-WORKSPACE'; Dimension = 'Authority'; Check = 'HANDOFF'; Essential = $true; Severity = 'medium'
         Title = 'Agent-written workspace content is not consumed by another identity'
-        Remediation = 'Review agent output before another identity builds, runs or opens it; use a separate clone or a less privileged consumer.' 
+        Remediation = 'Review agent output before another identity builds, runs or opens it; use a separate clone or a less privileged consumer. Give the agent its own clone, not write access to a repository another user owns, since git runs that repository''s hooks and config for its owner.'
     }
     @{ Id = 'A-REMOTE-DELEGATED'; Dimension = 'Authority'; Check = 'REMOTE'; Essential = $false; Severity = 'high'
         Title = 'No usable remote credentials or delegated sessions'
@@ -227,11 +235,15 @@ $CriterionRegistry = @(
     # Containment
     @{ Id = 'C-POLICY-INTEGRITY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $true; Severity = 'high'
         Title = 'Agent cannot modify its launcher, policy or checker files'
-        Remediation = 'Make launcher, bootstrap, managed policy and checker files admin-write only.' 
+        Remediation = 'Make launcher, bootstrap, managed policy and checker files admin-write only. Never run setup, removal or other elevated scripts from a checkout the agent can write; use a reviewed release or a clone the agent cannot modify.'
     }
     @{ Id = 'C-TOOL-POLICY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
         Title = 'Agent tool permissions come from a managed policy'
         Remediation = 'Deploy the agent''s admin-owned managed policy and restrict it to managed permission rules (Claude Code: allowManagedPermissionRulesOnly in managed-settings.json) so agent-writable settings cannot widen tool permissions.'
+    }
+    @{ Id = 'C-EXEC-POLICY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
+        Title = 'Code execution is restricted by an enforced application control policy'
+        Remediation = 'Enforce WDAC user-mode code integrity or AppLocker executable rules so downloaded programs and scripts cannot run from agent-writable paths.'
     }
     @{ Id = 'C-JOB'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
         Title = 'Process tree is confined to a kill-on-close job without breakaway'
@@ -1598,6 +1610,46 @@ function Get-ControlTargets {
     return [pscustomobject]@{ Paths = @($paths.ToArray()); Incomplete = $incomplete; MaxTargets = $MaxTargets }
 }
 
+function Invoke-ExecutionPolicyCheck {
+    # C-EXEC-POLICY: enforced WDAC user-mode code integrity, or enforced
+    # AppLocker executable rules with the Application Identity service running.
+    $umci = $null
+    $appLocker = $null
+    $failures = @()
+    try {
+        $deviceGuard = Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName 'Win32_DeviceGuard' -ErrorAction Stop
+        $umci = [int]$deviceGuard.UsermodeCodeIntegrityPolicyEnforcementStatus
+    }
+    catch { $failures += "WDAC status: $($_.Exception.Message)" }
+    # Editions without AppLocker have no cmdlet; a cmdlet that fails to load or
+    # run leaves AppLocker unresolved.
+    if (-not (Get-Command -Name Get-AppLockerPolicy -ErrorAction SilentlyContinue)) { $appLocker = $false }
+    else {
+        try {
+            $exeRules = @((Get-AppLockerPolicy -Effective -ErrorAction Stop).RuleCollections |
+                Where-Object { $_.RuleCollectionType -eq 'Exe' -and $_.EnforcementMode -eq 'Enabled' -and $_.Count -gt 0 })
+            $appLocker = $exeRules.Count -gt 0 -and (Get-Service -Name AppIDSvc -ErrorAction Stop).Status -eq 'Running'
+        }
+        catch { $failures += "AppLocker policy: $($_.Exception.Message)" }
+    }
+    $script:Inventory['executionPolicy'] = [ordered]@{ umciStatus = $umci; appLockerExeEnforced = $appLocker }
+
+    if ($umci -eq 2) {
+        Set-CriterionOutcome -Id 'C-EXEC-POLICY' -Outcome met -Method inventory -Reason 'WDAC enforces user-mode code integrity.'
+    }
+    elseif ($appLocker -eq $true) {
+        Set-CriterionOutcome -Id 'C-EXEC-POLICY' -Outcome met -Method inventory -Reason 'AppLocker enforces executable rules and the Application Identity service is running.'
+    }
+    elseif ($failures.Count -gt 0) {
+        Set-CriterionOutcome -Id 'C-EXEC-POLICY' -Outcome unknown -Method inventory `
+            -Reason "Application control could not be fully evaluated: $($failures -join '; ')."
+    }
+    else {
+        Set-CriterionOutcome -Id 'C-EXEC-POLICY' -Outcome unmet -Method inventory `
+            -Reason "No enforced application control: WDAC user-mode code integrity status $umci, no enforced AppLocker executable rules. Any program or script the agent writes can run."
+    }
+}
+
 function Invoke-ContainmentCheck {
     # C-POLICY-INTEGRITY: launcher/policy/checker files must not be agent-writable.
     $programDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
@@ -1682,6 +1734,8 @@ function Invoke-ContainmentCheck {
             -Reason 'No Claude Code managed policy and no agent settings directory were found.'
     }
 
+    Invoke-ExecutionPolicyCheck
+
     # C-JOB
     $job = [AgentSandboxAssessmentNative]::GetJobInfo()
     $script:Inventory['job'] = [ordered]@{
@@ -1715,11 +1769,11 @@ function Invoke-ContainmentCheck {
             $persistTargets.Add($dir.Trim()) | Out-Null
         }
     }
-    foreach ($extra in @(
-            (Join-Path $env:USERPROFILE '.local\bin'),
-            (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell'),
-            (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell'))) {
-        $persistTargets.Add($extra) | Out-Null
+    $persistTargets.Add((Join-Path $env:USERPROFILE '.local\bin')) | Out-Null
+    # GetFolderPath returns an empty string when Documents cannot be resolved.
+    $documents = [Environment]::GetFolderPath('MyDocuments')
+    if ($documents) {
+        foreach ($name in @('PowerShell', 'WindowsPowerShell')) { $persistTargets.Add((Join-Path $documents $name)) | Out-Null }
     }
     $managedBlocksHooks = $false
     if ($managedPresent -and -not (Test-AnyWrite $managedAccess) -and -not (Test-UnknownWrite $managedAccess)) {
@@ -2028,6 +2082,33 @@ function Get-ReadSamples {
     return [pscustomobject]@{ Paths = @($paths.ToArray()); Incomplete = $incomplete; MaxFilesPerDirectory = $MaxFilesPerDirectory }
 }
 
+function Find-AdjacentItems {
+    # Bounded name-only walk of adjacent trees for items that -Match accepts
+    # ($_ is the file or directory). Never opens or executes them; directory
+    # links are not followed. The limit applies per root so one large tree
+    # cannot hide the others.
+    param([string[]]$Root, [Parameter(Mandatory)][scriptblock]$Match, [int]$MaxDepth = 3, [int]$MaxPerRoot = 20)
+
+    $paths = [Collections.Generic.List[string]]::new()
+    $incomplete = $false
+    foreach ($directory in $Root) {
+        $exclusion = Get-ScanPathExclusion $directory
+        if ($exclusion) {
+            if ($exclusion -ne 'not-found') { $incomplete = $true }
+            continue
+        }
+        $enumErrors = @()
+        $found = @(Get-ChildItem -LiteralPath $directory -Recurse -Depth $MaxDepth -Force -ErrorAction SilentlyContinue -ErrorVariable enumErrors |
+            Where-Object $Match | Select-Object -First ($MaxPerRoot + 1))
+        # A denied subdirectory listing hides nothing the agent could use
+        # through that listing; other enumeration errors leave the walk incomplete.
+        if (@($enumErrors | Where-Object { $_.Exception -isnot [UnauthorizedAccessException] }).Count) { $incomplete = $true }
+        if ($found.Count -gt $MaxPerRoot) { $incomplete = $true }
+        foreach ($item in @($found | Select-Object -First $MaxPerRoot)) { $paths.Add($item.FullName) }
+    }
+    return [pscustomobject]@{ Paths = @($paths.ToArray()); Incomplete = $incomplete; MaxPerRoot = $MaxPerRoot }
+}
+
 function Invoke-FilesCheck {
     $usersRoot = Join-Path $env:SystemDrive 'Users'
     $ownProfile = $env:USERPROFILE.TrimEnd('\')
@@ -2074,6 +2155,43 @@ function Invoke-FilesCheck {
         -UnmetReasonFormat '{0} of {1} tested adjacent files or directory listings grant read access.' | Out-Null
     if (($adjacent.Incomplete -or $adjacentSamples.Incomplete) -and $script:Criteria['R-FILES-ADJACENT'].Outcome -ne 'unmet') {
         Set-CriterionOutcome -Id 'R-FILES-ADJACENT' -Outcome unknown -Method inventory -Reason 'Adjacent-directory discovery or file sampling was incomplete.'
+    }
+
+    # R-FILES-WRITE: the same adjacent sample, probed for any mutating right.
+    Resolve-AccessTargets -Check FILES -Criterion 'R-FILES-WRITE' -Right Write -Path $adjacentSamples.Paths `
+        -Capability 'writable file or directory outside workspace' -IncludeHowInCapability -Scope 'host-files-sample' `
+        -Impact 'The agent can modify, delete or plant files outside the workspace.' -Severity high `
+        -NoneReason 'No non-system directories outside the workspace were found to evaluate.' `
+        -MetReason 'No tested adjacent file or directory grants write, create, delete or ACL rights; descendants outside the sample are untested.' `
+        -UnmetReasonFormat '{0} of {1} tested adjacent files or directories are agent-writable.' | Out-Null
+    if (($adjacent.Incomplete -or $adjacentSamples.Incomplete) -and $script:Criteria['R-FILES-WRITE'].Outcome -ne 'unmet') {
+        Set-CriterionOutcome -Id 'R-FILES-WRITE' -Outcome unknown -Method inventory -Reason 'Adjacent-directory discovery or file sampling was incomplete.'
+    }
+
+    # R-FILES-SECRETS: credential containers found by name only; their
+    # contents are never read.
+    $containers = Find-AdjacentItems -Root $adjacent.Paths -Match {
+        -not $_.PSIsContainer -and (
+            $_.Extension -in '.pfx', '.p12', '.kdbx', '.pem', '.ppk', '.ovpn', '.rdp' -or
+            $_.Name -in '.env', 'wallet.dat' -or
+            ($_.Name -like 'id_*' -and $_.Extension -ne '.pub'))
+    }
+    $script:Inventory['credentialContainers'] = $containers
+    if ($containers.Paths.Count -eq 0) {
+        $outcome = if ($containers.Incomplete -or $adjacent.Incomplete) { 'unknown' } else { 'met' }
+        Set-CriterionOutcome -Id 'R-FILES-SECRETS' -Outcome $outcome -Method inventory `
+            -Reason $(if ($outcome -eq 'met') { 'No credential containers were found by name in the searched adjacent trees.' } else { 'The name search of adjacent trees was incomplete and found no credential containers.' })
+    }
+    else {
+        Resolve-AccessTargets -Check FILES -Criterion 'R-FILES-SECRETS' -Right Read -Path $containers.Paths `
+            -Capability 'readable credential container outside workspace' -Scope 'host-files' `
+            -Impact 'A certificate, private key, password database or connection profile outside the workspace is readable.' -Severity high `
+            -NoneReason 'No credential containers outside the workspace could be evaluated.' `
+            -MetReason "None of $($containers.Paths.Count) credential containers found by name is readable." `
+            -UnmetReasonFormat '{0} of {1} credential containers found by name are readable.' | Out-Null
+        if (($containers.Incomplete -or $adjacent.Incomplete) -and $script:Criteria['R-FILES-SECRETS'].Outcome -ne 'unmet') {
+            Set-CriterionOutcome -Id 'R-FILES-SECRETS' -Outcome unknown -Method inventory -Reason 'The name search of adjacent trees was incomplete.'
+        }
     }
 
     Invoke-RegistryOthersCheck
@@ -2299,6 +2417,22 @@ function Get-LateralTargets {
     return @($specs | Select-Object -Unique)
 }
 
+function Get-LoopbackListenerTargets {
+    # TCP listeners reachable through loopback: loopback and wildcard local
+    # addresses, as tcp:<loopback>:<port> specs. Allowed proxy ports are left
+    # out. Throws when the listener table cannot be read.
+    param([int[]]$ExcludePort = @(), [int]$MaxTargets = 64)
+
+    $specs = [Collections.Generic.List[string]]::new()
+    foreach ($listener in @(Get-NetTCPConnection -State Listen -ErrorAction Stop)) {
+        if ([int]$listener.LocalPort -in $ExcludePort) { continue }
+        $address = [string]$listener.LocalAddress
+        $loopback = if ($address -in '0.0.0.0', '127.0.0.1') { '127.0.0.1' } elseif ($address -in '::', '::1') { '[::1]' } else { $null }
+        if ($loopback) { $specs.Add("tcp:${loopback}:$($listener.LocalPort)") }
+    }
+    return @($specs | Select-Object -Unique | Select-Object -First $MaxTargets)
+}
+
 function Format-OutcomeCount {
     param([object[]]$Result)
 
@@ -2417,6 +2551,10 @@ function Invoke-NetworkCheck {
     $loopbackProxyPorts = @(Get-EnvironmentProxy | Where-Object { $_.Uri -and $_.Uri.IsLoopback } | ForEach-Object { $_.Uri.Port })
     $lateralSpecs = @(Get-LateralTargets -Gateway @($interfaces | ForEach-Object { $_.gateways }) `
             -DnsServer @($interfaces | ForEach-Object { $_.dns }) -ExcludeLoopbackPort $loopbackProxyPorts)
+    try { $lateralSpecs += @(Get-LoopbackListenerTargets -ExcludePort $loopbackProxyPorts) }
+    catch {
+        Add-AssessmentError -Check NETWORK -Category 'inventory' -Message "Could not list local TCP listeners: $($_.Exception.Message)"
+    }
     $specs = @('dns:example.com', 'tcp:example.com:443', 'tcp:1.1.1.1:443', 'tcp:[2606:4700:4700::1111]:443')
     $specs += $lateralSpecs
     $specs += @($NetworkTarget)
@@ -2540,6 +2678,16 @@ function Invoke-NetworkCheck {
 
 # --- HANDOFF ------------------------------------------------------------------
 
+function Get-HandoffArtifacts {
+    # Programs and build entry points another identity may run or build.
+    param([string[]]$Root, [int]$MaxPerRoot = 20)
+
+    return Find-AdjacentItems -Root $Root -MaxPerRoot $MaxPerRoot -Match {
+        if ($_.PSIsContainer) { $_.Name -eq 'hooks' -and $_.Parent.Name -eq '.git' }
+        else { $_.Extension -in '.exe', '.dll' -or $_.Name -in 'build.ps1', 'CMakeLists.txt' }
+    }
+}
+
 function Invoke-HandoffCheck {
     # A-HANDOFF-SHARED: locations an agent can write that another identity runs.
     $sharedPaths = New-Object System.Collections.Generic.List[string]
@@ -2571,19 +2719,31 @@ function Invoke-HandoffCheck {
             -Capability 'agent-writable Run key' -Scope 'handoff' `
             -Impact 'Code written here executes under another identity at logon.' -Severity high
 
-    $matchedCount = @($pathResult.Matched).Count + $runResult.Matched.Count
-    $probedCount = @($pathResult.Existing).Count + $runKeys.Count
+    # Programs, DLLs and build entry points outside Program Files that the
+    # interactive user may launch or build, for example portable tools.
+    $artifacts = Get-HandoffArtifacts -Root (Get-AdjacentDirectories).Paths
+    $script:Inventory['handoffAdjacentArtifacts'] = $artifacts
+    $artifactResult = Get-MatchingTargets -Check HANDOFF -Criterion 'A-HANDOFF-SHARED' -Right Write -Path $artifacts.Paths `
+        -Capability 'agent-writable program or build entry point outside Program Files' -Scope 'handoff' `
+        -Impact 'Another identity that runs or builds this executes agent-written code.' -Severity high
+
+    $matchedCount = @($pathResult.Matched).Count + $runResult.Matched.Count + @($artifactResult.Matched).Count
+    $probedCount = @($pathResult.Existing).Count + $runKeys.Count + @($artifactResult.Existing).Count
     if ($probedCount -eq 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unknown' -Method 'permission-analysis' `
             -Reason 'No shared execution locations were available to evaluate.'
     }
     elseif ($matchedCount -gt 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unmet' -Method 'permission-analysis' `
-            -Reason "$matchedCount shared execution location(s) (PATH, Program Files, startup, Run keys, other profiles) are agent-writable."
+            -Reason "$matchedCount shared execution location(s) (PATH, Program Files, startup, Run keys, other profiles, programs and build entry points outside Program Files) are agent-writable."
     }
-    elseif ($pathResult.Unknown.Count -gt 0 -or $runResult.Unknown.Count -gt 0) {
+    elseif ($pathResult.Unknown.Count -gt 0 -or $runResult.Unknown.Count -gt 0 -or $artifactResult.Unknown.Count -gt 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unknown' -Method 'permission-analysis' `
             -Reason 'Some shared execution locations could not be evaluated for write access.'
+    }
+    elseif ($artifacts.Incomplete) {
+        Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'unknown' -Method 'inventory' `
+            -Reason 'The search for programs and build entry points outside Program Files was incomplete or reached its limit.'
     }
     else {
         Set-CriterionOutcome -Id 'A-HANDOFF-SHARED' -Outcome 'met' -Method 'permission-analysis' `
@@ -2631,7 +2791,28 @@ function Invoke-HandoffCheck {
     }
     $script:Inventory['handoffArtifacts'] = $artifact
 
-    if ($wsWritable -and $otherReaders.Count -gt 0) {
+    # Git runs hooks and config-defined commands (core.fsmonitor,
+    # core.hooksPath) for the repository owner without a safe.directory
+    # exception, so agent-writable git control files in a repository owned by
+    # another identity hand code to that identity.
+    $gitMatched = @()
+    $gitDir = Join-Path $ws '.git'
+    if (Test-Path -LiteralPath $gitDir -PathType Container) {
+        $gitOwner = $null
+        try { $gitOwner = Get-OwnerSid -Path $gitDir } catch { }
+        if ($gitOwner -and $gitOwner -ne $ownSid) {
+            $gitMatched = @((Get-MatchingTargets -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Right Write `
+                        -Path @((Join-Path $gitDir 'hooks'), (Join-Path $gitDir 'config')) `
+                        -Capability 'agent-writable git hooks or config in a repository owned by another identity' -Scope 'handoff' `
+                        -Impact 'Git runs hooks and config-defined commands as the repository owner.' -Severity high).Matched)
+        }
+    }
+
+    if ($gitMatched.Count -gt 0) {
+        Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason 'The workspace repository is owned by another identity and the agent can write its git hooks or config; git runs them as the owner.'
+    }
+    elseif ($wsWritable -and $otherReaders.Count -gt 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'unmet' -Method 'permission-analysis' `
             -Reason "Workspace is agent-writable and its ACL grants read to $($otherReaders.Count) other principal(s); consumer privileges unknown."
         Add-Finding -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Target $ws `
