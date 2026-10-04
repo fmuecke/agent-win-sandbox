@@ -122,6 +122,7 @@ $WarningPreference = 'SilentlyContinue'
 
 $SchemaVersion = 'agent-sandbox-assessment/1'
 $CheckerVersion = '0.2.0'
+$ReportHeader = 'Agent sandbox exposure checker - inside-only assessment | Copyright (c) 2026 Florian Mücke'
 $ProfileId = 'default'
 $ProfileVersion = '5'
 $MinimumCoverageForVerdict = 0.6
@@ -1090,7 +1091,7 @@ function Protect-Report {
     }
     if ($Value -is [System.Collections.IEnumerable]) {
         $safe = @($Value | ForEach-Object { Protect-Report $_ })
-        return ,$safe
+        return , $safe
     }
     return $Value
 }
@@ -2257,13 +2258,15 @@ function Invoke-RegistryOthersCheck {
     try {
         foreach ($sid in @(Get-LoadedUserHives | Where-Object { $_ -match '^S-1-5-21-' -and $_ -notlike '*_Classes' -and $_ -ne $ownSid })) {
             $targets += @{ Hive = 3; Sub = "$sid\Software"; Display = "HKU\$sid\Software"; Capability = 'readable other-user hive'
-                Scope = 'cross-user-registry'; Impact = 'Another user''s registry data is readable.'; Severity = 'medium' }
+                Scope = 'cross-user-registry'; Impact = 'Another user''s registry data is readable.'; Severity = 'medium' 
+            }
         }
     }
     catch { $enumerationFailed = $true }
     foreach ($sensitive in @('SAM\SAM', 'SECURITY')) {
         $targets += @{ Hive = 2; Sub = $sensitive; Display = "HKLM\$sensitive"; Capability = 'readable sensitive registry hive'
-            Scope = 'registry'; Impact = 'A sensitive security hive is readable.'; Severity = 'high' }
+            Scope = 'registry'; Impact = 'A sensitive security hive is readable.'; Severity = 'high' 
+        }
     }
     $readable = @()
     $failed = @()
@@ -2854,8 +2857,8 @@ function Invoke-HandoffCheck {
         @{ Hive = 2; Sub = 'SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run'; Display = 'HKLM\Software\Wow6432Node\...\Run' }
     )
     $runResult = Get-WritableRegistryKeys -Check HANDOFF -Criterion 'A-HANDOFF-SHARED' -Key $runKeys `
-            -Capability 'agent-writable Run key' -Scope 'handoff' `
-            -Impact 'Code written here executes under another identity at logon.' -Severity high
+        -Capability 'agent-writable Run key' -Scope 'handoff' `
+        -Impact 'Code written here executes under another identity at logon.' -Severity high
 
     # Programs, DLLs and build entry points outside Program Files that the
     # interactive user may launch or build, for example portable tools.
@@ -3068,7 +3071,7 @@ function Resolve-BareExecutable {
     if ($Name -notmatch '^[\w.-]+$') { return $null }
     $file = if ([IO.Path]::GetExtension($Name)) { $Name } else { "$Name.exe" }
     $directories = @($WorkingDirectory, [Environment]::SystemDirectory, (Join-Path $env:windir 'System'), $env:windir) +
-        @(([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') | ForEach-Object { Expand-MachinePath $_.Trim() })
+    @(([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') | ForEach-Object { Expand-MachinePath $_.Trim() })
     foreach ($directory in $directories) {
         if ($directory -notmatch '^[A-Za-z]:[\\/]' -or $directory -match '%') { continue }
         $candidate = Join-Path $directory $file
@@ -3254,8 +3257,8 @@ function Get-ExecutionFileExposure {
     # Directory Write is FILE_ADD_FILE; Create also allows folders.
     $result.Replacement = $result.Deletable -and ($parentAccess.Write -eq 'granted')
     $result.Incomplete = ($hasDelete -and $fileAccess.Delete -eq 'unknown') -or
-        [bool](@('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $fileAccess.$_ -eq 'unknown' }) -or
-        $parentAccess.Create -eq 'unknown'
+    [bool](@('Write', 'ChangeAcl', 'TakeOwnership') | Where-Object { $fileAccess.$_ -eq 'unknown' }) -or
+    $parentAccess.Create -eq 'unknown'
     return $result
 }
 
@@ -3446,7 +3449,7 @@ function Invoke-IndirectCheck {
                     elseif (Test-UnknownWrite $argumentAccess) { $incomplete = $true }
                 }
                 $executionResolved = -not $targets.Incomplete -and $targets.Paths.Count -gt 0 -and
-                    (Test-Path -LiteralPath $targets.Paths[0] -ErrorAction SilentlyContinue)
+                (Test-Path -LiteralPath $targets.Paths[0] -ErrorAction SilentlyContinue)
                 foreach ($exe in $targets.Paths) {
                     $probed++
                     $exposure = Get-ExecutionFileExposure -Path $exe
@@ -3494,12 +3497,12 @@ function Invoke-IndirectCheck {
     elseif ($incomplete) {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unknown' -Method 'permission-analysis' `
             -Reason ('Some service/task targets or access permissions could not be evaluated.' +
-                $(if ($unresolvedServices.Count -gt 0) { " Unresolved service DLLs: $($unresolvedServices -join ', ')." } else { '' }))
+            $(if ($unresolvedServices.Count -gt 0) { " Unresolved service DLLs: $($unresolvedServices -join ', ')." } else { '' }))
     }
     else {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'met' -Method 'permission-analysis' `
             -Reason ("No service or task binary, config or parent directory is agent-writable ($probed probed)." +
-                $(if ($inferredServices.Count -gt 0) { " ServiceDll hidden from this identity and inferred from the service's name resource: $($inferredServices -join ', ')." } else { '' }))
+            $(if ($inferredServices.Count -gt 0) { " ServiceDll hidden from this identity and inferred from the service's name resource: $($inferredServices -join ', ')." } else { '' }))
     }
 }
 
@@ -3582,9 +3585,9 @@ function Get-GitCredentialConfig {
         }
     }
     return [pscustomobject]@{
-        Helpers = @($helpers.Values | ForEach-Object { $_ } | Where-Object { $_ })
+        Helpers         = @($helpers.Values | ForEach-Object { $_ } | Where-Object { $_ })
         CredentialStore = $store
-        Includes = $includes
+        Includes        = $includes
     }
 }
 
@@ -3792,7 +3795,7 @@ function Invoke-ProcessesCheck {
         $owner = if ($info -and $info.UserSid) { $info.UserSid } else { 'owner-unknown' }
         $label = "$($proc.ProcessName) ($($proc.Id)) [session $session, $owner]"
         $sensitiveReadTarget = ($ownIntegrity -gt 0 -and $integrity -gt $ownIntegrity) -or
-            ($consoleSid -and $info -and $info.UserSid -eq $consoleSid -and $consoleSid -ne $ownSid)
+        ($consoleSid -and $info -and $info.UserSid -eq $consoleSid -and $consoleSid -ne $ownSid)
         foreach ($right in $rights) {
             $probe = [AgentSandboxAssessmentNative]::ProbeProcess($proc.Id, [uint32]$right.Mask)
             if ($probe -eq 0) {
@@ -4312,7 +4315,7 @@ function Invoke-SecretContentScan {
     else {
         Set-CriterionOutcome -Id 'R-SECRETS-SCAN' -Outcome 'met' -Method 'observed-operation' `
             -Reason ("Scanned $scanned candidate file(s); no suspected secrets detected." +
-                $(if ($placeholderMatches -gt 0) { " $placeholderMatches generic assignment(s) with placeholder values were ignored." } else { '' }))
+            $(if ($placeholderMatches -gt 0) { " $placeholderMatches generic assignment(s) with placeholder values were ignored." } else { '' }))
     }
 }
 
@@ -4515,6 +4518,9 @@ function Write-HumanReport {
     # The verdict concludes the evidence above and leads into remediation.
     # Show the whole verdict scale; the current verdict is raised and colored.
     Write-Host ''
+    Write-Host ("Evidence coverage: {0}%" -f [int]($Measure.Coverage * 100))
+    Write-Host ("Control score: {0}-{1} / 100{2}" -f $Measure.ScoreLower, $Measure.ScoreUpper,
+        $(if ($Measure.CriticalCapApplied) { '  (critical cap applied)' } else { '' }))
     Write-Host 'Verdict: ' -NoNewline
     $scale = @('Critical', 'Incomplete', 'Weak', 'Partial', 'Strong')
     for ($i = 0; $i -lt $scale.Count; $i++) {
@@ -4524,9 +4530,6 @@ function Write-HumanReport {
     }
     Write-Host ''
     Write-Host "Verdict scope: $VerdictScope" -ForegroundColor DarkGray
-    Write-Host ("Control score: {0}-{1} / 100{2}" -f $Measure.ScoreLower, $Measure.ScoreUpper,
-        $(if ($Measure.CriticalCapApplied) { '  (critical cap applied)' } else { '' }))
-    Write-Host ("Evidence coverage: {0}%" -f [int]($Measure.Coverage * 100))
     $remediable = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unmet' })
     if ($remediable.Count -gt 0) {
         Write-Host ''
@@ -4543,13 +4546,15 @@ function Get-MarkdownReport {
     param([Parameter(Mandatory)][psobject]$Measure, [Parameter(Mandatory)][System.Collections.IDictionary]$Context)
 
     $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add($ReportHeader)
+    $lines.Add('')
     $lines.Add('# Agent sandbox exposure assessment')
     $lines.Add('')
-    $lines.Add("- Verdict: **$($Measure.Verdict)**")
-    $lines.Add("- Verdict scope: $VerdictScope")
+    $lines.Add("- Evidence coverage: $([int]($Measure.Coverage * 100))%")
     $lines.Add("- Control score: $($Measure.ScoreLower)-$($Measure.ScoreUpper) / 100" +
         $(if ($Measure.CriticalCapApplied) { ' (critical cap applied)' } else { '' }))
-    $lines.Add("- Evidence coverage: $([int]($Measure.Coverage * 100))%")
+    $lines.Add("- Verdict: **$($Measure.Verdict)**")
+    $lines.Add("- Verdict scope: $VerdictScope")
     $lines.Add("- Identity: $($Context.userName) (integrity $($Context.integrityLevel), elevated $($Context.isElevated))")
     $lines.Add("- Profile $ProfileId/$ProfileVersion, checker $CheckerVersion, $($Context.timestampUtc)")
     if ($script:SandboxPaths.Count -gt 0) {
@@ -4575,6 +4580,10 @@ function Get-MarkdownReport {
 }
 
 # --- Main ---------------------------------------------------------------------
+
+if (-not $Json) {
+    Write-Host $ReportHeader -ForegroundColor Cyan
+}
 
 $script:StartTime = [DateTime]::UtcNow
 
@@ -4685,6 +4694,7 @@ $context = [ordered]@{
 }
 
 $report = [ordered]@{
+    header            = $ReportHeader
     schemaVersion     = $SchemaVersion
     checkerVersion    = $CheckerVersion
     profile           = [ordered]@{ id = $ProfileId; version = $ProfileVersion }
