@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
+#Requires -Version 7.0
+
 <#
 .SYNOPSIS
     Launches a PowerShell 7 terminal as the low-privilege AgentSandbox user,
@@ -34,6 +36,8 @@ $LaunchAsExe = Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as.ex
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+$NetworkSandboxExe = Join-Path $ProgramDataRoot 'network-sandbox.exe'
+$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.ini'
 
 function Stop-LauncherError {
     param([string]$Message)
@@ -148,6 +152,8 @@ if (-not (Test-Path $ConfigFile)) {
 try {
     $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     $sandboxPath = $config.sandboxPath
+    $proxyPort = [int]$config.setup.proxyPort
+    $proxyOwnerSid = [string]$config.setup.proxyOwnerSid
 }
 catch {
     Stop-LauncherError "Config at $ConfigFile is invalid: $($_.Exception.Message)"
@@ -157,6 +163,24 @@ if ([string]::IsNullOrWhiteSpace($sandboxPath)) {
 }
 if (-not (Test-Path $sandboxPath)) {
     Stop-LauncherError "Sandbox path $sandboxPath does not exist. Run Setup-AgentSandbox.ps1 again."
+}
+if ($proxyPort -lt 1 -or $proxyPort -gt 65535) {
+    Stop-LauncherError "Invalid proxy port in $ConfigFile. Run Setup-AgentSandbox.ps1 again."
+}
+if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne $proxyOwnerSid) {
+    Stop-LauncherError 'This launcher must run as the account that installed the proxy. Run setup again from the intended launcher account.'
+}
+if (-not (Test-Path $NetworkSandboxExe -PathType Leaf) -or
+    -not (Test-Path $NetworkSandboxConfig -PathType Leaf)) {
+    Stop-LauncherError 'Network proxy is not installed. Run Setup-AgentSandbox.ps1 again.'
+}
+$proxyStatus = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
+if ($LASTEXITCODE -ne 0 -or ($proxyStatus -join ' ') -notmatch "127\.0\.0\.1:$proxyPort(?!\d)") {
+    & $NetworkSandboxExe start -config $NetworkSandboxConfig
+    $proxyStatus = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
+    if ($LASTEXITCODE -ne 0 -or ($proxyStatus -join ' ') -notmatch "127\.0\.0\.1:$proxyPort(?!\d)") {
+        Stop-LauncherError "Network proxy could not start on 127.0.0.1:$proxyPort. Run Setup-AgentSandbox.ps1 again."
+    }
 }
 Write-Host "Configured sandbox path: $sandboxPath" -ForegroundColor Cyan
 

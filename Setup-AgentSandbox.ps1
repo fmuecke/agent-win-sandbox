@@ -3,6 +3,7 @@
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 #Requires -RunAsAdministrator
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     Provisions a low-privilege local 'AgentSandbox' for running AI coding
@@ -28,27 +29,28 @@
 
 [CmdletBinding()]
 param(
-    [string]$SandboxPath # if omitted, you will be prompted
+    [string]$SandboxPath, # if omitted, you will be prompted
+    [ValidateRange(1, 65535)][int]$ProxyPort = 8080
 )
 
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
-$Version = '0.8.0'
+$Version = '0.9.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
 $LauncherSource = Join-Path $PSScriptRoot 'Start-AgentSandbox.ps1'
 $CheckerSource = Join-Path $PSScriptRoot 'Check-AgentSandbox.ps1'
-$SurfaceCheckSource = Join-Path $PSScriptRoot 'Test-AgentSandboxAttackSurfaces.ps1'
+$ExposureCheckSource = Join-Path $PSScriptRoot 'Test-AgentSandboxExposure.ps1'
 $ShellInitSource = Join-Path $PSScriptRoot 'bootstrap\Initialize-AgentSandboxShell.ps1'
 $DevShellSource = Join-Path $PSScriptRoot 'bootstrap\Enter-DevShell.ps1'
 $ClaudeWrapperSource = Join-Path $PSScriptRoot 'scripts\claude-wrapper.ps1'
 $CopilotWrapperSource = Join-Path $PSScriptRoot 'scripts\copilot-wrapper.ps1'
-$ManagedSettingsSource = Join-Path $PSScriptRoot 'managed-settings.json'
+$ManagedSettingsSource = Join-Path $PSScriptRoot 'config\managed-settings.json'
 $LauncherScript = Join-Path $ProgramDataRoot 'Start-AgentSandbox.ps1'
 $CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
-$SurfaceCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxAttackSurfaces.ps1'
+$ExposureCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxExposure.ps1'
 $BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
 $ShellInitScript = Join-Path $BootstrapRoot 'Initialize-AgentSandboxShell.ps1'
 $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
@@ -59,48 +61,41 @@ $LaunchAsExe = Join-Path $LaunchAsInstallRoot 'launch-as.exe'
 $LaunchAsAdminExe = Join-Path $LaunchAsInstallRoot 'launch-as-admin.exe'
 $LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $LegacyLaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
-$LaunchAsVersion = 'v1.2.0-preview'
-$LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v1.2.0-preview/launch-as-v1.2.0-win64.zip'
-$LaunchAsSha256 = 'A6203CD245C0A3547F1F206A95016EC9D8EAACA10348A48424BB50FC8EE6EF29'
-$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview')
+$LaunchAsVersion = 'v1.3.0'
+$LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v1.3.0/launch-as-v1.3.0-win64.zip'
+$LaunchAsSha256 = '1CCDA8A7736C24846102D94A9C12A6D3F0C29733EB282504CCCCED69E0543A8F'
+$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
+$UserNetLockVersion = 'v0.8.1'
+$UserNetLockUri = 'https://github.com/fmuecke/user-net-lock/releases/download/v0.8.1/user-net-lock-v0.8.1-win64.zip'
+$UserNetLockSha256 = '4DB67DB57106CA8EFECF041B809FFC0FC18CD459C414BE7C232FD3DFC9E09672'
+$ToolsRoot = $ProgramDataRoot
+$UserNetLockExe = Join-Path $ToolsRoot 'user-net-lock.exe'
+$NetworkSandboxVersion = 'v0.2.1'
+$NetworkSandboxUri = 'https://github.com/fmuecke/network-sandbox/releases/download/v0.2.1/network-sandbox-v0.2.1.zip'
+$NetworkSandboxSha256 = 'A4355750492273225A96C08DEE25810A862622C621BCA2854F2D88608CF95473'
+$NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
+$LegacyNetworkSandboxExe = Join-Path (Join-Path $env:ProgramFiles 'network-sandbox') 'network-sandbox.exe'
+$NetworkSandboxConfigSource = Join-Path $PSScriptRoot 'config\network-sandbox.ini'
+$NetworkSandboxStateRoot = Join-Path $ProgramDataRoot 'network-sandbox'
+$NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.ini'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
 $PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
-$FirewallMode = 'BlockWindowsLanProtocols'
-$FirewallRuleGroup = 'agent-win-sandbox'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
 $LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $EveryoneSid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
 $AuthenticatedUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-11')
 $BroadReadSidValues = @($BuiltinUsersSid.Value, $EveryoneSid.Value, $AuthenticatedUsersSid.Value)
-$FirewallRules = @(
-    [pscustomobject]@{
-        Name        = 'agent_win_sandbox_block_smb_netbios_tcp'
-        DisplayName = 'Agent Sandbox - Block SMB and NetBIOS TCP'
-        Description = 'Blocks AgentSandbox outbound SMB and NetBIOS session traffic while leaving web traffic available.'
-        Protocol    = 'TCP'
-        RemotePort  = @('139', '445')
-    },
-    [pscustomobject]@{
-        Name        = 'agent_win_sandbox_block_netbios_udp'
-        DisplayName = 'Agent Sandbox - Block NetBIOS UDP'
-        Description = 'Blocks AgentSandbox outbound NetBIOS name and datagram traffic while leaving web traffic available.'
-        Protocol    = 'UDP'
-        RemotePort  = @('137', '138')
-    },
-    [pscustomobject]@{
-        Name        = 'agent_win_sandbox_block_remote_admin_tcp'
-        DisplayName = 'Agent Sandbox - Block remote admin TCP'
-        Description = 'Blocks AgentSandbox outbound RPC endpoint mapper, RDP, and WinRM traffic while leaving web traffic available.'
-        Protocol    = 'TCP'
-        RemotePort  = @('135', '3389', '5985', '5986')
-    }
-)
 
 
 function Write-Step { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
+function Set-AdminOwner {
+    param([string]$Path)
+    icacls $Path /setowner '*S-1-5-32-544' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not set Administrators as owner of $Path." }
+}
 function Get-IcaclsSidAce {
     param(
         [Security.Principal.SecurityIdentifier]$Sid,
@@ -130,52 +125,6 @@ function Test-IdentitySidIn {
 
     $sidValue = Get-IdentitySidValue -Identity $Identity
     return $sidValue -and ($sidValue -in $SidValues)
-}
-function Get-LocalUserFirewallSddl {
-    param([string]$Sid)
-    return "D:(A;;CC;;;$Sid)"
-}
-function Test-LocalFirewallPolicyApplies {
-    try {
-        $policy = New-Object -ComObject HNetCfg.FwPolicy2
-        if ($policy.LocalPolicyModifyState -ne 0) {
-            Write-Warning "Local firewall rules may not take effect: LocalPolicyModifyState=$($policy.LocalPolicyModifyState). Continuing setup."
-            return $false
-        }
-        return $true
-    }
-    catch {
-        Write-Warning "Cannot verify that local firewall rules apply: $($_.Exception.Message). Continuing setup."
-        return $false
-    }
-}
-function Set-SandboxFirewallRule {
-    param(
-        [pscustomobject]$RuleSpec,
-        [string]$LocalUserSddl,
-        [string]$Group
-    )
-
-    $rule = Get-NetFirewallRule -Name $RuleSpec.Name -ErrorAction SilentlyContinue
-    if ($rule) {
-        $rule | Remove-NetFirewallRule
-        Write-Host "  removed existing firewall rule: $($RuleSpec.DisplayName)" -ForegroundColor Yellow
-    }
-
-    New-NetFirewallRule `
-        -Name $RuleSpec.Name `
-        -DisplayName $RuleSpec.DisplayName `
-        -Description $RuleSpec.Description `
-        -Group $Group `
-        -Enabled True `
-        -Profile Any `
-        -Direction Outbound `
-        -Action Block `
-        -Protocol $RuleSpec.Protocol `
-        -RemotePort $RuleSpec.RemotePort `
-        -LocalUser $LocalUserSddl | Out-Null
-
-    Write-Host "  created firewall rule: $($RuleSpec.DisplayName)" -ForegroundColor Green
 }
 function ConvertTo-ClaudePermissionPath {
     param([string]$Path)
@@ -307,6 +256,133 @@ function Install-LaunchAs {
         }
     }
 }
+function Install-PinnedExecutable {
+    param(
+        [string]$Name,
+        [string]$DownloadUri,
+        [string]$ExpectedSha256,
+        [string]$InstallRoot
+    )
+
+    $tempRoot = Join-Path $env:TEMP ("agent-win-sandbox-$Name-" + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        $archive = Join-Path $tempRoot 'release.zip'
+        $extracted = Join-Path $tempRoot 'extracted'
+        Invoke-WebRequest -Uri $DownloadUri -OutFile $archive
+        $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+        if ($actualHash -ine $ExpectedSha256) {
+            throw "$Name download hash mismatch. Expected $ExpectedSha256, got $actualHash."
+        }
+        Expand-Archive -LiteralPath $archive -DestinationPath $extracted
+        $matches = @(Get-ChildItem -LiteralPath $extracted -Filter "$Name.exe" -File -Recurse)
+        if ($matches.Count -ne 1) {
+            throw "Expected exactly one $Name.exe in the release archive; found $($matches.Count)."
+        }
+        New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+        if ((Get-Item -LiteralPath $InstallRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Refusing to install into linked tools directory: $InstallRoot"
+        }
+        icacls $InstallRoot /reset | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $InstallRoot." }
+        $adminAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights '(OI)(CI)F'
+        $systemAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F'
+        $usersAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
+        icacls $InstallRoot /inheritance:r /grant:r $adminAce $systemAce $usersAce | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not protect $InstallRoot." }
+        Set-AdminOwner -Path $InstallRoot
+        $executablePath = Join-Path $InstallRoot "$Name.exe"
+        if ((Test-Path -LiteralPath $executablePath) -and
+            ((Get-Item -LiteralPath $executablePath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing to replace linked executable: $executablePath"
+        }
+        Copy-Item -LiteralPath $matches[0].FullName -Destination $executablePath -Force
+        icacls (Join-Path $InstallRoot "$Name.exe") /reset | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not protect $Name.exe." }
+        Set-AdminOwner -Path (Join-Path $InstallRoot "$Name.exe")
+        Write-Host "  installed hash-verified $Name at $InstallRoot" -ForegroundColor Green
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+function Install-NetworkSandboxPolicy {
+    if ((Test-Path -LiteralPath $NetworkSandboxConfig) -and
+        ((Get-Item -LiteralPath $NetworkSandboxConfig -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing to update linked proxy policy: $NetworkSandboxConfig"
+    }
+    if (-not (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
+        $policy = Get-Content -LiteralPath $NetworkSandboxConfigSource -Raw
+    }
+    else {
+        $policy = Get-Content -LiteralPath $NetworkSandboxConfig -Raw
+        Write-Warning "Preserving the existing proxy allowlist at $NetworkSandboxConfig. Review it before starting agents."
+    }
+    if ($policy -notmatch '(?m)^port=\d+[^\r\n]*$') {
+        throw "Network proxy policy has no port setting: $NetworkSandboxConfig"
+    }
+    if ($policy -notmatch "(?m)^port=$ProxyPort(?:\s|$)") {
+        Write-Warning "Setting the proxy policy port to $ProxyPort to match the network lock."
+    }
+    $policy = $policy -replace '(?m)^port=\d+[^\r\n]*$', "port=$ProxyPort"
+    $logPath = Join-Path $NetworkSandboxStateRoot 'network-sandbox.log'
+    if ($policy -match '(?m)^logfile=[^\r\n]*$') {
+        $policy = $policy -replace '(?m)^logfile=[^\r\n]*$', "logfile=$logPath"
+    }
+    else {
+        $policy = $policy -replace '(?m)^(port=\d+)$', "`$1`nlogfile=$logPath"
+    }
+    Set-Content -LiteralPath $NetworkSandboxConfig -Value $policy -Encoding utf8NoBOM -NoNewline
+}
+function Test-NetworkSandboxRunning {
+    $output = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
+    return ($LASTEXITCODE -eq 0 -and ($output -join ' ') -match "127\.0\.0\.1:$ProxyPort(?!\d)")
+}
+function Start-NetworkSandbox {
+    if (-not (Test-NetworkSandboxRunning)) {
+        & $NetworkSandboxExe start -config $NetworkSandboxConfig
+    }
+    if (-not (Test-NetworkSandboxRunning)) {
+        throw "Network proxy did not start on 127.0.0.1:$ProxyPort; inspect its log."
+    }
+}
+function Test-ExistingSandboxProxyListener {
+    param([object]$Listener)
+
+    if (-not (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) { return $false }
+    $process = Get-Process -Id $Listener.OwningProcess -ErrorAction SilentlyContinue
+    if (-not $process -or $process.Path -notin @($NetworkSandboxExe, $LegacyNetworkSandboxExe)) {
+        return $false
+    }
+    $output = @(& $process.Path status -config $NetworkSandboxConfig 2>&1)
+    return ($LASTEXITCODE -eq 0 -and ($output -join ' ') -match
+        "running \(pid $($Listener.OwningProcess)\) on 127\.0\.0\.1:$($Listener.LocalPort)(?!\d)")
+}
+function Resolve-ProxyPort {
+    param([int]$Port)
+
+    while ($true) {
+        $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { $_.LocalPort -eq $Port })
+        $conflicts = @($listeners | Where-Object { -not (Test-ExistingSandboxProxyListener -Listener $_) })
+        if ($conflicts.Count -eq 0) { return $Port }
+
+        Write-Warning "TCP port $Port is already in use by another process (PID: $(($conflicts.OwningProcess | Sort-Object -Unique) -join ', '))."
+        do {
+            $answer = Read-Host 'Choose a different proxy port (1-65535), or press Enter to cancel setup'
+            if ([string]::IsNullOrWhiteSpace($answer)) {
+                throw 'Setup cancelled because the proxy port is already in use.'
+            }
+            $replacementPort = 0
+            $validPort = [int]::TryParse($answer.Trim(), [ref]$replacementPort) -and
+            $replacementPort -ge 1 -and $replacementPort -le 65535
+            if (-not $validPort) { Write-Warning 'Enter a port number from 1 to 65535.' }
+        } while (-not $validPort)
+        $Port = $replacementPort
+    }
+}
 function Remove-LegacyLaunchAsCopies {
     param(
         [string]$LegacyClientPath,
@@ -359,12 +435,24 @@ if ($LASTEXITCODE -ne 0) {
     throw "PowerShell 7 at $PwshExe could not be started."
 }
 Stop-IfLegacyInstallationPresent
+$existingSandboxUser = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
+if ($existingSandboxUser) {
+    $existingProfile = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='$($existingSandboxUser.SID.Value)'" -ErrorAction Stop
+    if ($existingProfile -and $existingProfile.Loaded) {
+        throw "Close all '$UserName' sessions before updating the broker or network policy."
+    }
+}
 
 $callingUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name  # DOMAIN\user
+$callingUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $callingProfile = $env:USERPROFILE
 Write-Step "PowerShell 7: $pwshVersion"
 Write-Step "Calling user: $callingUser"
 Write-Step "Protecting profile: $callingProfile"
+
+# Resolve port conflicts before changing accounts, files, or network policy.
+$ProxyPort = Resolve-ProxyPort -Port $ProxyPort
+Write-Step "Proxy port: $ProxyPort"
 
 # --- 0b. Resolve sandbox workspace directory interactively -------------------
 if (-not $SandboxPath) {
@@ -469,27 +557,72 @@ if (-not (Test-Path $ualPath)) { New-Item -Path $ualPath -Force | Out-Null }
 New-ItemProperty -Path $ualPath -Name $UserName -Value 0 -PropertyType DWord -Force | Out-Null
 Write-Host "  hidden from the login screen" -ForegroundColor Green
 
-# --- 1c. Account-scoped outbound firewall hardening --------------------------
-# Keep Claude operational by allowing normal web/HTTPS egress, but block common
-# Windows file-sharing and remote-admin ports for the sandbox identity.
-Write-Step "Configuring outbound firewall protection for '$UserName'"
-try {
-    $localUserSddl = Get-LocalUserFirewallSddl -Sid $sid
-    $localFirewallPolicyApplies = Test-LocalFirewallPolicyApplies
-    foreach ($ruleSpec in $FirewallRules) {
-        Set-SandboxFirewallRule -RuleSpec $ruleSpec -LocalUserSddl $localUserSddl -Group $FirewallRuleGroup
-    }
-    if ($localFirewallPolicyApplies) {
-        Write-Host "  firewall mode: $FirewallMode (web/HTTPS remains allowed)" -ForegroundColor Green
-    }
-    else {
-        Write-Warning "  firewall rules were created/updated, but local policy may prevent them from taking effect."
-    }
+# --- 1c. Protected proxy and account-scoped network lock --------------------
+Write-Step "Installing network proxy $NetworkSandboxVersion and user-net-lock $UserNetLockVersion"
+New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null
+if ((Get-Item -LiteralPath $ProgramDataRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw "Refusing to install into linked ProgramData directory: $ProgramDataRoot"
 }
-catch {
-    Write-Warning "Could not configure outbound firewall protection: $($_.Exception.Message)"
-    Write-Warning "Continuing setup. Run & '$CheckerScript' later to verify firewall state."
+icacls $ProgramDataRoot /reset | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $ProgramDataRoot." }
+$adminRootAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights '(OI)(CI)F'
+$systemRootAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F'
+$usersRootAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
+icacls $ProgramDataRoot /inheritance:r /grant:r $adminRootAce $systemRootAce $usersRootAce | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not protect $ProgramDataRoot." }
+Set-AdminOwner -Path $ProgramDataRoot
+New-Item -ItemType Directory -Path $NetworkSandboxStateRoot -Force | Out-Null
+if ((Get-Item -LiteralPath $NetworkSandboxStateRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw "Refusing to use linked proxy state directory: $NetworkSandboxStateRoot"
 }
+icacls $NetworkSandboxStateRoot /reset | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $NetworkSandboxStateRoot." }
+$adminStateAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights '(OI)(CI)F'
+$systemStateAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F'
+$usersStateAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
+$launcherCreateAce = "*${callingUserSid}:(WD)"
+$launcherFileAce = "*${callingUserSid}:(OI)(CI)(IO)M"
+icacls $NetworkSandboxStateRoot /inheritance:r /grant:r $adminStateAce $systemStateAce $usersStateAce $launcherCreateAce $launcherFileAce | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not protect $NetworkSandboxStateRoot." }
+Set-AdminOwner -Path $NetworkSandboxStateRoot
+Install-PinnedExecutable -Name 'user-net-lock' -DownloadUri $UserNetLockUri `
+    -ExpectedSha256 $UserNetLockSha256 -InstallRoot $ToolsRoot
+$previousProxyExe = if (Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) {
+    $NetworkSandboxExe
+}
+else { $LegacyNetworkSandboxExe }
+if ((Test-Path -LiteralPath $previousProxyExe -PathType Leaf) -and
+    (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
+    & $previousProxyExe stop -config $NetworkSandboxConfig
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the previous network proxy.' }
+}
+foreach ($runtimeName in 'network-sandbox.ini.pid', 'network-sandbox.ini.pid.lock',
+    'network-sandbox.log', 'network-sandbox.log.1', 'network-sandbox.log.2', 'network-sandbox.log.3') {
+    $runtimePath = Join-Path $NetworkSandboxStateRoot $runtimeName
+    if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) { continue }
+    if ((Get-Item -LiteralPath $runtimePath -Force).LinkType) {
+        throw "Refusing to update linked proxy runtime file: $runtimePath"
+    }
+    icacls $runtimePath /reset | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not protect $runtimePath." }
+    Set-AdminOwner -Path $runtimePath
+}
+Install-PinnedExecutable -Name 'network-sandbox' -DownloadUri $NetworkSandboxUri `
+    -ExpectedSha256 $NetworkSandboxSha256 -InstallRoot $ToolsRoot
+Install-NetworkSandboxPolicy
+icacls $NetworkSandboxConfig /reset | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $NetworkSandboxConfig." }
+$adminConfigAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F'
+$systemConfigAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F'
+$usersConfigAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'RX'
+icacls $NetworkSandboxConfig /inheritance:r /grant:r $adminConfigAce $systemConfigAce $usersConfigAce | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not protect $NetworkSandboxConfig." }
+Set-AdminOwner -Path $NetworkSandboxConfig
+Start-NetworkSandbox
+& $UserNetLockExe apply --user $UserName --port $ProxyPort
+if ($LASTEXITCODE -ne 0) { throw "Could not apply user-net-lock for '$UserName'." }
+& $UserNetLockExe verify --user $UserName --port $ProxyPort
+if ($LASTEXITCODE -ne 0) { throw "Could not verify user-net-lock for '$UserName'." }
 
 # --- 2. Shared workspace permissions -----------------------------------------
 Write-Step "Configuring shared workspace at $SandboxPath"
@@ -512,13 +645,15 @@ if (-not (Test-Path $ProgramDataRoot)) { New-Item -ItemType Directory -Path $Pro
 $config = [ordered]@{
     sandboxPath = $SandboxPath
     setup       = [ordered]@{
-        version           = $Version
-        createdAtUtc      = (Get-Date).ToUniversalTime().ToString('o')
-        userName          = $UserName
-        installedByUser   = $callingUser
-        firewallMode      = $FirewallMode
-        firewallRuleNames = @($FirewallRules | ForEach-Object { $_.Name })
-        launchAsVersion   = $LaunchAsVersion
+        version               = $Version
+        createdAtUtc          = (Get-Date).ToUniversalTime().ToString('o')
+        userName              = $UserName
+        installedByUser       = $callingUser
+        launchAsVersion       = $LaunchAsVersion
+        userNetLockVersion    = $UserNetLockVersion
+        networkSandboxVersion = $NetworkSandboxVersion
+        proxyPort             = $ProxyPort
+        proxyOwnerSid         = $callingUserSid
     }
 }
 $config | ConvertTo-Json -Depth 4 | Set-Content -Path $ConfigFile -Encoding UTF8
@@ -561,8 +696,6 @@ else {
     Write-Host "  '$UserName' is denied your profile by default Windows ACLs." -ForegroundColor Green
 }
 
-Write-Warning "Optional hardening note: if you keep secrets OUTSIDE your profile (e.g. a KeePass vault under C:\, a shared drive), verify those paths separately - the profile-default protection does not extend to them."
-
 # --- 5. Report machine-wide PowerShell and Git -------------------------------
 Write-Step "PowerShell 7 and Git (machine-wide)"
 
@@ -591,7 +724,7 @@ if (-not (Test-Path $bootstrapDir)) { New-Item -ItemType Directory -Path $bootst
 $launchArtifacts = @(
     [pscustomobject]@{ Name = 'launcher'; Source = $LauncherSource; Destination = $LauncherScript },
     [pscustomobject]@{ Name = 'checker'; Source = $CheckerSource; Destination = $CheckerScript },
-    [pscustomobject]@{ Name = 'attack-surface diagnostic'; Source = $SurfaceCheckSource; Destination = $SurfaceCheckScript },
+    [pscustomobject]@{ Name = 'exposure diagnostic'; Source = $ExposureCheckSource; Destination = $ExposureCheckScript },
     [pscustomobject]@{ Name = 'shell initializer'; Source = $ShellInitSource; Destination = $ShellInitScript },
     [pscustomobject]@{ Name = 'Developer Shell command'; Source = $DevShellSource; Destination = $DevShellScript },
     [pscustomobject]@{ Name = 'Claude command'; Source = $ClaudeWrapperSource; Destination = $ClaudeWrapperScript },
@@ -620,7 +753,7 @@ foreach ($protectedFile in @(
         $ConfigFile,
         $LauncherScript,
         $CheckerScript,
-        $SurfaceCheckScript,
+        $ExposureCheckScript,
         $ShellInitScript,
         $DevShellScript,
         $ClaudeWrapperScript,
@@ -630,6 +763,10 @@ foreach ($protectedFile in @(
 }
 Write-Host "  locked ProgramData artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
 Remove-LegacyLaunchAsCopies -LegacyClientPath $LegacyLaunchAsExe -LegacyAdminPath $LegacyLaunchAsAdminExe
+$obsoleteSurfaceCheck = Join-Path $ProgramDataRoot 'Test-AgentSandboxAttackSurfaces.ps1'
+if (Test-Path -LiteralPath $obsoleteSurfaceCheck -PathType Leaf) {
+    Remove-Item -LiteralPath $obsoleteSurfaceCheck -Force
+}
 
 # --- 6b. Desktop shortcut for double-click launch ----------------------------
 Write-Step "Creating desktop shortcut"
@@ -638,13 +775,12 @@ if (-not (Test-Path $LauncherScript)) {
     throw "Installed launcher not found at $LauncherScript."
 }
 try {
-    $powershellExe = (Get-Command powershell.exe).Source
     $wsh = New-Object -ComObject WScript.Shell
     $sc = $wsh.CreateShortcut($ShortcutPath)
-    $sc.TargetPath = $powershellExe
+    $sc.TargetPath = $PwshExe
     $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$LauncherScript`""
     $sc.WorkingDirectory = $SandboxPath
-    $sc.IconLocation = "$powershellExe,0"
+    $sc.IconLocation = "$PwshExe,0"
     $sc.Description = 'Launch a PowerShell terminal for low-privilege coding agents'
     $sc.Save()
 
@@ -660,10 +796,6 @@ Write-Host @"
 To start an Agent Sandbox terminal, use the desktop shortcut:
 
   $ShortcutPath
-
-Or run the launcher directly:
-
-  & '$LauncherScript'
 
 Inside the sandbox, run 'sandbox-help' to list the available commands.
 

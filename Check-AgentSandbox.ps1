@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
+#Requires -Version 7.0
+
 <#
 .SYNOPSIS
     Verifies an agent-win-sandbox installation: user, hardening, ACLs, policy,
@@ -72,9 +74,14 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'config.json')
 )
 
-$Version = '0.8.0'
-$LaunchAsVersion = 'v1.2.0-preview'
-$FirewallMode = 'BlockWindowsLanProtocols'
+$Version = '0.9.0'
+$LaunchAsVersion = 'v1.3.0'
+$UserNetLockVersion = 'v0.8.1'
+$NetworkSandboxVersion = 'v0.2.1'
+$ToolsRoot = Split-Path $ConfigFile -Parent
+$UserNetLockExe = Join-Path $ToolsRoot 'user-net-lock.exe'
+$NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
+$NetworkSandboxConfig = Join-Path (Join-Path (Split-Path $ConfigFile -Parent) 'network-sandbox') 'network-sandbox.ini'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
 $LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
@@ -90,26 +97,6 @@ $RiskyGroupChecks = @(
     [pscustomobject]@{ Description = 'Remote Desktop Users'; Sid = $RemoteDesktopUsersSid },
     [pscustomobject]@{ Description = 'Backup Operators'; Sid = $BackupOperatorsSid },
     [pscustomobject]@{ Description = 'Power Users'; Sid = $PowerUsersSid }
-)
-$FirewallRules = @(
-    [pscustomobject]@{
-        Name        = 'agent_win_sandbox_block_smb_netbios_tcp'
-        DisplayName = 'Agent Sandbox - Block SMB and NetBIOS TCP'
-        Protocol    = 'TCP'
-        RemotePort  = @('139', '445')
-    },
-    [pscustomobject]@{
-        Name        = 'agent_win_sandbox_block_netbios_udp'
-        DisplayName = 'Agent Sandbox - Block NetBIOS UDP'
-        Protocol    = 'UDP'
-        RemotePort  = @('137', '138')
-    },
-    [pscustomobject]@{
-        Name        = 'agent_win_sandbox_block_remote_admin_tcp'
-        DisplayName = 'Agent Sandbox - Block remote admin TCP'
-        Protocol    = 'TCP'
-        RemotePort  = @('135', '3389', '5985', '5986')
-    }
 )
 
 $script:fails = 0
@@ -173,6 +160,23 @@ function Test-AdminWriteOnlyPath {
     }
     else {
         Pass "$Description is admin-write-only."
+    }
+}
+function Test-AdminOwner {
+    param([string]$Path, [string]$Description)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    try {
+        $ownerSid = (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        Fail "Could not read $Description owner: $($_.Exception.Message)"
+        return
+    }
+    if ($ownerSid -eq $BuiltinAdministratorsSid.Value) {
+        Pass "$Description is owned by Administrators."
+    }
+    else {
+        Fail "$Description owner is $ownerSid, expected Administrators."
     }
 }
 function Test-ManagedPolicyContent {
@@ -240,122 +244,6 @@ function Test-ConfigSetupRequiredField {
         Pass "$Description is present in config setup section."
     }
 }
-function Test-ConfigSetupStringList {
-    param(
-        [object]$Setup,
-        [string]$Field,
-        [string[]]$Expected,
-        [string]$Description
-    )
-    $property = $Setup.PSObject.Properties[$Field]
-    if (-not $property) {
-        Fail "$Description missing in config setup section."
-        return
-    }
-
-    $actual = @($property.Value) | ForEach-Object { [string]$_ } | Sort-Object
-    $expectedSorted = @($Expected) | ForEach-Object { [string]$_ } | Sort-Object
-    $delta = Compare-Object -ReferenceObject $expectedSorted -DifferenceObject $actual
-    if ($delta) {
-        Fail "$Description drift: config '$($actual -join ', ')', expected '$($expectedSorted -join ', ')'."
-    }
-    else {
-        Pass "$Description matches config setup section."
-    }
-}
-function Expand-FirewallValues {
-    param([object[]]$Values)
-    $expanded = @()
-    foreach ($value in @($Values)) {
-        if ($null -eq $value) { continue }
-        $expanded += ([string]$value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-    }
-    return $expanded
-}
-function Test-StringSetEquals {
-    param(
-        [string[]]$Actual,
-        [string[]]$Expected
-    )
-    $actualSorted = @($Actual) | ForEach-Object { [string]$_ } | Sort-Object
-    $expectedSorted = @($Expected) | ForEach-Object { [string]$_ } | Sort-Object
-    return -not (Compare-Object -ReferenceObject $expectedSorted -DifferenceObject $actualSorted)
-}
-function Test-LocalFirewallPolicyApplies {
-    try {
-        $policy = New-Object -ComObject HNetCfg.FwPolicy2
-        if ($policy.LocalPolicyModifyState -eq 0) {
-            Pass "Local firewall policy changes apply on active profiles."
-        }
-        else {
-            Fail "Local firewall policy changes may not apply: LocalPolicyModifyState=$($policy.LocalPolicyModifyState)."
-        }
-    }
-    catch {
-        Fail "Could not verify local firewall policy state: $($_.Exception.Message)"
-    }
-}
-function Test-SandboxFirewallRule {
-    param(
-        [pscustomobject]$RuleSpec,
-        [string]$SandboxSid
-    )
-
-    $ok = $true
-    $rule = Get-NetFirewallRule -Name $RuleSpec.Name -ErrorAction SilentlyContinue
-    if (-not $rule) {
-        Fail "Firewall rule missing: $($RuleSpec.Name). Run setup."
-        return
-    }
-
-    if ($rule.Enabled -ine 'True') {
-        Fail "Firewall rule '$($RuleSpec.Name)' is not enabled."
-        $ok = $false
-    }
-    if ($rule.Direction -ine 'Outbound') {
-        Fail "Firewall rule '$($RuleSpec.Name)' is not outbound."
-        $ok = $false
-    }
-    if ($rule.Action -ine 'Block') {
-        Fail "Firewall rule '$($RuleSpec.Name)' is not a block rule."
-        $ok = $false
-    }
-
-    try {
-        $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule
-        if ($portFilter.Protocol -ine $RuleSpec.Protocol) {
-            Fail "Firewall rule '$($RuleSpec.Name)' protocol drift: '$($portFilter.Protocol)', expected '$($RuleSpec.Protocol)'."
-            $ok = $false
-        }
-
-        $actualPorts = Expand-FirewallValues -Values $portFilter.RemotePort
-        if (-not (Test-StringSetEquals -Actual $actualPorts -Expected $RuleSpec.RemotePort)) {
-            Fail "Firewall rule '$($RuleSpec.Name)' remote ports drift: '$($actualPorts -join ', ')', expected '$($RuleSpec.RemotePort -join ', ')'."
-            $ok = $false
-        }
-    }
-    catch {
-        Fail "Could not read port filter for firewall rule '$($RuleSpec.Name)': $($_.Exception.Message)"
-        $ok = $false
-    }
-
-    try {
-        $securityFilter = Get-NetFirewallSecurityFilter -AssociatedNetFirewallRule $rule
-        $localUser = [string]$securityFilter.LocalUser
-        if ([string]::IsNullOrWhiteSpace($localUser) -or ($localUser -notlike "*$SandboxSid*")) {
-            Fail "Firewall rule '$($RuleSpec.Name)' is not scoped to $SandboxSid."
-            $ok = $false
-        }
-    }
-    catch {
-        Fail "Could not read security filter for firewall rule '$($RuleSpec.Name)': $($_.Exception.Message)"
-        $ok = $false
-    }
-
-    if ($ok) {
-        Pass "Firewall rule '$($RuleSpec.Name)' blocks $($RuleSpec.Protocol) ports $($RuleSpec.RemotePort -join ', ') for '$UserName'."
-    }
-}
 function Test-LaunchAsBrokerService {
     $scExe = Join-Path $env:SystemRoot 'System32\sc.exe'
     $serviceOutput = @(& $scExe query 'launch-as-broker' 2>&1)
@@ -420,9 +308,17 @@ else {
             Test-ConfigSetupRequiredField -Setup $setup -Field 'createdAtUtc' -Description 'Setup timestamp'
             Test-ConfigSetupField -Setup $setup -Field 'userName' -Expected $UserName -Description 'Sandbox user'
             Test-ConfigSetupRequiredField -Setup $setup -Field 'installedByUser' -Description 'Installing user'
-            Test-ConfigSetupField -Setup $setup -Field 'firewallMode' -Expected $FirewallMode -Description 'Firewall mode'
-            Test-ConfigSetupStringList -Setup $setup -Field 'firewallRuleNames' -Expected @($FirewallRules | ForEach-Object { $_.Name }) -Description 'Firewall rule names'
             Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected $LaunchAsVersion -Description 'launch-as version'
+            Test-ConfigSetupField -Setup $setup -Field 'userNetLockVersion' -Expected $UserNetLockVersion -Description 'user-net-lock version'
+            Test-ConfigSetupField -Setup $setup -Field 'networkSandboxVersion' -Expected $NetworkSandboxVersion -Description 'network-sandbox version'
+            Test-ConfigSetupRequiredField -Setup $setup -Field 'proxyOwnerSid' -Description 'Proxy launcher account SID'
+            $proxyPort = [int]$setup.proxyPort
+            if ($proxyPort -ge 1 -and $proxyPort -le 65535) {
+                Pass "Configured proxy port: $proxyPort"
+            }
+            else {
+                Fail 'Configured proxy port is missing or invalid.'
+            }
         }
     }
     catch {
@@ -527,14 +423,6 @@ $hidden = (Get-ItemProperty -Path $ualPath -Name $UserName -ErrorAction Silently
 if ($hidden -eq 0) { Pass "Hidden from the login screen." }
 else { Warn "Not hidden from the login screen (cosmetic)." }
 
-# --- 3. Outbound firewall -----------------------------------------------------
-Section "Outbound firewall"
-Test-LocalFirewallPolicyApplies
-foreach ($ruleSpec in $FirewallRules) {
-    Test-SandboxFirewallRule -RuleSpec $ruleSpec -SandboxSid $u.SID.Value
-}
-Write-Host "  [INFO] Firewall mode preserves normal web/HTTPS egress; it is not full egress isolation." -ForegroundColor DarkGray
-
 # --- 4. Workspace ACLs --------------------------------------------------------
 Section "Workspace permissions"
 if (-not (Test-Path $SandboxPath)) {
@@ -597,6 +485,86 @@ else {
     Fail "launch-as administration tool missing: $LaunchAsAdminExe - run setup."
 }
 Test-LaunchAsBrokerService
+
+Section "Network proxy and lock"
+foreach ($component in @(
+        [pscustomobject]@{ Description = 'user-net-lock'; Path = $UserNetLockExe },
+        [pscustomobject]@{ Description = 'network-sandbox'; Path = $NetworkSandboxExe },
+        [pscustomobject]@{ Description = 'proxy policy'; Path = $NetworkSandboxConfig },
+        [pscustomobject]@{ Description = 'exposure checker'; Path = (Join-Path $programDataRoot 'Test-AgentSandboxExposure.ps1') }
+    )) {
+    if (Test-Path -LiteralPath $component.Path -PathType Leaf) {
+        Pass "$($component.Description) present: $($component.Path)"
+        Test-AdminWriteOnlyPath -Path $component.Path -Description $component.Description -UserName $UserName
+        if ($component.Description -ne 'exposure checker') {
+            Test-AdminOwner -Path $component.Path -Description $component.Description
+        }
+    }
+    else {
+        Fail "$($component.Description) missing: $($component.Path)"
+    }
+}
+Test-AdminWriteOnlyPath -Path $ToolsRoot -Description 'Network tools directory' -UserName $UserName
+Test-AdminOwner -Path $ToolsRoot -Description 'Network tools directory'
+$proxyStateRoot = Split-Path $NetworkSandboxConfig -Parent
+if (Test-Path -LiteralPath $proxyStateRoot -PathType Container) {
+    Test-AdminOwner -Path $proxyStateRoot -Description 'Proxy state directory'
+    $sandboxSid = (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue).SID.Value
+    $blockedWriterSids = @($sandboxSid, $BuiltinUsersSid.Value, $EveryoneSid.Value, $AuthenticatedUsersSid.Value)
+    $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor
+    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership
+    $unsafeAce = @(Get-Acl -LiteralPath $proxyStateRoot).Access | Where-Object {
+        $_.AccessControlType -eq 'Allow' -and $_.PropagationFlags -notmatch 'InheritOnly' -and
+        ($_.FileSystemRights -band $writeMask) -ne 0 -and
+        (Test-IdentitySidIn -Identity $_.IdentityReference -SidValues $blockedWriterSids)
+    }
+    if ($unsafeAce) { Fail 'Proxy state directory allows AgentSandbox or a broad group to write.' }
+    else { Pass 'Proxy state directory excludes AgentSandbox from write access.' }
+}
+else { Fail "Proxy state directory missing: $proxyStateRoot" }
+if ((Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) -and $proxyPort -ge 1 -and $proxyPort -le 65535) {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $proxyStatus = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
+    if ($LASTEXITCODE -eq 0 -and ($proxyStatus -join ' ') -match "127\.0\.0\.1:$proxyPort(?!\d)") {
+        Pass "Proxy running on 127.0.0.1:$proxyPort"
+    }
+    elseif ($u -and $identity.User.Value -eq $u.SID.Value) {
+        $client = $null
+        $reachable = $false
+        try {
+            $client = [Net.Sockets.TcpClient]::new()
+            $connection = $client.ConnectAsync('127.0.0.1', $proxyPort)
+            $reachable = $connection.Wait(2000) -and $client.Connected
+        }
+        catch { }
+        finally { if ($client) { $client.Dispose() } }
+        if ($reachable) {
+            Warn 'Proxy port is reachable, but process identity is unavailable from the sandbox account.'
+        }
+        else {
+            Fail "Proxy is not reachable on 127.0.0.1:$proxyPort"
+        }
+    }
+    else {
+        Fail "Proxy is not running on 127.0.0.1:$proxyPort"
+    }
+}
+if ((Test-Path -LiteralPath $UserNetLockExe -PathType Leaf) -and $proxyPort -ge 1 -and $proxyPort -le 65535) {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (($u -and $identity.User.Value -eq $u.SID.Value) -or
+        $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        & $UserNetLockExe verify --user $UserName --port $proxyPort
+        if ($LASTEXITCODE -eq 0) { Pass "Network lock verified for '$UserName'" }
+        else { Fail "Network lock verification failed for '$UserName'" }
+    }
+    else {
+        Warn "Network lock verification requires '$UserName' or an elevated administrator token."
+    }
+}
 
 if (Test-Path $InstalledCheckScript) {
     Pass "Installed checker present: $InstalledCheckScript"

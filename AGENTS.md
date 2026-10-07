@@ -29,15 +29,14 @@ user `AgentSandbox`.
 ## Repository map
 
 - `Setup-AgentSandbox.ps1`: elevated provisioning, ACLs, hardening, bootstrap.
-- `Remove-AgentSandbox.ps1`: elevated removal of the account, firewall rules,
-  login-screen registry value, and generated ProgramData state.
+- `Remove-AgentSandbox.ps1`: elevated removal of the account, login-screen registry value, and generated ProgramData state.
 - `Start-AgentSandbox.ps1`: normal daily PowerShell 7 launcher using
   `launch-as`.
 - `Check-AgentSandbox.ps1`: read-only verifier.
 - `bootstrap/`: shell initialization and Developer Shell command copied to
   locked ProgramData.
 - `scripts/*-wrapper.ps1`: protected per-agent install/update/launch commands.
-- `managed-settings.json`: policy template for
+- `config/managed-settings.json`: policy template for
   `C:\Program Files\ClaudeCode\managed-settings.json`.
 - `README.md`: user guide and threat model; `discovery/`: non-executable
   research.
@@ -66,8 +65,7 @@ user `AgentSandbox`.
   section-banner comments. Use single-quoted literals; interpolate only with
   double quotes. Escape runtime variables in expandable here-strings (for
   example, `` `$RepoPath ``).
-- Prefer the smallest clear implementation, especially in setup, ACL, firewall,
-  and teardown paths.
+- Prefer the smallest clear implementation, especially in setup, ACL, and teardown paths.
 - Keep `AgentSandbox` a standard user; keep bootstrap files admin-write /
   Users-read-execute; install Claude per-user in
   `C:\Users\AgentSandbox`. Document any credential caching or access widening

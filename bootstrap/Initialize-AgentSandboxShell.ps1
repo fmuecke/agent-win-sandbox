@@ -4,7 +4,8 @@
 
 # Initializes a plain PowerShell session as AgentSandbox. It deliberately does
 # not enter the Visual Studio Developer Shell or start an agent.
-$Version = '0.8.0'
+#Requires -Version 7.0
+$Version = '0.9.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
@@ -12,7 +13,8 @@ $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapper = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapper = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $CheckScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
-$SurfaceCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxAttackSurfaces.ps1'
+$ExposureCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxExposure.ps1'
+$UserNetLockExe = Join-Path $ProgramDataRoot 'user-net-lock.exe'
 
 function Stop-ShellInitialization {
     param([string]$Message)
@@ -133,6 +135,7 @@ if (-not (Test-Path $ConfigFile)) {
 try {
     $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     $SandboxPath = $config.sandboxPath
+    $ProxyPort = [int]$config.setup.proxyPort
 }
 catch {
     Stop-ShellInitialization "Sandbox config is invalid: $($_.Exception.Message)"
@@ -140,8 +143,18 @@ catch {
 if ([string]::IsNullOrWhiteSpace($SandboxPath) -or -not (Test-Path $SandboxPath)) {
     Stop-ShellInitialization "Sandbox path is missing or does not exist: $SandboxPath"
 }
+if ($ProxyPort -lt 1 -or $ProxyPort -gt 65535) {
+    Stop-ShellInitialization 'Sandbox proxy port is missing or invalid.'
+}
+if (-not (Test-Path $UserNetLockExe -PathType Leaf)) {
+    Stop-ShellInitialization "Network lock is missing: $UserNetLockExe"
+}
+& $UserNetLockExe verify --user AgentSandbox --port $ProxyPort
+if ($LASTEXITCODE -ne 0) {
+    Stop-ShellInitialization 'Network lock verification failed.'
+}
 
-foreach ($commandScript in @($DevShellScript, $ClaudeWrapper, $CopilotWrapper, $CheckScript, $SurfaceCheckScript)) {
+foreach ($commandScript in @($DevShellScript, $ClaudeWrapper, $CopilotWrapper, $CheckScript, $ExposureCheckScript)) {
     if (-not (Test-Path $commandScript -PathType Leaf)) {
         Stop-ShellInitialization "Sandbox command missing: $commandScript"
     }
@@ -150,23 +163,32 @@ foreach ($commandScript in @($DevShellScript, $ClaudeWrapper, $CopilotWrapper, $
 Set-AgentSandboxWindowTitle
 Set-Location $SandboxPath
 Add-UserLocalBinToPath
+$proxyUri = "http://127.0.0.1:$ProxyPort"
+$env:HTTP_PROXY = $proxyUri
+$env:HTTPS_PROXY = $proxyUri
 Write-SandboxNetworkExposureWarning
 
 Set-Alias -Name devshell -Value $DevShellScript -Scope Global
 Set-Alias -Name claude -Value $ClaudeWrapper -Scope Global
 Set-Alias -Name copilot -Value $CopilotWrapper -Scope Global
 Set-Alias -Name sandbox-check -Value $CheckScript -Scope Global
-Set-Alias -Name sandbox-surfaces -Value $SurfaceCheckScript -Scope Global
+
+function global:Invoke-SandboxExposure {
+    $installedRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
+    $installedConfig = Get-Content (Join-Path $installedRoot 'config.json') -Raw | ConvertFrom-Json
+    & (Join-Path $installedRoot 'Test-AgentSandboxExposure.ps1') -SandboxPath $installedConfig.sandboxPath @args
+}
+Set-Alias -Name sandbox-exposure -Value Invoke-SandboxExposure -Scope Global
 
 function global:sandbox-help {
     Write-Host @'
 Agent Sandbox commands:
+  sandbox-check  Check the sandbox configuration
+  sandbox-exposure  Assess this session's exposure with the workspace path
+  sandbox-help   Show this help
   devshell       Enter the Visual Studio Developer Shell in this terminal
   claude         Install, update, or launch Claude Code
   copilot        Install, update, or launch GitHub Copilot CLI
-  sandbox-check  Check the sandbox configuration
-  sandbox-surfaces  Check interactive process and desktop exposure
-  sandbox-help   Show this help
 '@ -ForegroundColor Cyan
 }
 

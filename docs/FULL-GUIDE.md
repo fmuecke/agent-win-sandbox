@@ -13,20 +13,20 @@ start your coding agent as needed.
 
 1. **`Setup-AgentSandbox.ps1`** (elevated, once) creates and hardens the
    `AgentSandbox` local user, creates its workspace, applies ACLs and
-   account-scoped firewall blocks, installs and locks ProgramData control files,
-   checks PowerShell 7, and creates the Public Desktop shortcut.
+   account-scoped WFP policy, installs the proxy and locked
+   ProgramData control files, checks PowerShell 7, and creates the shortcut.
 2. **`managed-settings.json`** (optional, elevated) deploys Claude Code policy
    that disables bypass/auto modes, restricts web, hooks, MCP, plugin-sideload,
    and agent-control-file surfaces, and pre-approves routine read-only Git and
    build verbs.
 3. **`Start-AgentSandbox.ps1`** (normal privilege, per session) uses the
-   installed `launch-as` broker to start a plain PowerShell 7 terminal as the
-   sandbox user in an independent logon session and keeps launch errors visible.
-4. **`Check-AgentSandbox.ps1`** (read-only) verifies account, ACL, firewall,
+   launcher-owned proxy and installed [`launch-as`](https://github.com/fmuecke/launch-as) broker to start a plain
+   PowerShell 7 terminal as the sandbox user in an independent logon session.
+4. **`Check-AgentSandbox.ps1`** (read-only) verifies account, ACL, network lock,
    shell commands, policy, workspace, and toolchain state. It prints
    PASS/WARN/FAIL and exits non-zero on FAIL.
-5. **`Remove-AgentSandbox.ps1`** (elevated) removes generated sandbox state.
-   It never removes the shared workspace or changes its ACLs.
+5. **`Remove-AgentSandbox.ps1`** (elevated) removes generated sandbox state and
+   installed components when unused. It leaves the shared workspace and ACLs.
 
 ### Setup details
 
@@ -40,9 +40,14 @@ Setup creates `AgentSandbox` when absent and:
 - Proposes `C:\AgentSandbox` as the complete workspace directory and grants
   that user Modify access to the tree.
 - Warns if your profile is readable by Users or Everyone.
-- Blocks sandbox-account outbound ports `137-139`, `445`, `135`, `3389`, and
-  `5985-5986`, while leaving web/HTTPS available for agents, Git, and internal
-  services.
+- Blocks sandbox-account outbound TCP/UDP except the configured loopback proxy
+  port with [`user-net-lock`](https://github.com/fmuecke/user-net-lock).
+- Installs [`network-sandbox`](https://github.com/fmuecke/network-sandbox) and a protected allowlist. The launcher starts one
+  proxy shared by all sessions; setup preserves an existing allowlist with a
+  warning.
+- Installs both network executables in the private, admin-write
+  `C:\ProgramData\agent-win-sandbox` folder. Removal deletes that folder
+  with the rest of the generated state; older shared Program Files copies remain.
 - Records configuration in `C:\ProgramData\agent-win-sandbox\config.json` and
   installs the launcher, checker, and shell commands there with admin-write /
   Users-RX permissions. After hash verification, `launch-as-admin` installs the
@@ -68,7 +73,7 @@ and managed-settings rules.
 | Managed settings | High-risk modes and agent-control-file edits | Claude Code |
 | Permission prompts | Unreviewed command execution | Claude Code |
 | Logon hardening | Network/RDP logon as the sandbox user | Windows user rights |
-| Firewall rules | Outbound SMB, NetBIOS, RDP, and WinRM | Windows Firewall |
+| Network lock and proxy | Direct outbound TCP/UDP and unlisted destinations | WFP and `network-sandbox` |
 
 ## Prerequisites
 
@@ -86,7 +91,7 @@ devshell       # Activate the Visual Studio Developer Shell in this terminal
 claude         # Install, update, or launch Claude Code
 copilot        # Install, update, or launch GitHub Copilot CLI
 sandbox-check  # Run the read-only checker
-sandbox-surfaces # Run the read-only interactive-exposure diagnostic
+sandbox-exposure # Run the standalone exposure checker with -SandboxPath
 sandbox-help   # Show this list
 ```
 
@@ -143,10 +148,10 @@ Run the checker elevated for full user-rights, HKLM, and other-profile checks.
 On first use, configure each agent and source-control credential separately
 with minimal scopes and expiry.
 
-For daily use, start the shortcut or the launcher above from a normal PowerShell
-session. The broker starts the enrolled console in the same pane without a
-password prompt. An enrolled account permits one active session at a time; then
-run the agent or `devshell` command you need.
+For daily use, start the shortcut or launcher from the same account that ran
+setup. The broker starts the enrolled console in the same pane without a
+password prompt. The shell verifies the WFP lock before accepting agent work;
+multiple sessions share the proxy.
 
 ## Removal
 
@@ -158,12 +163,12 @@ Run from an elevated PowerShell:
 
 This removes the sandbox account and profile, including its per-user agent
 installs, settings, and Copilot PAT environment variable. It also removes
-the broker enrollment, generated ProgramData state, account-scoped firewall rules, hidden-login
-registry value, and desktop shortcuts. It keeps the workspace—for example,
+the broker enrollment, generated ProgramData state, network lock, proxy process,
+hidden-login registry value, and desktop shortcuts. It keeps the workspace—for example,
 `C:\AgentSandbox`—and its ACLs. Close all Agent Sandbox terminals first;
 removal stops before changing state when the `AgentSandbox` profile is still
-loaded. It leaves the shared `launch-as` component installed because it may
-manage other accounts.
+loaded. It removes the installed network executables and uninstalls `launch-as`
+when no other broker accounts remain.
 
 ## Broker-managed account
 
@@ -174,9 +179,7 @@ sends that password. The console remains in the caller's terminal pane through
 the broker's terminal bridge, but the child is not placed on the caller's
 interactive desktop.
 
-The preview is console-only: GUI applications are not supported. The broker
-allows one active session for an enrolled account; a second launch fails rather
-than sharing its profile or credential lifecycle.
+The broker uses a separate console logon session for each agent terminal.
 
 The Copilot PAT is currently stored as plaintext in the sandbox user's
 environment. This separates it from the developer's identity but does not hide
@@ -200,10 +203,10 @@ user-owned fine-grained `Copilot Requests` permission and set a short expiry.
 - Debugging system processes requires elevation. Keep it separate from this
   low-privilege agent session—for example, use elevated Visual Studio with
   agent mode off.
-- Firewall rules block common Windows sharing and remote-admin ports, not web
-  exfiltration. Proxy environment variables are routing hints, not enforcement.
-  Strict egress needs firewall/WFP enforcement and host-specific auditing of
-  brokers such as localhost proxies, BITS, WebClient, Docker, and WSL/Hyper-V.
+- The WFP lock restricts outbound TCP/UDP attributed to `AgentSandbox` but
+  does not cover ICMP or DNS and other traffic brokered under another identity.
+  Proxy variables are routing hints; the WFP lock is the per-user enforcement.
+  Audit local brokers such as BITS, WebClient, Docker, and WSL/Hyper-V.
   Use a controlled VM or network route where bypass must be impossible; see the
   [threat model](threat-model.md#proxy-settings-and-strict-egress).
 - Mapped-drive checks are hints, not access proofs. The bootstrap warns about

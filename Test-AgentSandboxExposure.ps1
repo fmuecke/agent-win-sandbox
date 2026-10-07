@@ -179,7 +179,7 @@ $CriterionRegistry = @(
     }
     @{ Id = 'R-PROC-READ'; Dimension = 'Reach'; Check = 'PROCESSES'; Essential = $true; Severity = 'high'
         Title = 'No other identity or higher-integrity process grants memory-read access'
-        Remediation = 'Run the agent under a logon that does not share a logon SID or default DACL with the interactive user; see sandbox-surfaces.' 
+        Remediation = 'Run the agent under a logon that does not share a logon SID or default DACL with the interactive user.'
     }
     @{ Id = 'R-DESKTOP'; Dimension = 'Reach'; Check = 'DESKTOP'; Essential = $true; Severity = 'high'
         Title = 'Agent does not share the interactive desktop'

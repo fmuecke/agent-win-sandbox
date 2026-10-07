@@ -91,8 +91,9 @@ Assets intentionally exposed to the agent:
   files are admin-write / Users-read-execute; managed policy in Program Files is
   admin-write / Users-read. The writable workspace is never trusted launcher
   code.
-- **Workstation to developer network:** Account-scoped firewall rules block
-  common lateral-movement protocols but allow ordinary web/HTTPS traffic.
+- **Workstation to developer network:** The WFP lock routes the sandbox user's
+  outbound TCP/UDP to the allowlisted proxy; other identity paths need separate
+  validation.
 - **Human approval to agent action:** Agent prompts and product-specific policy
   constrain tool use but are defense in depth, not OS isolation.
 
@@ -197,52 +198,32 @@ Limitations:
 - Interactive local logon remains possible for anyone who knows the sandbox
   password and can log on to the workstation.
 
-### Account-scoped firewall rules
-
-Setup creates outbound Windows Firewall block rules scoped to the
-`AgentSandbox` SID for:
-
-- SMB and NetBIOS: TCP 139, TCP 445, UDP 137, UDP 138
-- RPC endpoint mapper: TCP 135
-- RDP: TCP 3389
-- WinRM: TCP 5985, TCP 5986
-
-Security effect:
-
-- Reduces accidental or prompt-injected access to common Windows file-sharing
-  and remote-admin paths from the sandbox identity.
-- Helps in a domain environment where nearby developer services may otherwise
-  be reachable.
-
-Limitations:
-
-- HTTPS and other allowed protocols can still exfiltrate data.
-- Rules may be overridden or disabled by higher-priority firewall policy.
-- They do not block all domain protocols, all RPC dynamic ports, package feeds,
-  source-control remotes, or arbitrary internal web services.
-
 ### Proxy settings and strict egress
 
 `HTTP_PROXY` and `HTTPS_PROXY` are cooperative application configuration, not a
 security boundary. A process running as `AgentSandbox` can unset them, configure
-a proxy bypass, invoke a client that ignores them, or open a socket directly.
-Putting proxy variables in protected managed settings keeps that file from being
-edited, but it does not constrain other programs or child processes running as
-the sandbox user.
+a proxy bypass, or invoke a client that ignores them. Setup installs
+both network executables under protected `C:\ProgramData\agent-win-sandbox`
+and the allowlist in a separate protected ProgramData folder. The trusted
+launcher account starts one proxy on `127.0.0.1` and
+the shell sets proxy variables for clients that honor them. `user-net-lock`
+applies a per-account WFP policy that allows TCP only to the configured proxy
+port on loopback and blocks other outbound TCP/UDP attributed to `AgentSandbox`.
+Startup verifies the proxy and the WFP lock before opening an agent shell.
+The WFP lock supersedes the older sandbox-specific Windows Firewall port
+blocks.
 
-A meaningful same-host proxy design would require all of the following:
+The proxy enforces destination host and port entries, including HTTP `CONNECT`;
+it does not inspect HTTPS requests inside a tunnel. The launcher account can
+write proxy runtime files but cannot change the protected allowlist without
+elevation. Other accounts running the public shortcut cannot start a session
+until setup is run from the intended launcher account.
 
-- Run the proxy as a service outside the `AgentSandbox` identity.
-- Keep the proxy binary and configuration admin-write-only.
-- Bind only to the intended local address and port.
-- Allow exact destination hostnames and ports and deny everything else. A small
-  native Windows proxy such as
-  [3proxy](https://3proxy.org/doc/man5/3proxy.cfg.5.html) can enforce HTTP
-  `CONNECT` hostname/port ACLs; Squid in a small VM is a heavier alternative.
-- Force `AgentSandbox` traffic to that proxy with firewall/WFP policy, covering
-  IPv4, IPv6, UDP/QUIC, and direct DNS. Proxy variables alone are insufficient.
-- Resolve destination names at the trusted proxy rather than through a resolver
-  controlled by the sandbox session.
+This WFP policy does not cover ICMP, DNS queries issued by the Windows DNS Client
+service under another identity, or network requests relayed through other local
+services, containers, or VMs. Validate these paths on the target host before
+relying on destination confinement. The sandbox user may also communicate with
+allowed services, including sending data through them.
 
 Windows Firewall explicit block rules override conflicting allow rules. A broad
 explicit "block everything" rule cannot be paired with an overlapping allow rule
@@ -310,7 +291,7 @@ boundary.
 
 ### Claude Code managed settings
 
-`managed-settings.json` disables bypass-permissions and auto mode, locks down
+`config\managed-settings.json` disables bypass-permissions and auto mode, locks down
 hooks/MCP/plugin sideload surfaces, denies WebFetch/WebSearch, and blocks edits
 to agent-control paths such as `.git`, `.claude`, and `.mcp.json`.
 
@@ -357,7 +338,7 @@ Limitations:
 | Spoofing | Agent uses developer identity or domain credentials | Separate local user, separate Credential Manager, per-user agent installs | `AgentSandbox` may still receive its own git/PAT credentials |
 | Tampering | Agent rewrites launcher, policy, or config | ProgramData admin-write locks, checker coverage | Admin compromise or ACL drift defeats this |
 | Repudiation | Hard to know what the agent did | Claude Code transcript/history, git history, manual review | No centralized audit trail in this repo |
-| Information disclosure | Agent reads secrets, profile data, repo secrets, network shares | Separate user, profile ACL check, managed deny rules, firewall blocks | Secrets in workspace or broad ACL locations remain exposed |
+| Information disclosure | Agent reads secrets, profile data, repo secrets, network shares | Separate user, profile ACL check, managed deny rules, WFP lock and allowlist proxy | Secrets in workspace or broad ACL locations remain exposed |
 | Denial of service | Agent deletes workspace, consumes CPU/disk, breaks repos | Low-priv user limits system impact | Workspace is fully writable; no job-object or resource limit |
 | Elevation of privilege | Malicious code escapes to developer/admin | Standard user, no elevation path in launcher | Local privilege escalation vulnerabilities remain out of scope |
 
@@ -368,10 +349,10 @@ Limitations:
 | Poisoned repo reads `C:\Users\<developer>\.ssh` | Default profile ACLs block direct reads; Claude deny rules block obvious `.ssh` reads. | Misconfigured profile ACLs or keys copied to the workspace/broad-read paths expose them. |
 | Poisoned build uses sandbox Git credentials or authenticated remotes | Developer and sandbox credentials are separate; `git push` should require agent approval. | Build tools can use sandbox credentials and HTTPS. Scope sandbox tokens as compromised. |
 | Poisoned build reads the Copilot PAT | The PAT is scoped to the sandbox identity and Copilot Requests. | The persistent environment value is readable by every sandbox process; use minimal scope and expiry. |
-| Prompt injection attempts SMB, NetBIOS, WinRM, RDP, or RPC traffic | SID-scoped firewall blocks and deny-network-logon reduce access. | HTTPS, package feeds, source hosting, and internal web apps remain; RPC/domain coverage is incomplete and policy can drift. |
+| Prompt injection attempts SMB, NetBIOS, WinRM, RDP, or RPC traffic | WFP blocks direct TCP/UDP outside the proxy; deny-network-logon limits inbound authentication. | Allowed proxy destinations and requests relayed under another identity remain possible. |
 | Agent rewrites bootstrap or launch configuration | ProgramData files are readable but not writable by `AgentSandbox`; checker detects broad write ACLs. | Fails if setup was not elevated, ACLs drift, or an administrator is compromised. |
 | Prompt injection changes or deletes workspace files | Damage stays within the workspace and sandbox-accessible resources. | Repositories, artifacts, local branches, and uncommitted work can be lost; no snapshots, copy-on-write isolation, or rollback. |
-| Domain SSO, mapped drives, or network shortcuts expose resources | Bootstrap warns about visible mappings and shortcuts; firewall blocks common sharing ports. | Web SSO and internal HTTPS remain, warnings are not access proofs, and sandbox credentials remain usable by its processes. |
+| Domain SSO, mapped drives, or network shortcuts expose resources | Bootstrap warns about visible mappings and shortcuts; WFP blocks direct TCP/UDP outside the proxy. | Allowed web destinations and local brokers may expose resources; sandbox credentials remain usable by its processes. |
 
 ## Domain and VLAN Considerations
 
@@ -396,8 +377,8 @@ Recommended operating model:
 ## Not Protected: Use Stronger Isolation
 
 The sandbox user can fully control its workspace and use every credential in its
-profile. Allowed HTTPS can exfiltrate data, and proxy variables remain bypassable
-until firewall/WFP or a VM makes the proxy the only route. A reachable local
+profile. Allowed HTTPS can exfiltrate data; the WFP lock restricts direct
+TCP/UDP attributed to the sandbox account. A reachable local
 proxy, broker, container daemon, or VM network path may connect under another
 identity.
 
@@ -433,7 +414,7 @@ For full coverage, run it elevated. Review every WARN and FAIL, especially:
 - The developer profile is not readable by Users, Everyone, or Authenticated
   Users.
 - Agent CLIs are installed only under `C:\Users\AgentSandbox\.local\bin`.
-- Account-scoped firewall rules exist and apply.
+- The configured proxy is running and the account-scoped WFP lock verifies.
 
 Manual checks to perform periodically:
 
@@ -441,8 +422,7 @@ Manual checks to perform periodically:
 - Review PAT scopes and expiry for source hosting.
 - Check for mapped drives and saved network shortcuts in the sandbox profile.
 - Confirm no secrets have been copied into the sandbox workspace.
-- Confirm local or domain firewall policy has not disabled the account-scoped
-  block rules.
+- Review the proxy allowlist and test that direct connections cannot bypass it.
 - Inventory localhost listeners and confirm no unintended proxy or tunnel is
   reachable by `AgentSandbox`.
 - Confirm `AgentSandbox` is not in `docker-users`, `Hyper-V Administrators`, or

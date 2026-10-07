@@ -3,17 +3,18 @@
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 #Requires -RunAsAdministrator
+#Requires -Version 7.0
 <#
 .SYNOPSIS
-    Removes the local AgentSandbox account and agent-win-sandbox ProgramData
-    state.
+    Removes AgentSandbox account state and installed components.
 
 .DESCRIPTION
     This is the teardown counterpart to Setup-AgentSandbox.ps1. It removes the
-    fixed AgentSandbox local user, that user's Windows profile, account-scoped
-    firewall rules, the hidden-login-screen registry value, generated
-    ProgramData files under the agent-win-sandbox ProgramData directory, and the
-    Public Desktop shortcut.
+    fixed AgentSandbox local user, that user's Windows profile,
+    the hidden-login-screen registry value, generated ProgramData files under
+    the agent-win-sandbox ProgramData directory, the installed network executables,
+    and the Public Desktop shortcut. It also uninstalls launch-as when no other
+    broker accounts remain.
 
     It deliberately does NOT delete or modify the shared sandbox workspace
     directory. Delete the workspace manually if it is no longer needed.
@@ -38,17 +39,19 @@ $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LaunchAsAdminExe = Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as-admin.exe'
 $LegacyLaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
 $LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
-$LaunchAsVersion = 'v1.2.0-preview'
-$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview')
+$LaunchAsVersion = 'v1.3.0'
+$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
+$ToolsRoot = $ProgramDataRoot
+$UserNetLockExe = Join-Path $ToolsRoot 'user-net-lock.exe'
+$NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
+$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.ini'
 $ShortcutPaths = @(
     (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
-$FirewallRuleGroup = 'agent-win-sandbox'
 
 function Write-Step { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Write-Removed { param($m) Write-Host "  removed $m" -ForegroundColor Green }
 function Write-Skipped { param($m) Write-Host "  skipped $m" -ForegroundColor Yellow }
-
 function Get-ConfiguredSandboxPath {
     if (-not (Test-Path $ConfigFile)) {
         return $null
@@ -90,21 +93,6 @@ function Stop-IfLegacyInstallationPresent {
 
     if ($installedVersion -notin $SupportedLaunchAsVersions) {
         throw "Agent Sandbox uses launch-as '$installedVersion'. This removal script supports only launch-as $LaunchAsVersion and will not alter it. Uninstall the matching earlier Agent Sandbox version first."
-    }
-}
-
-function Remove-SandboxFirewallRules {
-    $rules = @(Get-NetFirewallRule -Group $FirewallRuleGroup -ErrorAction SilentlyContinue)
-    if ($rules.Count -eq 0) {
-        Write-Skipped "firewall rules (none found)"
-        return
-    }
-
-    foreach ($rule in $rules) {
-        if ($PSCmdlet.ShouldProcess("firewall rule '$($rule.Name)'", 'Remove')) {
-            Remove-NetFirewallRule -InputObject $rule
-            Write-Removed "firewall rule: $($rule.DisplayName)"
-        }
     }
 }
 
@@ -196,12 +184,80 @@ function Unenroll-SandboxBrokerAccount {
             & $launchAsAdmin unenroll $UserName --force
         }
         else {
-            & $launchAsAdmin forget $UserName
+            & $launchAsAdmin forget $UserName --force
         }
         if ($LASTEXITCODE -ne 0) {
             throw "Could not unenroll broker-managed '$UserName' (exit code $LASTEXITCODE)."
         }
         Write-Removed "launch-as broker enrollment for '$UserName'"
+    }
+}
+function Remove-LaunchAsInstallation {
+    if (-not (Test-Path -LiteralPath $LaunchAsAdminExe -PathType Leaf)) {
+        Write-Skipped 'launch-as installation (admin tool not found)'
+        return
+    }
+
+    $accounts = @(& $LaunchAsAdminExe list 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not list remaining launch-as accounts; leaving the shared component installed: $($accounts -join ' ')"
+    }
+    $registered = @($accounts | ForEach-Object { ([string]$_).Trim() })
+    if ($registered.Count -eq 0 -or @($registered | Where-Object { -not $_ }).Count -gt 0) {
+        throw 'launch-as returned an empty account list; leaving the shared component installed.'
+    }
+    if ($registered.Count -eq 1 -and $registered[0] -eq 'No broker accounts are registered.') {
+        $registered = @()
+    }
+    elseif ($registered -contains 'No broker accounts are registered.') {
+        throw 'launch-as returned an inconsistent account list; leaving the shared component installed.'
+    }
+    if ($WhatIfPreference) {
+        $registered = @($registered | Where-Object { $_ -ne $UserName })
+    }
+    elseif ($registered -contains $UserName) {
+        throw "launch-as still lists '$UserName' after unenrollment; leaving the shared component installed."
+    }
+    if ($registered.Count -gt 0) {
+        Write-Warning "Keeping shared launch-as installation; other broker accounts remain: $($registered -join ', ')"
+        return
+    }
+    $installRoot = Split-Path $LaunchAsAdminExe -Parent
+    if ($PSCmdlet.ShouldProcess($installRoot, 'Uninstall launch-as broker and executables')) {
+        if ((Get-Item -LiteralPath $installRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint -or
+            (Get-Item -LiteralPath $LaunchAsAdminExe -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Refusing to execute launch-as from a linked installation path: $installRoot"
+        }
+        # The uninstaller deletes launch-as-admin.exe. Run a protected sibling
+        # copy so Windows does not keep the installed executable open.
+        $uninstaller = Join-Path $installRoot "launch-as-uninstall-$([guid]::NewGuid().ToString('N')).exe"
+        Copy-Item -LiteralPath $LaunchAsAdminExe -Destination $uninstaller
+        try {
+            for ($attempt = 1; $attempt -le 10; $attempt++) {
+                & $uninstaller uninstall --force
+                $uninstallExit = $LASTEXITCODE
+                if ($uninstallExit -eq 0) { break }
+                # A just-stopped broker or console host can briefly keep its
+                # image open. Retry only file access/sharing failures.
+                if ($uninstallExit -notin @(5, 32) -or $attempt -eq 10) {
+                    throw "Could not uninstall launch-as (exit code $uninstallExit)."
+                }
+                Start-Sleep -Milliseconds 500
+            }
+            if (Test-Path -LiteralPath $LaunchAsAdminExe -PathType Leaf) {
+                throw "launch-as reported uninstall success but its admin executable remains: $LaunchAsAdminExe"
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $uninstaller -Force
+        }
+        if (@(Get-ChildItem -LiteralPath $installRoot -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $installRoot -Force
+        }
+        else {
+            Write-Warning "Keeping $installRoot because it contains other files."
+        }
+        Write-Removed 'launch-as broker service and installed executables'
     }
 }
 
@@ -220,6 +276,7 @@ else {
     Write-Host "  profile: not found" -ForegroundColor Yellow
 }
 Write-Host "  ProgramData: $ProgramDataRoot"
+Write-Host "  shared broker: $(Split-Path $LaunchAsAdminExe -Parent) (removed when no other accounts remain)"
 Write-Host "  shortcuts: $($ShortcutPaths -join ', ')"
 if ([string]::IsNullOrWhiteSpace($ResolvedSandboxPath)) {
     Write-Host "  workspace: unknown (not modified by this script)" -ForegroundColor Yellow
@@ -230,7 +287,8 @@ else {
 
 if (-not $Force -and -not $WhatIfPreference) {
     Write-Host ''
-    Write-Host 'This removes the sandbox user, its Windows profile, per-user agent installs/settings, ProgramData state, and shortcuts.' -ForegroundColor Yellow
+    Write-Host 'This removes the sandbox user, profile, ProgramData state, shortcuts, and installed network components.' -ForegroundColor Yellow
+    Write-Host 'It also uninstalls launch-as if no other broker accounts remain.' -ForegroundColor Yellow
     Write-Host 'The shared workspace directory and its ACLs are left intact for manual review.' -ForegroundColor Yellow
     Write-Host ''
     $answer = Read-Host "Type REMOVE to continue"
@@ -240,14 +298,31 @@ if (-not $Force -and -not $WhatIfPreference) {
     }
 }
 
+# --- 0b. Remove the account network lock and proxy ---------------------------
+Write-Step "Removing AgentSandbox network controls"
+if ((Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) -and
+    (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
+    if ($PSCmdlet.ShouldProcess('Agent Sandbox network proxy', 'Stop')) {
+        & $NetworkSandboxExe stop -config $NetworkSandboxConfig
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stop the network proxy.' }
+        Write-Removed 'network proxy process'
+    }
+}
+if ($user -and (Test-Path -LiteralPath $UserNetLockExe -PathType Leaf)) {
+    if ($PSCmdlet.ShouldProcess("network lock for '$UserName'", 'Remove')) {
+        & $UserNetLockExe remove --user $UserName
+        if ($LASTEXITCODE -ne 0) { throw "Could not remove the network lock for '$UserName'." }
+        Write-Removed "network lock for '$UserName'"
+    }
+}
+elseif (-not $user -and (Test-Path -LiteralPath $UserNetLockExe -PathType Leaf)) {
+    Write-Warning "Cannot check for an orphaned network lock because '$UserName' no longer exists."
+}
 # --- 1. Unenroll the broker-managed account ----------------------------------
 Write-Step "Unenrolling broker-managed account '$UserName'"
 Unenroll-SandboxBrokerAccount
 
 # --- 2. Remove account-scoped hardening artifacts ----------------------------
-Write-Step "Removing account-scoped firewall rules"
-Remove-SandboxFirewallRules
-
 Write-Step "Removing login-screen hiding entry"
 Remove-SandboxLoginScreenEntry
 
@@ -281,6 +356,11 @@ else {
 Write-Step "Removing ProgramData sandbox files"
 if (Test-Path $ProgramDataRoot) {
     if ($PSCmdlet.ShouldProcess($ProgramDataRoot, 'Remove generated ProgramData files recursively')) {
+        $expectedRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'agent-win-sandbox'
+        if ([IO.Path]::GetFullPath($ProgramDataRoot) -ine [IO.Path]::GetFullPath($expectedRoot) -or
+            ((Get-Item -LiteralPath $ProgramDataRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing to remove an unexpected or linked ProgramData directory: $ProgramDataRoot"
+        }
         Remove-Item -LiteralPath $ProgramDataRoot -Recurse -Force
         Write-Removed $ProgramDataRoot
     }
@@ -289,7 +369,11 @@ else {
     Write-Skipped "$ProgramDataRoot (not found)"
 }
 
-# --- 7. Done ------------------------------------------------------------------
+# --- 7. Remove the shared broker when unused ---------------------------------
+Write-Step 'Removing launch-as when it has no other accounts'
+Remove-LaunchAsInstallation
+
+# --- 8. Done ------------------------------------------------------------------
 Write-Step "Removal complete"
 $workspaceMessage = if ([string]::IsNullOrWhiteSpace($ResolvedSandboxPath)) {
     '  (unknown - config was missing or unreadable before ProgramData cleanup)'

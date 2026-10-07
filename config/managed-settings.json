@@ -5,6 +5,7 @@
   "disableDeepLinkRegistration": "disable",
   "disableSideloadFlags": true,
   "allowManagedMcpServersOnly": true,
+  "allowManagedPermissionRulesOnly": true,
   "allowedMcpServers": [],
   "strictKnownMarketplaces": [],
   "strictPluginOnlyCustomization": [
@@ -12,9 +13,8 @@
     "mcp"
   ],
   "permissions": {
-    "defaultMode": "default",
+    "defaultMode": "auto",
     "disableBypassPermissionsMode": "disable",
-    "disableAutoMode": "disable",
     "deny": [
       "Edit(**/.git/**)",
       "Edit(**/.claude/**)",

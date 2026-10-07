@@ -19,16 +19,14 @@ _Last updated: 2026-08-31_
 - **The broker owns the password.** It generates a per-launch password, uses it
   only to log on the enrolled account, then discards it. Daily launch never
   receives, stores, or prompts for that password.
-- **Console-only preview.** The broker keeps terminal I/O in the caller's pane,
-  permits one active session per enrolled account, and does not support GUI
-  applications.
+- **Console mode.** The broker keeps terminal I/O in the caller's pane and
+  supports multiple sessions for the enrolled account.
 - **Keep interactive logon enabled** because the launcher needs it; deny network
   and RDP logon, hide the account from the sign-in screen, and set
   password-never-expires and user-cannot-change-password.
-- **Firewall rules are account-scoped and operational.** Block sandbox outbound
-  SMB, NetBIOS, RDP, and WinRM ports; leave web and internal services available.
-  Proxy variables are bypassable routing hints, not an isolation boundary.
-  Strict allowlisting needs protected proxy plus firewall/WFP enforcement—or a
+- **Network policy is account-scoped.** WFP permits outbound TCP only to the
+  proxy port on loopback; the proxy enforces the destination allowlist.
+  Strict allowlisting needs protected proxy plus WFP enforcement—or a
   controlled VM/network route—and host-specific auditing of localhost, BITS,
   WebClient, DNS, Docker, and WSL/Hyper-V brokers.
 
@@ -136,17 +134,13 @@ _Last updated: 2026-08-31_
   plaintext environment. Any replacement must still acknowledge that Copilot
   and processes it starts can read the token while it is in use.
 - [ ] Add the managed settings pendant for copilot CLI
-- [ ] Verify whether Copilot CLI needs the same operational firewall profile or
-  stricter proxy/network egress control.
+- [x] Apply the same account-scoped network lock and proxy policy to Copilot CLI.
 
 ## Parking lot
 
-- [x] Added operational sandbox-account firewall rules for SMB, NetBIOS, RDP,
-  and WinRM; web remains available.
-- [ ] Add strict process egress allowlisting (for example,
-  `api.anthropic.com` and `dev.azure.com`) through a protected proxy and
-  non-bypassable firewall/WFP policy, or use a VM with a controlled route. Do
-  not treat proxy variables alone as enforcement.
+- [x] Replaced sandbox-account firewall port blocks with the stricter WFP lock.
+- [x] Add per-user outbound TCP/UDP WFP filtering and a protected allowlist
+  proxy. Validate DNS, ICMP, local brokers, and VM routes separately.
 - [ ] Audit local network brokers: localhost listeners, BITS, WebClient/WebDAV,
   DNS Client, Docker permissions, accessible WSL distributions, Hyper-V firewall
   policy, and Security events 5156/5157.
