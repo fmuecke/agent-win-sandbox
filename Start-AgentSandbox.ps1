@@ -186,7 +186,7 @@ Write-Host "Configured sandbox path: $sandboxPath" -ForegroundColor Cyan
 
 # --- Launch -------------------------------------------------------------------
 Write-Host "Launching Agent Sandbox as '$UserName' in $sandboxPath ..." -ForegroundColor Green
-Write-Host '(launch-as uses the installed broker; no password prompt is expected.)' -ForegroundColor DarkGray
+# launch-as uses the installed broker; no password prompt is expected.
 
 Enable-CtrlBreakGuard
 try {

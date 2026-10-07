@@ -89,5 +89,5 @@ Write-Host "Demo configuration: $configurationPath" -ForegroundColor Cyan
 if (-not $PrepareOnly) {
     # Open the interactive demo window.
     Start-Process -FilePath $sandboxCommand.Source -ArgumentList "`"$configurationPath`"" | Out-Null
-    Write-Host 'Setup runs inside the guest. Close Windows Sandbox when you finish exploring.' -ForegroundColor Cyan
+    Write-Host 'Setup runs inside the guest. Be patient - full startup may take some time. Close Windows Sandbox when you finish exploring. ' -ForegroundColor Cyan
 }

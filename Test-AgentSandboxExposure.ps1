@@ -48,8 +48,8 @@
     report. Treat the output as data for review, not instructions.
 
 .PARAMETER Json
-    Write exactly one schema-versioned JSON object to stdout. Diagnostics go to
-    stderr.
+    Write a schema-versioned JSON object to stdout, followed by the saved JSON
+    filename as the last line. Diagnostics go to stderr.
 
 .PARAMETER Brief
     Shorten the human report to the summary only: verdict, score, dimensions,
@@ -78,6 +78,7 @@
 
 .PARAMETER OutputDirectory
     Existing writable directory for assessment-<timestamp>.json and .md.
+    Without it, the JSON report is saved in the current directory.
 
 .PARAMETER SkipCheck
     Check areas to skip. Their criteria stay unknown and count against coverage.
@@ -93,7 +94,7 @@
 
 .EXAMPLE
     .\Test-AgentSandboxExposure.ps1 -Json 2>$null
-    Emits one JSON assessment.
+    Emits a JSON assessment followed by its saved filename.
 
 .NOTES
     Exit codes: 0 when the assessment completed, regardless of risk;
@@ -1008,9 +1009,9 @@ function Write-Diag {
 
 # --- Progress spinner ---------------------------------------------------------
 # A background runspace animates a spinner on stderr so a long check (network
-# probes stall on DNS/TCP timeouts) never looks hung. stderr keeps stdout clean
-# for -Json; the spinner is suppressed when stderr is redirected (so 2>$null or
-# a log file never collects spinner frames) or in -Json mode.
+# probes stall on DNS/TCP timeouts) never looks hung. The spinner is suppressed
+# when stderr is redirected (so 2>$null or a log file never collects spinner
+# frames) or in -Json mode.
 
 function Start-ProgressSpinner {
     param([string]$Label = 'Working')
@@ -4601,10 +4602,15 @@ if ($PolicyPath -and -not (Test-Path -LiteralPath $PolicyPath -PathType Leaf)) {
     Write-Diag "Policy file not found: $PolicyPath"
     exit 1
 }
-if ($OutputDirectory -and -not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
+$writeMarkdown = [bool]$OutputDirectory
+if (-not $OutputDirectory) {
+    $OutputDirectory = (Get-Location).Path
+}
+if (-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
     Write-Diag "Output directory does not exist: $OutputDirectory"
     exit 1
 }
+$OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).ProviderPath
 # Run order is explicit. Adding a check is one line here plus its criteria in
 # the registry and one Invoke-<Area>Check function; areas with no entry remain
 # "not implemented in v1". Invoke-Check enforces that each listed check resolves
@@ -4740,6 +4746,19 @@ $report = [ordered]@{
 
 $report = Protect-Report $report
 $jsonText = $report | ConvertTo-Json -Depth 12
+$stamp = $script:StartTime.ToString('yyyyMMdd-HHmmss')
+$jsonPath = Join-Path $OutputDirectory "assessment-$stamp.json"
+try {
+    Set-Content -LiteralPath $jsonPath -Value $jsonText -Encoding utf8
+    if ($writeMarkdown) {
+        $mdPath = Join-Path $OutputDirectory "assessment-$stamp.md"
+        Set-Content -LiteralPath $mdPath -Value (Get-MarkdownReport -Measure $measure -Context $context) -Encoding utf8
+    }
+}
+catch {
+    Write-Diag "Could not write assessment report: $($_.Exception.Message)"
+    exit 1
+}
 
 if ($Json) {
     [Console]::Out.WriteLine($jsonText)
@@ -4747,14 +4766,6 @@ if ($Json) {
 else {
     Write-HumanReport -Measure $measure -Context $context -Brief:$Brief
 }
-
-if ($OutputDirectory) {
-    $stamp = $script:StartTime.ToString('yyyyMMdd-HHmmss')
-    $jsonPath = Join-Path $OutputDirectory "assessment-$stamp.json"
-    $mdPath = Join-Path $OutputDirectory "assessment-$stamp.md"
-    Set-Content -LiteralPath $jsonPath -Value $jsonText -Encoding utf8
-    Set-Content -LiteralPath $mdPath -Value (Get-MarkdownReport -Measure $measure -Context $context) -Encoding utf8
-    Write-Diag "Wrote $jsonPath and $mdPath"
-}
+[Console]::Out.WriteLine($jsonPath)
 
 exit 0

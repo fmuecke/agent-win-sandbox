@@ -346,12 +346,13 @@ try {
         Assert-Equal $captured.ToString().Contains('synthetic-diagnostic-token') $false
         $captured.Dispose()
     }
-    Test-Case 'JSON entry point emits one object without running host checks' {
+    Test-Case 'JSON entry point saves its report and prints the filename last' {
         $scriptPath = (Join-Path $PSScriptRoot '..\Test-AgentSandboxExposure.ps1').Replace("'", "''")
         $workspace = $script:WorkspacePath.Replace("'", "''")
         $areas = ($AllCheckAreas | ForEach-Object { "'$_'" }) -join ','
         $command = "& '$scriptPath' -Json -Workspace '$workspace' -SkipCheck @($areas)"
         $startInfo = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+        $startInfo.WorkingDirectory = $script:WorkspacePath
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
         $startInfo.RedirectStandardOutput = $true
@@ -363,12 +364,48 @@ try {
             $stderr = $process.StandardError.ReadToEndAsync()
             if (-not $process.WaitForExit(30000)) { $process.Kill($true); throw 'JSON smoke check timed out.' }
             Assert-Equal $process.ExitCode 0
-            $report = $stdout.GetAwaiter().GetResult() | ConvertFrom-Json
+            $lines = @($stdout.GetAwaiter().GetResult() -split '\r?\n' | Where-Object { $_ })
+            $jsonPath = $lines[-1]
+            $report = ($lines[0..($lines.Count - 2)] -join [Environment]::NewLine) | ConvertFrom-Json
             $null = $stderr.GetAwaiter().GetResult()
+            Assert-Equal (Split-Path -Parent $jsonPath) $script:WorkspacePath
+            Assert-Equal (Test-Path -LiteralPath $jsonPath -PathType Leaf) $true
+            Assert-Equal @(Get-ChildItem -LiteralPath $script:WorkspacePath -Filter 'assessment-*.md').Count 0
+            Assert-Equal ((Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json).schemaVersion) $SchemaVersion
             Assert-Equal $report.schemaVersion $SchemaVersion
             Assert-Equal $report.scope.checksEvaluated.Count 0
             Assert-Equal $report.scope.checksSkipped.Count $AllCheckAreas.Count
             Assert-Equal $report.verdict 'Incomplete'
+        }
+        finally { $process.Dispose() }
+    }
+    Test-Case 'Human entry point prints the saved JSON filename last' {
+        $scriptPath = (Join-Path $PSScriptRoot '..\Test-AgentSandboxExposure.ps1').Replace("'", "''")
+        $workspace = $script:WorkspacePath.Replace("'", "''")
+        $outputDirectory = Join-Path $script:WorkspacePath 'reports'
+        New-Item -ItemType Directory -Path $outputDirectory | Out-Null
+        $areas = ($AllCheckAreas | ForEach-Object { "'$_'" }) -join ','
+        $command = "& '$scriptPath' -Brief -Workspace '$workspace' -SkipCheck @($areas) -OutputDirectory '$($outputDirectory.Replace("'", "''"))'"
+        $startInfo = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in '-NoProfile', '-Command', $command) { $startInfo.ArgumentList.Add($argument) }
+        $process = [Diagnostics.Process]::Start($startInfo)
+        try {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(30000)) { $process.Kill($true); throw 'Human smoke check timed out.' }
+            Assert-Equal $process.ExitCode 0
+            $lines = @($stdout.GetAwaiter().GetResult() -split '\r?\n' | Where-Object { $_ })
+            $jsonPath = $lines[-1]
+            $null = $stderr.GetAwaiter().GetResult()
+            Assert-Equal ($lines[0] -match 'Agent sandbox exposure checker') $true
+            Assert-Equal (Split-Path -Parent $jsonPath) $outputDirectory
+            Assert-Equal (Test-Path -LiteralPath $jsonPath -PathType Leaf) $true
+            Assert-Equal @(Get-ChildItem -LiteralPath $outputDirectory -Filter 'assessment-*.md').Count 1
+            Assert-Equal ((Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json).schemaVersion) $SchemaVersion
         }
         finally { $process.Dispose() }
     }
