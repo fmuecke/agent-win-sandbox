@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
+
 #requires -Version 7.0
 
 # Load definitions and state only. Never run the host assessment entry point.
@@ -435,7 +439,8 @@ try {
             function Get-ScheduledTask {
                 if ($targetKind -eq 'task') {
                     [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
-                        Actions = @([pscustomobject]@{ Execute = $exe; Arguments = ''; WorkingDirectory = '' }) }
+                        Actions = @([pscustomobject]@{ Execute = $exe; Arguments = ''; WorkingDirectory = '' }) 
+                    }
                 }
             }
             Invoke-IndirectCheck
@@ -997,7 +1002,8 @@ try {
         function Get-CimInstance { @() }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-21-101-102-103-1002' }
-                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\pwsh.exe'; Arguments = "-File `"$taskScript`""; WorkingDirectory = '' }) }
+                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\pwsh.exe'; Arguments = "-File `"$taskScript`""; WorkingDirectory = '' }) 
+            }
         }
         function Test-Path { $true }
         function Get-PathAccess {
@@ -1022,7 +1028,8 @@ try {
         function Get-CimInstance { @() }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
-                Actions = @([pscustomobject]@{ Execute = 'pwsh.exe'; Arguments = '-File "C:\synthetic\job.ps1"'; WorkingDirectory = '' }) }
+                Actions = @([pscustomobject]@{ Execute = 'pwsh.exe'; Arguments = '-File "C:\synthetic\job.ps1"'; WorkingDirectory = '' }) 
+            }
         }
         function Test-Path { $true }
         function Get-PathAccess { [pscustomobject]@{ Write = 'granted'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
@@ -1093,7 +1100,8 @@ try {
         function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = '"C:\synthetic\service.exe"'; StartName = '' } }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = '' }
-                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\task.exe'; Arguments = ''; WorkingDirectory = '' }) }
+                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\task.exe'; Arguments = ''; WorkingDirectory = '' }) 
+            }
         }
         function Test-Path { $true }
         function Get-PathAccess { [pscustomobject]@{ Write = 'denied'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
@@ -1371,7 +1379,8 @@ try {
         function Get-CimInstance { @() }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
-                Actions = @([pscustomobject]@{ ClassId = $comId; Data = '' }) }
+                Actions = @([pscustomobject]@{ ClassId = $comId; Data = '' }) 
+            }
         }
         function Test-Path { $true }
         function Get-PathAccess { [pscustomobject]@{ Write = 'denied'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
@@ -1396,7 +1405,8 @@ try {
         function Get-CimInstance { @() }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
-                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '--config C:\synthetic\a.json'; WorkingDirectory = '' }) }
+                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '--config C:\synthetic\a.json'; WorkingDirectory = '' }) 
+            }
         }
         function Test-Path { $true }
         function Get-PathAccess {
@@ -1412,7 +1422,8 @@ try {
         function Get-CimInstance { @() }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
-                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '--log C:\logs\missing.log'; WorkingDirectory = '' }) }
+                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '--log C:\logs\missing.log'; WorkingDirectory = '' }) 
+            }
         }
         function Test-Path { param($LiteralPath) $LiteralPath -ne 'C:\logs\missing.log' }
         function Get-PathAccess {
@@ -1647,7 +1658,7 @@ finally {
         $script:adjacent = New-AdjacentFixture -File 'signing.pfx', 'keys\id_ed25519', 'vault\db.kdbx', 'notes.txt'
         # Exclusive handles make any content read fail; a name-only search succeeds.
         $locks = @('signing.pfx', 'keys\id_ed25519', 'vault\db.kdbx') |
-            ForEach-Object { [IO.File]::Open((Join-Path $script:adjacent $_), 'Open', 'Read', 'None') }
+        ForEach-Object { [IO.File]::Open((Join-Path $script:adjacent $_), 'Open', 'Read', 'None') }
         try {
             function Get-AdjacentDirectories { [pscustomobject]@{ Paths = @($script:adjacent); Incomplete = $false; MaxTargets = 200 } }
             function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Read granted }

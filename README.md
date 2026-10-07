@@ -262,4 +262,4 @@ credentials, token caches, shell history, browser state, and per-user installs.
 
 ## License
 
-[MIT](LICENSE)
+[GPL-3.0-or-later](LICENSE) © 2026 Florian Mücke

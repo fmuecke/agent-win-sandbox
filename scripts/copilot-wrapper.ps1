@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 <#
 .SYNOPSIS
     Installs, updates, authenticates, and launches GitHub Copilot CLI on Windows.

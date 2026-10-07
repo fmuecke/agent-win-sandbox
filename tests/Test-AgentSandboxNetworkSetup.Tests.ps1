@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
+
 #Requires -Version 7.0
 
 # Execute only the network-lock section with mocked commands.
@@ -87,9 +91,9 @@ foreach ($case in 'fresh', 'existing-json', 'missing-json') {
 $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
 foreach ($name in 'Get-NetworkSandboxPolicy', 'Install-NetworkSandboxPolicy', 'Test-ExistingSandboxProxyListener', 'Resolve-ProxyPort') {
     $definition = $ast.Find({
-        param($node)
-        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
-    }, $true)
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+        }, $true)
     if (-not $definition) { throw "Function not found: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
 }

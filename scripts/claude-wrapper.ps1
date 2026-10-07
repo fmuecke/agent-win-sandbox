@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 <#
 .SYNOPSIS
     Installs, updates, and launches Claude Code on Windows.
@@ -31,7 +34,7 @@ function Get-ClaudeExecutable {
     }
 
     $command = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue |
-        Select-Object -First 1
+    Select-Object -First 1
     if ($null -ne $command) {
         return $command.Source
     }

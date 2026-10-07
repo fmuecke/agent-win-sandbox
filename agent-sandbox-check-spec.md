@@ -1,3 +1,5 @@
+<!-- project: https://github.com/fmuecke/agent-win-sandbox -->
+
 # Agent coding sandbox: assessment specification
 
 Date: 2026-10-03, updated 2026-10-04 for profile default/5. Scope agreed through interview; implementation defaults below are proposals.

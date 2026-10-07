@@ -175,7 +175,7 @@ $script:Findings = [System.Collections.Generic.List[object]]::new()
 function Add-Finding {
     param(
         [Parameter(Mandatory)][int]$Step,
-        [Parameter(Mandatory)][ValidateSet('INFO','OK','WARN','HIGH','ERROR','CHANGED','SKIPPED')][string]$Level,
+        [Parameter(Mandatory)][ValidateSet('INFO', 'OK', 'WARN', 'HIGH', 'ERROR', 'CHANGED', 'SKIPPED')][string]$Level,
         [Parameter(Mandatory)][string]$Target,
         [Parameter(Mandatory)][string]$Message
     )
@@ -249,8 +249,8 @@ function Test-PathOverlap {
     $b1 = (Normalize-Path $B)
 
     return $a1.Equals($b1, [System.StringComparison]::OrdinalIgnoreCase) -or
-           $a1.StartsWith($b1 + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
-           $b1.StartsWith($a1 + '\', [System.StringComparison]::OrdinalIgnoreCase)
+    $a1.StartsWith($b1 + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
+    $b1.StartsWith($a1 + '\', [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Test-AgentWritableOverlap {
@@ -298,9 +298,9 @@ function Get-BroadFsRules {
     $rules = Get-FileSystemRulesBySid -Acl $acl
 
     return @($rules | Where-Object {
-        (Test-IsBroadSid $_.IdentityReference.Value) -and
-        (-not $WriteOnly -or (Test-FsRuleHasWrite $_))
-    })
+            (Test-IsBroadSid $_.IdentityReference.Value) -and
+            (-not $WriteOnly -or (Test-FsRuleHasWrite $_))
+        })
 }
 
 function Remove-BroadWriteFromFsItem {
@@ -326,10 +326,10 @@ function Remove-BroadWriteFromFsItem {
         }
 
         $editRules = @($acl.GetAccessRules(
-            $true,
-            $true,
-            [System.Security.Principal.SecurityIdentifier]
-        ))
+                $true,
+                $true,
+                [System.Security.Principal.SecurityIdentifier]
+            ))
 
         foreach ($rule in $editRules) {
             $sid = $rule.IdentityReference.Value
@@ -370,16 +370,16 @@ function Remove-WriteFromDriveRootPreserveChildren {
 
     $acl = Get-Acl -LiteralPath $Path
     $rules = @($acl.GetAccessRules(
-        $true,
-        $false,
-        [System.Security.Principal.SecurityIdentifier]
-    ))
+            $true,
+            $false,
+            [System.Security.Principal.SecurityIdentifier]
+        ))
 
     $unsafe = @($rules | Where-Object {
-        (Test-IsBroadSid $_.IdentityReference.Value) -and
-        (Test-FsRuleHasWrite $_) -and
-        (($_.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0)
-    })
+            (Test-IsBroadSid $_.IdentityReference.Value) -and
+            (Test-FsRuleHasWrite $_) -and
+            (($_.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0)
+        })
 
     if ($unsafe.Count -eq 0) {
         Add-Finding -Step $Step -Level OK -Target $Path -Message 'No broad write/create right applies to the drive root.'
@@ -389,59 +389,59 @@ function Remove-WriteFromDriveRootPreserveChildren {
     Invoke-ApprovedChange -Step $Step -Target $Path `
         -Description 'Remove broad write/create rights from this drive root while preserving child inheritance' `
         -Action {
-            $acl2 = Get-Acl -LiteralPath $Path
-            $rules2 = @($acl2.GetAccessRules(
+        $acl2 = Get-Acl -LiteralPath $Path
+        $rules2 = @($acl2.GetAccessRules(
                 $true,
                 $false,
                 [System.Security.Principal.SecurityIdentifier]
             ))
 
-            foreach ($rule in $rules2) {
-                $sid = $rule.IdentityReference.Value
-                if (-not (Test-IsBroadSid $sid)) { continue }
-                if (-not (Test-FsRuleHasWrite $rule)) { continue }
-                if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
-                    continue
-                }
-
-                $old = [int]$rule.FileSystemRights
-                $removed = $old -band $script:FsWriteMask
-                $safe = $old -band (-bnot $script:FsWriteMask)
-
-                [void]$acl2.RemoveAccessRuleSpecific($rule)
-
-                if ($safe -ne 0) {
-                    $safeRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-                        $rule.IdentityReference,
-                        [System.Security.AccessControl.FileSystemRights]$safe,
-                        $rule.InheritanceFlags,
-                        $rule.PropagationFlags,
-                        $rule.AccessControlType
-                    )
-                    $acl2.AddAccessRule($safeRule)
-                }
-
-                # Preserve the previous write inheritance for children, but make
-                # those write bits inherit-only so they no longer apply to root.
-                if ($removed -ne 0 -and
-                    $rule.InheritanceFlags -ne [System.Security.AccessControl.InheritanceFlags]::None) {
-
-                    $childPropagation = $rule.PropagationFlags -bor `
-                        [System.Security.AccessControl.PropagationFlags]::InheritOnly
-
-                    $childRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-                        $rule.IdentityReference,
-                        [System.Security.AccessControl.FileSystemRights]$removed,
-                        $rule.InheritanceFlags,
-                        $childPropagation,
-                        $rule.AccessControlType
-                    )
-                    $acl2.AddAccessRule($childRule)
-                }
+        foreach ($rule in $rules2) {
+            $sid = $rule.IdentityReference.Value
+            if (-not (Test-IsBroadSid $sid)) { continue }
+            if (-not (Test-FsRuleHasWrite $rule)) { continue }
+            if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+                continue
             }
 
-            Set-Acl -LiteralPath $Path -AclObject $acl2
-        } | Out-Null
+            $old = [int]$rule.FileSystemRights
+            $removed = $old -band $script:FsWriteMask
+            $safe = $old -band (-bnot $script:FsWriteMask)
+
+            [void]$acl2.RemoveAccessRuleSpecific($rule)
+
+            if ($safe -ne 0) {
+                $safeRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                    $rule.IdentityReference,
+                    [System.Security.AccessControl.FileSystemRights]$safe,
+                    $rule.InheritanceFlags,
+                    $rule.PropagationFlags,
+                    $rule.AccessControlType
+                )
+                $acl2.AddAccessRule($safeRule)
+            }
+
+            # Preserve the previous write inheritance for children, but make
+            # those write bits inherit-only so they no longer apply to root.
+            if ($removed -ne 0 -and
+                $rule.InheritanceFlags -ne [System.Security.AccessControl.InheritanceFlags]::None) {
+
+                $childPropagation = $rule.PropagationFlags -bor `
+                    [System.Security.AccessControl.PropagationFlags]::InheritOnly
+
+                $childRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                    $rule.IdentityReference,
+                    [System.Security.AccessControl.FileSystemRights]$removed,
+                    $rule.InheritanceFlags,
+                    $childPropagation,
+                    $rule.AccessControlType
+                )
+                $acl2.AddAccessRule($childRule)
+            }
+        }
+
+        Set-Acl -LiteralPath $Path -AclObject $acl2
+    } | Out-Null
 }
 
 function Set-StrictPrivateRoot {
@@ -480,65 +480,65 @@ function Set-StrictPrivateRoot {
     Invoke-ApprovedChange -Step $Step -Target $Path `
         -Description 'Set strict private ACL: current user + SYSTEM + Administrators only' `
         -Action {
-            $acl = Get-Acl -LiteralPath $Path
-            $acl.SetAccessRuleProtection($true, $false) # disable inheritance, discard inherited ACEs
+        $acl = Get-Acl -LiteralPath $Path
+        $acl.SetAccessRuleProtection($true, $false) # disable inheritance, discard inherited ACEs
 
-            foreach ($rule in @($acl.GetAccessRules(
-                $true,
-                $false,
-                [System.Security.Principal.SecurityIdentifier]
-            ))) {
-                [void]$acl.RemoveAccessRuleSpecific($rule)
-            }
+        foreach ($rule in @($acl.GetAccessRules(
+                    $true,
+                    $false,
+                    [System.Security.Principal.SecurityIdentifier]
+                ))) {
+            [void]$acl.RemoveAccessRuleSpecific($rule)
+        }
 
-            $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-            $prop = [System.Security.AccessControl.PropagationFlags]::None
-            $fc = [System.Security.AccessControl.FileSystemRights]::FullControl
-            $allow = [System.Security.AccessControl.AccessControlType]::Allow
+        $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+        $prop = [System.Security.AccessControl.PropagationFlags]::None
+        $fc = [System.Security.AccessControl.FileSystemRights]::FullControl
+        $allow = [System.Security.AccessControl.AccessControlType]::Allow
 
-            foreach ($sidText in @(
+        foreach ($sidText in @(
                 $script:CurrentUserSid,
                 $script:SystemSid,
                 $script:AdministratorsSid
             )) {
-                $sid = [System.Security.Principal.SecurityIdentifier]::new($sidText)
-                $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-                    $sid, $fc, $inherit, $prop, $allow
-                )
-                $acl.AddAccessRule($rule)
-            }
+            $sid = [System.Security.Principal.SecurityIdentifier]::new($sidText)
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, $fc, $inherit, $prop, $allow
+            )
+            $acl.AddAccessRule($rule)
+        }
 
-            Set-Acl -LiteralPath $Path -AclObject $acl
+        Set-Acl -LiteralPath $Path -AclObject $acl
 
-            # Root inheritance is now clean. Remove any explicit broad ACEs that
-            # descendants may carry independently of the root.
-            foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue)) {
-                try {
-                    $childAcl = Get-Acl -LiteralPath $child.FullName
-                    $explicitRules = @($childAcl.GetAccessRules(
+        # Root inheritance is now clean. Remove any explicit broad ACEs that
+        # descendants may carry independently of the root.
+        foreach ($child in @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue)) {
+            try {
+                $childAcl = Get-Acl -LiteralPath $child.FullName
+                $explicitRules = @($childAcl.GetAccessRules(
                         $true,
                         $false,
                         [System.Security.Principal.SecurityIdentifier]
                     ))
 
-                    $changed = $false
-                    foreach ($childRule in $explicitRules) {
-                        if (Test-IsBroadSid $childRule.IdentityReference.Value) {
-                            [void]$childAcl.RemoveAccessRuleSpecific($childRule)
-                            $changed = $true
-                        }
-                    }
-
-                    if ($changed) {
-                        Set-Acl -LiteralPath $child.FullName -AclObject $childAcl
+                $changed = $false
+                foreach ($childRule in $explicitRules) {
+                    if (Test-IsBroadSid $childRule.IdentityReference.Value) {
+                        [void]$childAcl.RemoveAccessRuleSpecific($childRule)
+                        $changed = $true
                     }
                 }
-                catch {
-                    Add-Finding -Step $Step -Level ERROR -Target $child.FullName `
-                        -Message "Could not remove descendant broad ACL: $($_.Exception.Message)"
+
+                if ($changed) {
+                    Set-Acl -LiteralPath $child.FullName -AclObject $childAcl
                 }
             }
-        } | Out-Null
+            catch {
+                Add-Finding -Step $Step -Level ERROR -Target $child.FullName `
+                    -Message "Could not remove descendant broad ACL: $($_.Exception.Message)"
+            }
+        }
+    } | Out-Null
 
     # In audit mode, identify explicit descendant broad ACEs that would survive
     # a root-only ACL change unless removed.
@@ -547,10 +547,10 @@ function Set-StrictPrivateRoot {
             try {
                 $childAcl = Get-Acl -LiteralPath $child.FullName
                 $explicitBroad = @($childAcl.GetAccessRules(
-                    $true,
-                    $false,
-                    [System.Security.Principal.SecurityIdentifier]
-                ) | Where-Object { Test-IsBroadSid $_.IdentityReference.Value })
+                        $true,
+                        $false,
+                        [System.Security.Principal.SecurityIdentifier]
+                    ) | Where-Object { Test-IsBroadSid $_.IdentityReference.Value })
 
                 if ($explicitBroad.Count -gt 0) {
                     Add-Finding -Step $Step -Level WARN -Target $child.FullName `
@@ -606,10 +606,10 @@ function Ensure-CurrentUserModify {
 
     $acl = Get-Acl -LiteralPath $Path
     $rules = @($acl.GetAccessRules(
-        $true,
-        $true,
-        [System.Security.Principal.SecurityIdentifier]
-    ))
+            $true,
+            $true,
+            [System.Security.Principal.SecurityIdentifier]
+        ))
 
     $hasModify = $false
     foreach ($rule in $rules) {
@@ -626,22 +626,22 @@ function Ensure-CurrentUserModify {
     Invoke-ApprovedChange -Step $Step -Target $Path `
         -Description 'Grant current user Modify on user-PATH directory' `
         -Action {
-            $acl2 = Get-Acl -LiteralPath $Path
-            $sid = [System.Security.Principal.SecurityIdentifier]::new($script:CurrentUserSid)
-            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-                $sid,
-                [System.Security.AccessControl.FileSystemRights]::Modify,
-                [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-                [System.Security.AccessControl.PropagationFlags]::None,
-                [System.Security.AccessControl.AccessControlType]::Allow
-            )
-            $acl2.AddAccessRule($rule)
-            Set-Acl -LiteralPath $Path -AclObject $acl2
-        } | Out-Null
+        $acl2 = Get-Acl -LiteralPath $Path
+        $sid = [System.Security.Principal.SecurityIdentifier]::new($script:CurrentUserSid)
+        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [System.Security.AccessControl.FileSystemRights]::Modify,
+            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl2.AddAccessRule($rule)
+        Set-Acl -LiteralPath $Path -AclObject $acl2
+    } | Out-Null
 }
 
 function Get-PathEntries {
-    param([Parameter(Mandatory)][ValidateSet('Machine','User')][string]$Scope)
+    param([Parameter(Mandatory)][ValidateSet('Machine', 'User')][string]$Scope)
 
     $raw = [Environment]::GetEnvironmentVariable('Path', $Scope)
     if (-not $raw) { return @() }
@@ -683,7 +683,7 @@ function Protect-PathDirectory {
     }
 
     # PATH command lookup is top-level. Check executable/script files directly in it.
-    $patterns = @('*.exe','*.com','*.bat','*.cmd','*.ps1')
+    $patterns = @('*.exe', '*.com', '*.bat', '*.cmd', '*.ps1')
     foreach ($pattern in $patterns) {
         foreach ($file in @(Get-ChildItem -LiteralPath $Path -Filter $pattern -File -Force -ErrorAction SilentlyContinue)) {
             try {
@@ -815,9 +815,9 @@ function Protect-RegistryKey {
 
     $acl = Get-Acl -LiteralPath $Path
     $unsafe = @(Get-RegistryRulesBySid -Acl $acl | Where-Object {
-        (Test-IsBroadSid $_.IdentityReference.Value) -and
-        (Test-RegistryRuleHasWrite $_)
-    })
+            (Test-IsBroadSid $_.IdentityReference.Value) -and
+            (Test-RegistryRuleHasWrite $_)
+        })
 
     if ($unsafe.Count -eq 0) {
         Add-Finding -Step $Step -Level OK -Target $Path -Message 'No broad standard-user registry write ACL found.'
@@ -829,40 +829,40 @@ function Protect-RegistryKey {
     Invoke-ApprovedChange -Step $Step -Target $Path `
         -Description 'Remove broad standard-user registry write permissions' `
         -Action {
-            $acl2 = Get-Acl -LiteralPath $Path
-            if (-not $acl2.AreAccessRulesProtected) {
-                $acl2.SetAccessRuleProtection($true, $true)
+        $acl2 = Get-Acl -LiteralPath $Path
+        if (-not $acl2.AreAccessRulesProtected) {
+            $acl2.SetAccessRuleProtection($true, $true)
+        }
+
+        foreach ($rule in @($acl2.GetAccessRules(
+                    $true,
+                    $true,
+                    [System.Security.Principal.SecurityIdentifier]
+                ))) {
+            if (-not (Test-IsBroadSid $rule.IdentityReference.Value)) { continue }
+            if (-not (Test-RegistryRuleHasWrite $rule)) { continue }
+            if ($rule.IsInherited) {
+                throw "Broad registry write ACE is still inherited after inheritance protection."
             }
 
-            foreach ($rule in @($acl2.GetAccessRules(
-                $true,
-                $true,
-                [System.Security.Principal.SecurityIdentifier]
-            ))) {
-                if (-not (Test-IsBroadSid $rule.IdentityReference.Value)) { continue }
-                if (-not (Test-RegistryRuleHasWrite $rule)) { continue }
-                if ($rule.IsInherited) {
-                    throw "Broad registry write ACE is still inherited after inheritance protection."
-                }
+            $old = [int]$rule.RegistryRights
+            $safe = $old -band (-bnot $script:RegistryWriteMask)
+            [void]$acl2.RemoveAccessRuleSpecific($rule)
 
-                $old = [int]$rule.RegistryRights
-                $safe = $old -band (-bnot $script:RegistryWriteMask)
-                [void]$acl2.RemoveAccessRuleSpecific($rule)
-
-                if ($safe -ne 0) {
-                    $newRule = [System.Security.AccessControl.RegistryAccessRule]::new(
-                        $rule.IdentityReference,
-                        [System.Security.AccessControl.RegistryRights]$safe,
-                        $rule.InheritanceFlags,
-                        $rule.PropagationFlags,
-                        $rule.AccessControlType
-                    )
-                    $acl2.AddAccessRule($newRule)
-                }
+            if ($safe -ne 0) {
+                $newRule = [System.Security.AccessControl.RegistryAccessRule]::new(
+                    $rule.IdentityReference,
+                    [System.Security.AccessControl.RegistryRights]$safe,
+                    $rule.InheritanceFlags,
+                    $rule.PropagationFlags,
+                    $rule.AccessControlType
+                )
+                $acl2.AddAccessRule($newRule)
             }
+        }
 
-            Set-Acl -LiteralPath $Path -AclObject $acl2
-        } | Out-Null
+        Set-Acl -LiteralPath $Path -AclObject $acl2
+    } | Out-Null
 }
 
 function Get-RegDword {
@@ -971,7 +971,7 @@ function Get-PrivateRootCandidates {
             if ($isManaged) { continue }
 
             [pscustomobject]@{
-                Path = $item.FullName
+                Path  = $item.FullName
                 Drive = $drive.DeviceID
             }
         }
@@ -1045,8 +1045,8 @@ else {
 # ==============================================================================
 
 $profiles = @(Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object {
-    -not $_.Special -and $_.LocalPath -and (Test-Path -LiteralPath $_.LocalPath)
-})
+        -not $_.Special -and $_.LocalPath -and (Test-Path -LiteralPath $_.LocalPath)
+    })
 
 foreach ($profile in $profiles) {
     $leaf = Split-Path -Leaf $profile.LocalPath
@@ -1058,10 +1058,10 @@ foreach ($profile in $profiles) {
     try {
         $acl = Get-Acl -LiteralPath $profile.LocalPath
         $broad = @(Get-FileSystemRulesBySid -Acl $acl | Where-Object {
-            (Test-IsBroadSid $_.IdentityReference.Value) -and
-            $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
-            ([int]$_.FileSystemRights -ne 0)
-        })
+                (Test-IsBroadSid $_.IdentityReference.Value) -and
+                $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                ([int]$_.FileSystemRights -ne 0)
+            })
     }
     catch {
         Add-Finding -Step 5 -Level ERROR -Target $profile.LocalPath `
@@ -1079,37 +1079,37 @@ foreach ($profile in $profiles) {
     Invoke-ApprovedChange -Step 5 -Target $profile.LocalPath `
         -Description 'Remove broad access from user-profile root and preserve profile owner/SYSTEM/Administrators' `
         -Action {
-            $acl2 = Get-Acl -LiteralPath $profile.LocalPath
-            if (-not $acl2.AreAccessRulesProtected) {
-                $acl2.SetAccessRuleProtection($true, $true)
+        $acl2 = Get-Acl -LiteralPath $profile.LocalPath
+        if (-not $acl2.AreAccessRulesProtected) {
+            $acl2.SetAccessRuleProtection($true, $true)
+        }
+
+        foreach ($rule in @($acl2.GetAccessRules(
+                    $true,
+                    $true,
+                    [System.Security.Principal.SecurityIdentifier]
+                ))) {
+            if ((Test-IsBroadSid $rule.IdentityReference.Value) -and -not $rule.IsInherited) {
+                [void]$acl2.RemoveAccessRuleSpecific($rule)
             }
+        }
 
-            foreach ($rule in @($acl2.GetAccessRules(
-                $true,
-                $true,
-                [System.Security.Principal.SecurityIdentifier]
-            ))) {
-                if ((Test-IsBroadSid $rule.IdentityReference.Value) -and -not $rule.IsInherited) {
-                    [void]$acl2.RemoveAccessRuleSpecific($rule)
-                }
-            }
+        $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+        $prop = [System.Security.AccessControl.PropagationFlags]::None
+        $fc = [System.Security.AccessControl.FileSystemRights]::FullControl
+        $allow = [System.Security.AccessControl.AccessControlType]::Allow
 
-            $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-            $prop = [System.Security.AccessControl.PropagationFlags]::None
-            $fc = [System.Security.AccessControl.FileSystemRights]::FullControl
-            $allow = [System.Security.AccessControl.AccessControlType]::Allow
+        foreach ($sidText in @($profile.SID, $script:SystemSid, $script:AdministratorsSid)) {
+            if (-not $sidText) { continue }
+            $sid = [System.Security.Principal.SecurityIdentifier]::new($sidText)
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, $fc, $inherit, $prop, $allow
+            )
+            $acl2.AddAccessRule($rule)
+        }
 
-            foreach ($sidText in @($profile.SID, $script:SystemSid, $script:AdministratorsSid)) {
-                if (-not $sidText) { continue }
-                $sid = [System.Security.Principal.SecurityIdentifier]::new($sidText)
-                $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-                    $sid, $fc, $inherit, $prop, $allow
-                )
-                $acl2.AddAccessRule($rule)
-            }
-
-            Set-Acl -LiteralPath $profile.LocalPath -AclObject $acl2
-        } | Out-Null
+        Set-Acl -LiteralPath $profile.LocalPath -AclObject $acl2
+    } | Out-Null
 }
 
 # ==============================================================================
@@ -1282,8 +1282,8 @@ else {
 # ==============================================================================
 
 $aieLocations = @(
-    @{ Path='Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Installer'; Scope='Machine' },
-    @{ Path='Registry::HKEY_CURRENT_USER\SOFTWARE\Policies\Microsoft\Windows\Installer'; Scope='Current user' }
+    @{ Path = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Installer'; Scope = 'Machine' },
+    @{ Path = 'Registry::HKEY_CURRENT_USER\SOFTWARE\Policies\Microsoft\Windows\Installer'; Scope = 'Current user' }
 )
 
 foreach ($loc in $aieLocations) {
@@ -1311,9 +1311,9 @@ if ($autoAdmin -eq '1' -or $defaultPassword) {
     Invoke-ApprovedChange -Step 12 -Target 'AutoAdminLogon' `
         -Description 'Disable AutoAdminLogon and remove stored DefaultPassword' `
         -Action {
-            New-ItemProperty -LiteralPath $winlogon -Name 'AutoAdminLogon' -PropertyType String -Value '0' -Force | Out-Null
-            Remove-ItemProperty -LiteralPath $winlogon -Name 'DefaultPassword' -ErrorAction SilentlyContinue
-        } | Out-Null
+        New-ItemProperty -LiteralPath $winlogon -Name 'AutoAdminLogon' -PropertyType String -Value '0' -Force | Out-Null
+        Remove-ItemProperty -LiteralPath $winlogon -Name 'DefaultPassword' -ErrorAction SilentlyContinue
+    } | Out-Null
 }
 else {
     Add-Finding -Step 12 -Level OK -Target 'AutoAdminLogon' -Message 'No stored automatic-logon password detected.'
@@ -1327,9 +1327,9 @@ try {
     $mp = Get-MpPreference -ErrorAction Stop
 
     $defenderChecks = @(
-        @{ Name='Real-time monitoring'; Property='DisableRealtimeMonitoring'; Setter={ Set-MpPreference -DisableRealtimeMonitoring $false } },
-        @{ Name='Behavior monitoring';  Property='DisableBehaviorMonitoring'; Setter={ Set-MpPreference -DisableBehaviorMonitoring $false } },
-        @{ Name='Script scanning';       Property='DisableScriptScanning'; Setter={ Set-MpPreference -DisableScriptScanning $false } }
+        @{ Name = 'Real-time monitoring'; Property = 'DisableRealtimeMonitoring'; Setter = { Set-MpPreference -DisableRealtimeMonitoring $false } },
+        @{ Name = 'Behavior monitoring'; Property = 'DisableBehaviorMonitoring'; Setter = { Set-MpPreference -DisableBehaviorMonitoring $false } },
+        @{ Name = 'Script scanning'; Property = 'DisableScriptScanning'; Setter = { Set-MpPreference -DisableScriptScanning $false } }
     )
 
     foreach ($check in $defenderChecks) {
@@ -1431,11 +1431,11 @@ Write-Host 'Summary'
 Write-Host '-------'
 
 $summary = $script:Findings |
-    Group-Object Level |
-    Sort-Object Name |
-    ForEach-Object {
-        [pscustomobject]@{ Level = $_.Name; Count = $_.Count }
-    }
+Group-Object Level |
+Sort-Object Name |
+ForEach-Object {
+    [pscustomobject]@{ Level = $_.Name; Count = $_.Count }
+}
 
 $summary | Format-Table -AutoSize
 

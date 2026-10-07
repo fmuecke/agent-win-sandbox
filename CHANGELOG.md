@@ -7,6 +7,7 @@ Git log.
 
 - Updated the network lock to the renamed `wfp-lock v0.9.0` release.
 - Updated the proxy to `network-sandbox v0.3.0` and JSON configuration which prevents line-ending errors.
+- Changed License to GPLv3 or later
 
 ## 0.9.0 - 2026-10-07
 
