@@ -15,7 +15,7 @@ foreach ($case in 'fresh', 'upgrade', 'apply-failure', 'verify-failure') {
     & {
         $UserName = 'AgentSandbox'
         $ProxyPort = 18080
-        $UserNetLockExe = 'Invoke-TestNetworkLock'
+        $WfpLockExe = 'Invoke-TestNetworkLock'
         $events = [Collections.Generic.List[string]]::new()
         $warnings = [Collections.Generic.List[string]]::new()
 
@@ -54,9 +54,38 @@ if ($checker -match 'firewallMode|firewallRuleNames|Get-NetFirewall|HNetCfg\.FwP
 }
 Write-Output 'PASS: checker has no legacy firewall requirements'
 
-# Load only the port-selection functions, with process/listener/input seams mocked.
+# Existing proxy state must have a JSON policy before setup can change it.
+$start = $source.IndexOf('# Validate the policy and resolve port conflicts')
+$end = $source.IndexOf('$ProxyPort = Resolve-ProxyPort', $start)
+if ($start -lt 0 -or $end -lt $start) { throw 'Policy preflight section not found.' }
+$policyPreflight = [scriptblock]::Create($source.Substring($start, $end - $start))
+foreach ($case in 'fresh', 'existing-json', 'missing-json') {
+    & {
+        $NetworkSandboxStateRoot = 'C:\fixture'
+        $NetworkSandboxConfig = 'C:\fixture\network-sandbox.json'
+        $reads = [Collections.Generic.List[string]]::new()
+        function Test-Path {
+            param($LiteralPath, $PathType)
+            if ($LiteralPath -eq $NetworkSandboxStateRoot) { return $case -ne 'fresh' }
+            return $case -eq 'existing-json'
+        }
+        function Get-NetworkSandboxPolicy { $reads.Add('policy') }
+        $failure = $null
+        try { & $policyPreflight }
+        catch { $failure = $_ }
+        if ($case -eq 'missing-json') {
+            if (-not $failure -or $failure.Exception.Message -notmatch 'no JSON policy' -or $reads.Count -ne 0) {
+                throw 'Existing proxy state must not fall back to the default policy.'
+            }
+        }
+        elseif ($failure -or $reads.Count -ne 1) { throw "$case : unexpected policy preflight result: $failure" }
+        Write-Output "PASS: policy preflight $case"
+    }
+}
+
+# Load only policy and port-selection functions, with external operations mocked.
 $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
-foreach ($name in 'Test-ExistingSandboxProxyListener', 'Resolve-ProxyPort') {
+foreach ($name in 'Get-NetworkSandboxPolicy', 'Install-NetworkSandboxPolicy', 'Test-ExistingSandboxProxyListener', 'Resolve-ProxyPort') {
     $definition = $ast.Find({
         param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -65,13 +94,88 @@ foreach ($name in 'Test-ExistingSandboxProxyListener', 'Resolve-ProxyPort') {
     . ([scriptblock]::Create($definition.Extent.Text))
 }
 
+foreach ($lineEnding in "`n", "`r`n") {
+    foreach ($case in 'fresh-logfile', 'fresh-no-logfile', 'existing-logfile', 'existing-no-logfile',
+        'missing-port', 'invalid-json', 'duplicate-key', 'linked-policy') {
+        & {
+            $ProxyPort = 18080
+            $NetworkSandboxStateRoot = 'C:\fixture'
+            $NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.json'
+            $NetworkSandboxConfigSource = 'C:\source\network-sandbox.json'
+            $existing = $case.StartsWith('existing-') -or $case -eq 'linked-policy'
+            $lines = @('{', '  "port": 8080,', '  "loglevel": "debug",', '  "privateaddresses": "allow",')
+            if ($case.EndsWith('-logfile')) { $lines += '  "logfile": "old.log",' }
+            $lines += '  "allowed": ["example.com:443", "[2001:db8::1]:443"]', '}'
+            $fixture = switch ($case) {
+                'missing-port' { '{"allowed":["example.com:443"]}' }
+                'invalid-json' { '{' }
+                'duplicate-key' { '{"port":8080,"allowed":["first.test:443"],"allowed":["second.test:443"]}' }
+                default { $lines -join $lineEnding }
+            }
+            $writes = [Collections.Generic.List[string]]::new()
+
+            function Test-Path {
+                param($LiteralPath, $PathType)
+                $existing
+            }
+            function Get-Item {
+                param($LiteralPath, [switch]$Force)
+                $attributes = if ($case -eq 'linked-policy') { [IO.FileAttributes]::ReparsePoint } else { [IO.FileAttributes]::Normal }
+                [pscustomobject]@{ Attributes = $attributes }
+            }
+            function Get-Content {
+                param($LiteralPath, [switch]$Raw)
+                $expectedPath = if ($existing) { $NetworkSandboxConfig } else { $NetworkSandboxConfigSource }
+                if ($LiteralPath -ne $expectedPath -or -not $Raw) { throw 'Wrong policy read.' }
+                $fixture
+            }
+            function Set-Content {
+                param($LiteralPath, $Value, $Encoding, [switch]$NoNewline)
+                if ($LiteralPath -ne $NetworkSandboxConfig -or $Encoding -ne 'utf8NoBOM' -or -not $NoNewline) {
+                    throw 'Wrong policy write.'
+                }
+                $writes.Add($Value)
+            }
+            function Write-Warning { }
+
+            $failure = $null
+            try { Install-NetworkSandboxPolicy }
+            catch { $failure = $_ }
+            if ($case -in 'missing-port', 'invalid-json', 'duplicate-key', 'linked-policy') {
+                $expectedMessage = switch ($case) {
+                    'missing-port' { 'no port setting' }
+                    'invalid-json' { 'JSON|depth' }
+                    'duplicate-key' { 'Duplicate proxy policy key' }
+                    'linked-policy' { 'linked proxy policy' }
+                }
+                if (-not $failure -or $failure.Exception.Message -notmatch $expectedMessage -or $writes.Count -ne 0) {
+                    throw "$case : expected rejection without writing: $failure"
+                }
+            }
+            else {
+                if ($failure -or $writes.Count -ne 1) {
+                    throw "$case : policy was not updated correctly: $failure"
+                }
+                $actual = $writes[0] | ConvertFrom-Json
+                if ($actual.port -ne 18080 -or $actual.logfile -cne 'C:\fixture\network-sandbox.log' -or
+                    $actual.loglevel -cne 'debug' -or $actual.privateaddresses -cne 'allow' -or
+                    ($actual.allowed -join ',') -cne 'example.com:443,[2001:db8::1]:443') {
+                    throw "$case : policy settings or custom allowlist were lost."
+                }
+            }
+            $endingName = if ($lineEnding -eq "`n") { 'LF' } else { 'CRLF' }
+            Write-Output "PASS: proxy policy $case $endingName"
+        }
+    }
+}
+
 foreach ($case in 'free-default', 'free-custom', 'conflict', 'custom-conflict', 'invalid-and-occupied',
     'existing-proxy', 'legacy-proxy', 'other-executable', 'wrong-pid', 'wrong-port',
     'missing-config', 'second-listener', 'cancel', 'query-failure') {
     & {
         $NetworkSandboxExe = 'Invoke-TestProxyStatus'
         $LegacyNetworkSandboxExe = 'Invoke-LegacyProxyStatus'
-        $NetworkSandboxConfig = 'fixture.ini'
+        $NetworkSandboxConfig = 'fixture.json'
         $requestedPort = if ($case -in 'free-custom', 'custom-conflict') { 19090 } else { 8080 }
         $answers = [Collections.Generic.Queue[string]]::new()
         if ($case -eq 'invalid-and-occupied') {
@@ -106,14 +210,18 @@ foreach ($case in 'free-default', 'free-custom', 'conflict', 'custom-conflict', 
             }
             [pscustomobject]@{ Path = $path }
         }
-        function Test-Path { param($LiteralPath, $PathType) $case -ne 'missing-config' }
+        function Test-Path {
+            param($LiteralPath, $PathType)
+            if ($case -eq 'missing-config') { return $false }
+            return $LiteralPath -eq $NetworkSandboxConfig
+        }
         function Invoke-TestProxyStatus {
             param($Operation, $Config)
-            if ($Operation -ne 'status' -or $Config -ne 'fixture.ini') { throw 'Wrong proxy status query.' }
+            if ($Operation -ne 'status' -or $Config -ne 'fixture.json') { throw 'Wrong proxy status query.' }
             $global:LASTEXITCODE = 0
             $statusPid = if ($case -eq 'wrong-pid') { 99 } else { 42 }
             $statusPort = if ($case -eq 'wrong-port') { 8081 } else { $requestedPort }
-            "network-sandbox: running (pid $statusPid) on 127.0.0.1:$statusPort -config fixture.ini"
+            "network-sandbox: running (pid $statusPid) on 127.0.0.1:$statusPort -config $Config"
         }
         function Invoke-LegacyProxyStatus {
             param($Operation, $Config)

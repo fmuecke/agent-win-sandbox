@@ -41,7 +41,7 @@ Setup creates `AgentSandbox` when absent and:
   that user Modify access to the tree.
 - Warns if your profile is readable by Users or Everyone.
 - Blocks sandbox-account outbound TCP/UDP except the configured loopback proxy
-  port with [`user-net-lock`](https://github.com/fmuecke/user-net-lock).
+  port with [`wfp-lock`](https://github.com/fmuecke/wfp-lock).
 - Installs [`network-sandbox`](https://github.com/fmuecke/network-sandbox) and a protected allowlist. The launcher starts one
   proxy shared by all sessions; setup preserves an existing allowlist with a
   warning.

@@ -65,19 +65,19 @@ $LaunchAsVersion = 'v1.3.0'
 $LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v1.3.0/launch-as-v1.3.0-win64.zip'
 $LaunchAsSha256 = '1CCDA8A7736C24846102D94A9C12A6D3F0C29733EB282504CCCCED69E0543A8F'
 $SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
-$UserNetLockVersion = 'v0.8.1'
-$UserNetLockUri = 'https://github.com/fmuecke/user-net-lock/releases/download/v0.8.1/user-net-lock-v0.8.1-win64.zip'
-$UserNetLockSha256 = '4DB67DB57106CA8EFECF041B809FFC0FC18CD459C414BE7C232FD3DFC9E09672'
+$WfpLockVersion = 'v0.9.0'
+$WfpLockUri = 'https://github.com/fmuecke/wfp-lock/releases/download/v0.9.0/wfp-lock-v0.9.0-win64.zip'
+$WfpLockSha256 = 'E12944228F756B4BE29BD8EE3AD10F9757544DE55CD939B665E4A0B08936B3A8'
 $ToolsRoot = $ProgramDataRoot
-$UserNetLockExe = Join-Path $ToolsRoot 'user-net-lock.exe'
-$NetworkSandboxVersion = 'v0.2.1'
-$NetworkSandboxUri = 'https://github.com/fmuecke/network-sandbox/releases/download/v0.2.1/network-sandbox-v0.2.1.zip'
-$NetworkSandboxSha256 = 'A4355750492273225A96C08DEE25810A862622C621BCA2854F2D88608CF95473'
+$WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
+$NetworkSandboxVersion = 'v0.3.0'
+$NetworkSandboxUri = 'https://github.com/fmuecke/network-sandbox/releases/download/v0.3.0/network-sandbox-v0.3.0.zip'
+$NetworkSandboxSha256 = 'C4679D8CD93CDF31E88E290E2C881D30F6E18B67E6CF7382C21A43AD866D15D1'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
 $LegacyNetworkSandboxExe = Join-Path (Join-Path $env:ProgramFiles 'network-sandbox') 'network-sandbox.exe'
-$NetworkSandboxConfigSource = Join-Path $PSScriptRoot 'config\network-sandbox.ini'
+$NetworkSandboxConfigSource = Join-Path $PSScriptRoot 'config\network-sandbox.json'
 $NetworkSandboxStateRoot = Join-Path $ProgramDataRoot 'network-sandbox'
-$NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.ini'
+$NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.json'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
@@ -308,7 +308,7 @@ function Install-PinnedExecutable {
         }
     }
 }
-function Install-NetworkSandboxPolicy {
+function Get-NetworkSandboxPolicy {
     if ((Test-Path -LiteralPath $NetworkSandboxConfig) -and
         ((Get-Item -LiteralPath $NetworkSandboxConfig -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Refusing to update linked proxy policy: $NetworkSandboxConfig"
@@ -318,23 +318,34 @@ function Install-NetworkSandboxPolicy {
     }
     else {
         $policy = Get-Content -LiteralPath $NetworkSandboxConfig -Raw
-        Write-Warning "Preserving the existing proxy allowlist at $NetworkSandboxConfig. Review it before starting agents."
     }
-    if ($policy -notmatch '(?m)^port=\d+[^\r\n]*$') {
+    $document = [System.Text.Json.JsonDocument]::Parse($policy)
+    try {
+        $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($property in $document.RootElement.EnumerateObject()) {
+            if (-not $keys.Add($property.Name)) {
+                throw "Duplicate proxy policy key: $($property.Name)"
+            }
+        }
+    }
+    finally { $document.Dispose() }
+    $policy = $policy | ConvertFrom-Json -AsHashtable
+    if ($policy -isnot [System.Collections.IDictionary] -or -not $policy.Contains('port')) {
         throw "Network proxy policy has no port setting: $NetworkSandboxConfig"
     }
-    if ($policy -notmatch "(?m)^port=$ProxyPort(?:\s|$)") {
+    return $policy
+}
+function Install-NetworkSandboxPolicy {
+    $policy = Get-NetworkSandboxPolicy
+    if (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf) {
+        Write-Warning "Preserving the existing proxy allowlist at $NetworkSandboxConfig. Review it before starting agents."
+    }
+    if ($policy.port -ne $ProxyPort) {
         Write-Warning "Setting the proxy policy port to $ProxyPort to match the network lock."
     }
-    $policy = $policy -replace '(?m)^port=\d+[^\r\n]*$', "port=$ProxyPort"
-    $logPath = Join-Path $NetworkSandboxStateRoot 'network-sandbox.log'
-    if ($policy -match '(?m)^logfile=[^\r\n]*$') {
-        $policy = $policy -replace '(?m)^logfile=[^\r\n]*$', "logfile=$logPath"
-    }
-    else {
-        $policy = $policy -replace '(?m)^(port=\d+)$', "`$1`nlogfile=$logPath"
-    }
-    Set-Content -LiteralPath $NetworkSandboxConfig -Value $policy -Encoding utf8NoBOM -NoNewline
+    $policy.port = $ProxyPort
+    $policy.logfile = Join-Path $NetworkSandboxStateRoot 'network-sandbox.log'
+    Set-Content -LiteralPath $NetworkSandboxConfig -Value ($policy | ConvertTo-Json -Depth 10) -Encoding utf8NoBOM -NoNewline
 }
 function Test-NetworkSandboxRunning {
     $output = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
@@ -450,7 +461,12 @@ Write-Step "PowerShell 7: $pwshVersion"
 Write-Step "Calling user: $callingUser"
 Write-Step "Protecting profile: $callingProfile"
 
-# Resolve port conflicts before changing accounts, files, or network policy.
+# Validate the policy and resolve port conflicts before changing accounts, files, or network policy.
+if ((Test-Path -LiteralPath $NetworkSandboxStateRoot) -and
+    -not (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
+    throw "Existing proxy state has no JSON policy: $NetworkSandboxConfig. Provide a JSON policy before rerunning setup."
+}
+$null = Get-NetworkSandboxPolicy
 $ProxyPort = Resolve-ProxyPort -Port $ProxyPort
 Write-Step "Proxy port: $ProxyPort"
 
@@ -558,7 +574,7 @@ New-ItemProperty -Path $ualPath -Name $UserName -Value 0 -PropertyType DWord -Fo
 Write-Host "  hidden from the login screen" -ForegroundColor Green
 
 # --- 1c. Protected proxy and account-scoped network lock --------------------
-Write-Step "Installing network proxy $NetworkSandboxVersion and user-net-lock $UserNetLockVersion"
+Write-Step "Installing network proxy $NetworkSandboxVersion and wfp-lock $WfpLockVersion"
 New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null
 if ((Get-Item -LiteralPath $ProgramDataRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
     throw "Refusing to install into linked ProgramData directory: $ProgramDataRoot"
@@ -585,8 +601,8 @@ $launcherFileAce = "*${callingUserSid}:(OI)(CI)(IO)M"
 icacls $NetworkSandboxStateRoot /inheritance:r /grant:r $adminStateAce $systemStateAce $usersStateAce $launcherCreateAce $launcherFileAce | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Could not protect $NetworkSandboxStateRoot." }
 Set-AdminOwner -Path $NetworkSandboxStateRoot
-Install-PinnedExecutable -Name 'user-net-lock' -DownloadUri $UserNetLockUri `
-    -ExpectedSha256 $UserNetLockSha256 -InstallRoot $ToolsRoot
+Install-PinnedExecutable -Name 'wfp-lock' -DownloadUri $WfpLockUri `
+    -ExpectedSha256 $WfpLockSha256 -InstallRoot $ToolsRoot
 $previousProxyExe = if (Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) {
     $NetworkSandboxExe
 }
@@ -596,7 +612,7 @@ if ((Test-Path -LiteralPath $previousProxyExe -PathType Leaf) -and
     & $previousProxyExe stop -config $NetworkSandboxConfig
     if ($LASTEXITCODE -ne 0) { throw 'Could not stop the previous network proxy.' }
 }
-foreach ($runtimeName in 'network-sandbox.ini.pid', 'network-sandbox.ini.pid.lock',
+foreach ($runtimeName in 'network-sandbox.json.pid', 'network-sandbox.json.pid.lock',
     'network-sandbox.log', 'network-sandbox.log.1', 'network-sandbox.log.2', 'network-sandbox.log.3') {
     $runtimePath = Join-Path $NetworkSandboxStateRoot $runtimeName
     if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) { continue }
@@ -619,10 +635,10 @@ icacls $NetworkSandboxConfig /inheritance:r /grant:r $adminConfigAce $systemConf
 if ($LASTEXITCODE -ne 0) { throw "Could not protect $NetworkSandboxConfig." }
 Set-AdminOwner -Path $NetworkSandboxConfig
 Start-NetworkSandbox
-& $UserNetLockExe apply --user $UserName --port $ProxyPort
-if ($LASTEXITCODE -ne 0) { throw "Could not apply user-net-lock for '$UserName'." }
-& $UserNetLockExe verify --user $UserName --port $ProxyPort
-if ($LASTEXITCODE -ne 0) { throw "Could not verify user-net-lock for '$UserName'." }
+& $WfpLockExe apply --user $UserName --port $ProxyPort
+if ($LASTEXITCODE -ne 0) { throw "Could not apply wfp-lock for '$UserName'." }
+& $WfpLockExe verify --user $UserName --port $ProxyPort
+if ($LASTEXITCODE -ne 0) { throw "Could not verify wfp-lock for '$UserName'." }
 
 # --- 2. Shared workspace permissions -----------------------------------------
 Write-Step "Configuring shared workspace at $SandboxPath"
@@ -650,7 +666,7 @@ $config = [ordered]@{
         userName              = $UserName
         installedByUser       = $callingUser
         launchAsVersion       = $LaunchAsVersion
-        userNetLockVersion    = $UserNetLockVersion
+        wfpLockVersion        = $WfpLockVersion
         networkSandboxVersion = $NetworkSandboxVersion
         proxyPort             = $ProxyPort
         proxyOwnerSid         = $callingUserSid

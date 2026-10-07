@@ -39,7 +39,7 @@ Of course any other agent like OpenCode can be installed within the Agent Sandbo
 - Protects the launcher, [`launch-as`](https://github.com/fmuecke/launch-as), network tools, bootstrap, checker, and managed-settings
   files in admin-write locations.
 - Restricts the sandbox account's outbound TCP/UDP to the local proxy port with
-  [`user-net-lock`](https://github.com/fmuecke/user-net-lock); [`network-sandbox`](https://github.com/fmuecke/network-sandbox) forwards only allowlisted destinations.
+  [`wfp-lock`](https://github.com/fmuecke/wfp-lock); [`network-sandbox`](https://github.com/fmuecke/network-sandbox) forwards only allowlisted destinations.
 
 ## What it does not protect against
 
@@ -95,10 +95,10 @@ Setup optionally deploys the Claude Code managed settings to
 existing file because this policy is machine-wide and shared by every Claude
 Code user. It downloads and hash-verifies the `launch-as` package, then lets
 `launch-as-admin` install the broker and all command-line tools together under
-`C:\Program Files\launch-as`. It also installs pinned `user-net-lock` and
+`C:\Program Files\launch-as`. It also installs pinned `wfp-lock` and
 `network-sandbox` binaries together under protected
-`C:\ProgramData\agent-win-sandbox\tools`, copies
-`config\network-sandbox.ini` to protected ProgramData on first setup, starts the proxy
+`C:\ProgramData\agent-win-sandbox`, copies
+`config\network-sandbox.json` to protected ProgramData on first setup, starts the proxy
 under the setup account, and applies the per-user WFP lock after the proxy is
 running. An existing proxy allowlist is preserved with a warning; setup updates
 its port to match `-ProxyPort`. Review the installed allowlist before using
@@ -186,7 +186,7 @@ Run from an elevated PowerShell 7 session:
 
 This stops the proxy and removes the account's WFP lock, user and profile,
 generated ProgramData state, broker enrollment, shortcut, and
-installed `user-net-lock` and `network-sandbox` executables. It uninstalls the
+installed `wfp-lock` and `network-sandbox` executables. It uninstalls the
 `launch-as` broker and executables when no other broker accounts remain. It
 keeps the workspace, such as `C:\AgentSandbox`, and any older network-tool
 copies in Program Files that other tools may use.
@@ -203,7 +203,7 @@ copies in Program Files that other tools may use.
   its user, workspace, ProgramData, firewall, and shortcut names are separate.
   Its optional machine-wide Claude managed settings are shared; decline the
   overwrite prompt unless one policy is intentionally used for both.
-- The initial `network-sandbox.ini` allowlist is intentionally small. Agent
+- The initial `network-sandbox.json` allowlist is intentionally small. Agent
   sign-in, updates, and package feeds may need additional reviewed destinations.
 - WFP covers outbound TCP/UDP attributed to `AgentSandbox`; ICMP and brokered
   DNS or traffic under another identity remain outside that per-user lock. The

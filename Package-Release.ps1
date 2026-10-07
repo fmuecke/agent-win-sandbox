@@ -70,7 +70,7 @@ $releaseFiles = @(
     'Test-AgentSandboxExposure.ps1',
     'Run-Demo.ps1',
     'Package-Release.ps1',
-    'config\network-sandbox.ini',
+    'config\network-sandbox.json',
     'config\managed-settings.json',
     'README.md',
     'CHANGELOG.md',

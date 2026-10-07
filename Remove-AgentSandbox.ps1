@@ -42,9 +42,9 @@ $LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $LaunchAsVersion = 'v1.3.0'
 $SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
 $ToolsRoot = $ProgramDataRoot
-$UserNetLockExe = Join-Path $ToolsRoot 'user-net-lock.exe'
+$WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.ini'
+$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.json'
 $ShortcutPaths = @(
     (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
@@ -308,14 +308,14 @@ if ((Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) -and
         Write-Removed 'network proxy process'
     }
 }
-if ($user -and (Test-Path -LiteralPath $UserNetLockExe -PathType Leaf)) {
+if ($user -and (Test-Path -LiteralPath $WfpLockExe -PathType Leaf)) {
     if ($PSCmdlet.ShouldProcess("network lock for '$UserName'", 'Remove')) {
-        & $UserNetLockExe remove --user $UserName
+        & $WfpLockExe remove --user $UserName
         if ($LASTEXITCODE -ne 0) { throw "Could not remove the network lock for '$UserName'." }
         Write-Removed "network lock for '$UserName'"
     }
 }
-elseif (-not $user -and (Test-Path -LiteralPath $UserNetLockExe -PathType Leaf)) {
+elseif (-not $user -and (Test-Path -LiteralPath $WfpLockExe -PathType Leaf)) {
     Write-Warning "Cannot check for an orphaned network lock because '$UserName' no longer exists."
 }
 # --- 1. Unenroll the broker-managed account ----------------------------------
@@ -389,4 +389,4 @@ $workspaceMessage
 Delete that directory manually if it is no longer needed. It is a shared working
 area, so this script leaves its contents and ACLs for human review.
 
-"@ -ForegroundColor Cyan
+"@

@@ -37,7 +37,7 @@ $CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
 $NetworkSandboxExe = Join-Path $ProgramDataRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.ini'
+$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.json'
 
 function Stop-LauncherError {
     param([string]$Message)

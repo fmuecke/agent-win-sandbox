@@ -76,12 +76,12 @@ param(
 
 $Version = '0.9.0'
 $LaunchAsVersion = 'v1.3.0'
-$UserNetLockVersion = 'v0.8.1'
-$NetworkSandboxVersion = 'v0.2.1'
+$WfpLockVersion = 'v0.9.0'
+$NetworkSandboxVersion = 'v0.3.0'
 $ToolsRoot = Split-Path $ConfigFile -Parent
-$UserNetLockExe = Join-Path $ToolsRoot 'user-net-lock.exe'
+$WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path (Split-Path $ConfigFile -Parent) 'network-sandbox') 'network-sandbox.ini'
+$NetworkSandboxConfig = Join-Path (Join-Path (Split-Path $ConfigFile -Parent) 'network-sandbox') 'network-sandbox.json'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
 $LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
@@ -309,7 +309,7 @@ else {
             Test-ConfigSetupField -Setup $setup -Field 'userName' -Expected $UserName -Description 'Sandbox user'
             Test-ConfigSetupRequiredField -Setup $setup -Field 'installedByUser' -Description 'Installing user'
             Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected $LaunchAsVersion -Description 'launch-as version'
-            Test-ConfigSetupField -Setup $setup -Field 'userNetLockVersion' -Expected $UserNetLockVersion -Description 'user-net-lock version'
+            Test-ConfigSetupField -Setup $setup -Field 'wfpLockVersion' -Expected $WfpLockVersion -Description 'wfp-lock version'
             Test-ConfigSetupField -Setup $setup -Field 'networkSandboxVersion' -Expected $NetworkSandboxVersion -Description 'network-sandbox version'
             Test-ConfigSetupRequiredField -Setup $setup -Field 'proxyOwnerSid' -Description 'Proxy launcher account SID'
             $proxyPort = [int]$setup.proxyPort
@@ -488,7 +488,7 @@ Test-LaunchAsBrokerService
 
 Section "Network proxy and lock"
 foreach ($component in @(
-        [pscustomobject]@{ Description = 'user-net-lock'; Path = $UserNetLockExe },
+        [pscustomobject]@{ Description = 'wfp-lock'; Path = $WfpLockExe },
         [pscustomobject]@{ Description = 'network-sandbox'; Path = $NetworkSandboxExe },
         [pscustomobject]@{ Description = 'proxy policy'; Path = $NetworkSandboxConfig },
         [pscustomobject]@{ Description = 'exposure checker'; Path = (Join-Path $programDataRoot 'Test-AgentSandboxExposure.ps1') }
@@ -552,12 +552,12 @@ if ((Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) -and $proxyPort -
         Fail "Proxy is not running on 127.0.0.1:$proxyPort"
     }
 }
-if ((Test-Path -LiteralPath $UserNetLockExe -PathType Leaf) -and $proxyPort -ge 1 -and $proxyPort -le 65535) {
+if ((Test-Path -LiteralPath $WfpLockExe -PathType Leaf) -and $proxyPort -ge 1 -and $proxyPort -le 65535) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (($u -and $identity.User.Value -eq $u.SID.Value) -or
         $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        & $UserNetLockExe verify --user $UserName --port $proxyPort
+        & $WfpLockExe verify --user $UserName --port $proxyPort
         if ($LASTEXITCODE -eq 0) { Pass "Network lock verified for '$UserName'" }
         else { Fail "Network lock verification failed for '$UserName'" }
     }

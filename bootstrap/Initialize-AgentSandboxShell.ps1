@@ -14,7 +14,7 @@ $ClaudeWrapper = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapper = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $CheckScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
 $ExposureCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxExposure.ps1'
-$UserNetLockExe = Join-Path $ProgramDataRoot 'user-net-lock.exe'
+$WfpLockExe = Join-Path $ProgramDataRoot 'wfp-lock.exe'
 
 function Stop-ShellInitialization {
     param([string]$Message)
@@ -146,10 +146,10 @@ if ([string]::IsNullOrWhiteSpace($SandboxPath) -or -not (Test-Path $SandboxPath)
 if ($ProxyPort -lt 1 -or $ProxyPort -gt 65535) {
     Stop-ShellInitialization 'Sandbox proxy port is missing or invalid.'
 }
-if (-not (Test-Path $UserNetLockExe -PathType Leaf)) {
-    Stop-ShellInitialization "Network lock is missing: $UserNetLockExe"
+if (-not (Test-Path $WfpLockExe -PathType Leaf)) {
+    Stop-ShellInitialization "Network lock is missing: $WfpLockExe"
 }
-& $UserNetLockExe verify --user AgentSandbox --port $ProxyPort
+& $WfpLockExe verify --user AgentSandbox --port $ProxyPort
 if ($LASTEXITCODE -ne 0) {
     Stop-ShellInitialization 'Network lock verification failed.'
 }

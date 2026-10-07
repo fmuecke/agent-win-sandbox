@@ -206,7 +206,7 @@ a proxy bypass, or invoke a client that ignores them. Setup installs
 both network executables under protected `C:\ProgramData\agent-win-sandbox`
 and the allowlist in a separate protected ProgramData folder. The trusted
 launcher account starts one proxy on `127.0.0.1` and
-the shell sets proxy variables for clients that honor them. `user-net-lock`
+the shell sets proxy variables for clients that honor them. `wfp-lock`
 applies a per-account WFP policy that allows TCP only to the configured proxy
 port on loopback and blocks other outbound TCP/UDP attributed to `AgentSandbox`.
 Startup verifies the proxy and the WFP lock before opening an agent shell.
