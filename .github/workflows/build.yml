@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: 2026 Florian Mücke
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
+
+name: package and release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path '.', 'bootstrap', 'scripts' -Filter '*.ps1' -File
+          foreach ($file in $files) {
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors) | Out-Null
+              if ($errors) {
+                  throw "PowerShell parse errors in $($file.FullName): $($errors -join [Environment]::NewLine)"
+              }
+          }
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          ./Package-Release.ps1
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+              $archive = Join-Path 'dist' "agent-win-sandbox-$env:GITHUB_REF_NAME.zip"
+              if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+                  throw "Tag $env:GITHUB_REF_NAME does not match the version in Setup-AgentSandbox.ps1."
+              }
+          }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-win-sandbox
+          path: dist/agent-win-sandbox-*.zip
+          if-no-files-found: error
+
+  # Publish the packaged ZIP on a matching version tag using its CHANGELOG section.
+  # Write permissions are limited to this job, which executes no repository scripts.
+  # Verify a download: gh attestation verify <zip> -R fmuecke/agent-win-sandbox
+  release:
+    needs: package
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the release
+      id-token: write     # sign the attestation
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: agent-win-sandbox
+          path: dist
+
+      - name: Extract release notes
+        run: |
+          unzip -p "dist/agent-win-sandbox-$GITHUB_REF_NAME.zip" CHANGELOG.md > changelog.md
+          awk -v version="${GITHUB_REF_NAME#v}" \
+            '$1 == "##" && $2 == version { found = 1; next } found && /^## / { exit } found' \
+            changelog.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no entries under '## ${GITHUB_REF_NAME#v}'"
+            exit 1
+          fi
+          printf '\nFull changelog: %s/%s/blob/%s/CHANGELOG.md\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> notes.md
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/agent-win-sandbox-*.zip
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "dist/agent-win-sandbox-$GITHUB_REF_NAME.zip" --repo "$GITHUB_REPOSITORY" --verify-tag --notes-file notes.md
