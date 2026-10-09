@@ -149,7 +149,7 @@ if ($ProxyPort -lt 1 -or $ProxyPort -gt 65535) {
 if (-not (Test-Path $WfpLockExe -PathType Leaf)) {
     Stop-ShellInitialization "Network lock is missing: $WfpLockExe"
 }
-& $WfpLockExe verify --user AgentSandbox --port $ProxyPort
+& $WfpLockExe verify --user AgentSandbox --allow 127.0.0.1:$ProxyPort
 if ($LASTEXITCODE -ne 0) {
     Stop-ShellInitialization 'Network lock verification failed.'
 }

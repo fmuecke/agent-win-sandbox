@@ -557,7 +557,7 @@ if ((Test-Path -LiteralPath $WfpLockExe -PathType Leaf) -and $proxyPort -ge 1 -a
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (($u -and $identity.User.Value -eq $u.SID.Value) -or
         $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        & $WfpLockExe verify --user $UserName --port $proxyPort
+        & $WfpLockExe verify --user $UserName --allow 127.0.0.1:$proxyPort
         if ($LASTEXITCODE -eq 0) { Pass "Network lock verified for '$UserName'" }
         else { Fail "Network lock verification failed for '$UserName'" }
     }

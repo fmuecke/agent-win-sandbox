@@ -62,16 +62,16 @@ $LaunchAsAdminExe = Join-Path $LaunchAsInstallRoot 'launch-as-admin.exe'
 $LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $LegacyLaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
 $LaunchAsVersion = 'v1.3.0'
-$LaunchAsDownloadUri = 'https://github.com/fmuecke/launch-as/releases/download/v1.3.0/launch-as-v1.3.0-win64.zip'
+$LaunchAsDownloadUri = "https://github.com/fmuecke/launch-as/releases/download/$LaunchAsVersion/launch-as-$LaunchAsVersion-win64.zip"
 $LaunchAsSha256 = '1CCDA8A7736C24846102D94A9C12A6D3F0C29733EB282504CCCCED69E0543A8F'
 $SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
-$WfpLockVersion = 'v0.9.0'
-$WfpLockUri = 'https://github.com/fmuecke/wfp-lock/releases/download/v0.9.0/wfp-lock-v0.9.0-win64.zip'
-$WfpLockSha256 = 'E12944228F756B4BE29BD8EE3AD10F9757544DE55CD939B665E4A0B08936B3A8'
+$WfpLockVersion = 'v0.10.0'
+$WfpLockUri = "https://github.com/fmuecke/wfp-lock/releases/download/$WfpLockVersion/wfp-lock-$WfpLockVersion-win64.zip"
+$WfpLockSha256 = 'B4A4E52FB92DDF6CE4E1AA97F713438388DCA0BA213C6077BE4DEB273BB207E8'
 $ToolsRoot = $ProgramDataRoot
 $WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
 $NetworkSandboxVersion = 'v0.3.0'
-$NetworkSandboxUri = 'https://github.com/fmuecke/network-sandbox/releases/download/v0.3.0/network-sandbox-v0.3.0.zip'
+$NetworkSandboxUri = "https://github.com/fmuecke/network-sandbox/releases/download/$NetworkSandboxVersion/network-sandbox-$NetworkSandboxVersion.zip"
 $NetworkSandboxSha256 = 'C4679D8CD93CDF31E88E290E2C881D30F6E18B67E6CF7382C21A43AD866D15D1'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
 $LegacyNetworkSandboxExe = Join-Path (Join-Path $env:ProgramFiles 'network-sandbox') 'network-sandbox.exe'
@@ -409,20 +409,9 @@ function Remove-LegacyLaunchAsCopies {
 }
 function Stop-IfLegacyInstallationPresent {
     $hasConfig = Test-Path -LiteralPath $ConfigFile -PathType Leaf
-    $hasInstalledClient = Test-Path -LiteralPath $LaunchAsExe -PathType Leaf
-    $hasLegacyClient = Test-Path -LiteralPath $LegacyLaunchAsExe -PathType Leaf
 
     if (-not $hasConfig) {
-        if ($hasLegacyClient) {
-            throw "A legacy launch-as copy was found under $ProgramDataRoot without Agent Sandbox configuration. Uninstall the matching earlier Agent Sandbox version first."
-        }
-        if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
-            throw "The '$UserName' account exists without a launch-as $LaunchAsVersion installation. Treat it as a legacy or incomplete installation and uninstall it before running setup."
-        }
         return
-    }
-    if (-not $hasInstalledClient -and -not $hasLegacyClient) {
-        throw "An incomplete or legacy Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it before installing launch-as $LaunchAsVersion."
     }
 
     try {
@@ -480,8 +469,8 @@ if ((Split-Path -Path $SandboxPath -Leaf) -ne 'AgentSandbox') {
 }
 Write-Step "Sandbox workspace: $SandboxPath"
 if (Test-Path $SandboxPath) {
-    $answer = Read-Host "Sandbox workspace already exists. Use this existing shared folder? [y/N]"
-    if ($answer -notmatch '^(y|yes)$') {
+    $answer = Read-Host "Sandbox workspace already exists. Use this existing shared folder? [Y/n]"
+    if ($answer -match '^(n|no)$') {
         Write-Host 'Cancelled. Choose another workspace folder or review the existing workspace first.' -ForegroundColor Yellow
         exit 1
     }
@@ -635,9 +624,9 @@ icacls $NetworkSandboxConfig /inheritance:r /grant:r $adminConfigAce $systemConf
 if ($LASTEXITCODE -ne 0) { throw "Could not protect $NetworkSandboxConfig." }
 Set-AdminOwner -Path $NetworkSandboxConfig
 Start-NetworkSandbox
-& $WfpLockExe apply --user $UserName --port $ProxyPort
+& $WfpLockExe apply --user $UserName --allow 127.0.0.1:$ProxyPort
 if ($LASTEXITCODE -ne 0) { throw "Could not apply wfp-lock for '$UserName'." }
-& $WfpLockExe verify --user $UserName --port $ProxyPort
+& $WfpLockExe verify --user $UserName --allow 127.0.0.1:$ProxyPort
 if ($LASTEXITCODE -ne 0) { throw "Could not verify wfp-lock for '$UserName'." }
 
 # --- 2. Shared workspace permissions -----------------------------------------
