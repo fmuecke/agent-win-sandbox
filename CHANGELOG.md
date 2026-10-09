@@ -3,7 +3,7 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
-## [unreleased] - 2026-10-09
+## [0.10.0] - 2026-10-09
 
 - Added: One admin-write `config.json` holds the workspace, proxy port, proxy
   allowed hosts, and labeled `directEndpoints` (IP:port the sandbox may reach
