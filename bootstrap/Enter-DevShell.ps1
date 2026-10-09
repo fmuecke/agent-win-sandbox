@@ -3,7 +3,8 @@
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 # Enters the Visual Studio Developer Shell in the current Agent Sandbox terminal.
-$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
+# Not %ProgramData%: AgentSandbox can redirect its own environment variables.
+$ProgramDataRoot = Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 
 if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -17,12 +18,12 @@ if (-not (Test-Path $ConfigFile)) {
 }
 
 $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-$SandboxPath = $config.sandboxPath
+$SandboxPath = $config.workspace
 if ([string]::IsNullOrWhiteSpace($SandboxPath) -or -not (Test-Path $SandboxPath)) {
     throw "Sandbox path is missing or does not exist: $SandboxPath"
 }
 
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere -PathType Leaf)) {
     throw "Visual Studio locator not found: $vswhere"
 }

@@ -18,6 +18,10 @@ Git log.
   session.
 - Fixed: A failed shell startup check left an interactive AgentSandbox prompt
   open. The session now closes, and the network lock is verified first.
+- Fixed: Scripts running as `AgentSandbox` located ProgramData and Program
+  Files through environment variables that the account can set for its own
+  later sessions. That let the agent point the network-lock check and the
+  checker at its own files. They now ask Windows for these paths.
 - Breaking: Installations from before this configuration format must be removed
   with `Remove-AgentSandbox.ps1` before setup.
 - Changed: Default now is to accept and use existing agent workspace (switched options).

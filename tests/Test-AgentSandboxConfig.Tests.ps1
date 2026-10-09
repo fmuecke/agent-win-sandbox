@@ -184,6 +184,31 @@ try {
     Set-Content -LiteralPath $overridePath -Encoding utf8NoBOM -Value '{"setup":{"proxyOwnerSid":"S-1-1-0"}}'
     Assert-Rejected '-ConfigFile with setup section' { Resolve-Settings -InstalledSettings $installed } "must not contain the generated 'setup'"
     Write-Output 'PASS: setup settings precedence'
+
+    # AgentSandbox can set its own environment variables (HKCU\Environment) for
+    # later sessions. Scripts it runs must not locate trusted files through them.
+    $sandboxScripts = @(
+        'bootstrap\AgentSandboxConfig.ps1',
+        'bootstrap\Initialize-AgentSandboxShell.ps1',
+        'bootstrap\Enter-DevShell.ps1',
+        'Check-AgentSandbox.ps1',
+        'scripts\claude-wrapper.ps1',
+        'scripts\copilot-wrapper.ps1'
+    )
+    $systemVariables = 'env:ProgramData', 'env:ProgramFiles', 'env:ProgramFiles(x86)', 'env:SystemRoot',
+    'env:SystemDrive', 'env:windir', 'env:ALLUSERSPROFILE', 'env:ProgramW6432'
+    foreach ($relativePath in $sandboxScripts) {
+        $scriptAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot "..\$relativePath"), [ref]$null, [ref]$null)
+        $uses = @($scriptAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.VariableExpressionAst] -and
+                    $node.VariablePath.UserPath -in $systemVariables
+                }, $true))
+        if ($uses.Count -gt 0) {
+            throw "$relativePath uses `$$($uses[0].VariablePath.UserPath) on line $($uses[0].Extent.StartLineNumber)."
+        }
+    }
+    Write-Output 'PASS: sandbox-side scripts ignore system path environment variables'
 }
 finally {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force

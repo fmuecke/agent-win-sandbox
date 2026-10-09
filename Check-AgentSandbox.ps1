@@ -60,18 +60,18 @@
 [CmdletBinding()]
 param(
     [string]$UserName = 'AgentSandbox',
-    [string]$ShellInitScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'Initialize-AgentSandboxShell.ps1'),
-    [string]$DevShellScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'Enter-DevShell.ps1'),
-    [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
-    [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
-    [string]$LauncherScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Start-AgentSandbox.ps1'),
-    [string]$LaunchAsExe = (Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as.exe'),
-    [string]$LaunchAsAdminExe = (Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as-admin.exe'),
-    [string]$InstalledCheckScript = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Check-AgentSandbox.ps1'),
-    [string]$ManagedSettings = (Join-Path (Join-Path $env:ProgramFiles 'ClaudeCode') 'managed-settings.json'),
+    [string]$ShellInitScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'Initialize-AgentSandboxShell.ps1'),
+    [string]$DevShellScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'Enter-DevShell.ps1'),
+    [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
+    [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
+    [string]$LauncherScript = (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'Start-AgentSandbox.ps1'),
+    [string]$LaunchAsExe = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles'))'launch-as') 'launch-as.exe'),
+    [string]$LaunchAsAdminExe = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles'))'launch-as') 'launch-as-admin.exe'),
+    [string]$InstalledCheckScript = (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'Check-AgentSandbox.ps1'),
+    [string]$ManagedSettings = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles'))'ClaudeCode') 'managed-settings.json'),
     [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
     [string]$ManagedSettingsRegistryValue = 'Settings',
-    [string]$ConfigFile = (Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'config.json')
+    [string]$ConfigFile = (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'config.json')
 )
 
 $Version = '0.9.1'
@@ -247,7 +247,7 @@ function Test-ConfigSetupRequiredField {
     }
 }
 function Test-LaunchAsBrokerService {
-    $scExe = Join-Path $env:SystemRoot 'System32\sc.exe'
+    $scExe = Join-Path ([Environment]::SystemDirectory) 'sc.exe'
     $serviceOutput = @(& $scExe query 'launch-as-broker' 2>&1)
     $serviceExitCode = $LASTEXITCODE
 
@@ -604,11 +604,11 @@ foreach ($scriptArtifact in @(
     }
 }
 
-$pwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+$pwshExe = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'PowerShell\7\pwsh.exe'
 if (Test-Path $pwshExe -PathType Leaf) { Pass "PowerShell 7 found: $pwshExe" }
 else { Fail "PowerShell 7 not found at $pwshExe." }
 
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (Test-Path $vswhere) {
     $vsPath = & $vswhere -latest -property installationPath 2>$null
     if ($vsPath -and (Test-Path (Join-Path $vsPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'))) {
@@ -657,9 +657,9 @@ else {
 
 # Machine-wide / common locations.
 foreach ($m in @(
-        "$env:ProgramFiles\Claude\claude.exe",
-        "${env:ProgramFiles(x86)}\Claude\claude.exe",
-        "$env:ProgramData\Claude\claude.exe"
+        (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Claude\claude.exe'),
+        (Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Claude\claude.exe'),
+        (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\Claude\claude.exe')
     )) {
     if (Test-Path $m) { $leaks += $m }
 }
