@@ -25,8 +25,11 @@ foreach ($case in 'fresh', 'upgrade', 'apply-failure', 'verify-failure') {
 
         function Start-NetworkSandbox { $events.Add('proxy') }
         function Invoke-TestNetworkLock {
-            param($Operation, $UserOption, $User, $PortOption, $Port)
-            if ($User -ne 'AgentSandbox' -or $Port -ne 18080) { throw 'Wrong network-lock target.' }
+            param($Operation, $UserOption, $User, $AllowOption, $Endpoint)
+            if ($UserOption -ne '--user' -or $User -ne 'AgentSandbox' -or
+                $AllowOption -ne '--allow' -or $Endpoint -ne '127.0.0.1:18080') {
+                throw 'Wrong network-lock target.'
+            }
             $events.Add($Operation)
             $global:LASTEXITCODE = if ($case -eq "$Operation-failure") { 1 } else { 0 }
         }
@@ -43,7 +46,7 @@ foreach ($case in 'fresh', 'upgrade', 'apply-failure', 'verify-failure') {
             'verify-failure' { 'proxy,apply,verify' }
             default { 'proxy,apply,verify' }
         }
-        if (($events -join ',') -ne $expected) { throw "$case : unexpected order: $events" }
+        if (($events -join ',') -ne $expected) { throw "$case : unexpected order: $events; setup failure: $failure" }
         $expectFailure = $case -in 'apply-failure', 'verify-failure'
         if ([bool]$failure -ne $expectFailure) { throw "$case : unexpected setup failure: $failure" }
         if ($warnings.Count -ne 0) { throw "$case : unexpected warning." }

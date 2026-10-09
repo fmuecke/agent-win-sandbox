@@ -199,10 +199,6 @@ copies in Program Files that other tools may use.
   by ordinary Windows users.
 - Claude managed settings do not govern Copilot CLI. Configure each agent's
   permissions independently.
-- A legacy `ClaudeSandbox` installation can coexist with this project because
-  its user, workspace, ProgramData, firewall, and shortcut names are separate.
-  Its optional machine-wide Claude managed settings are shared; decline the
-  overwrite prompt unless one policy is intentionally used for both.
 - The initial `network-sandbox.json` allowlist is intentionally small. Agent
   sign-in, updates, and package feeds may need additional reviewed destinations.
 - WFP covers outbound TCP/UDP attributed to `AgentSandbox`; ICMP and brokered
