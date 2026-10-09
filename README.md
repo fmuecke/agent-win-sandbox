@@ -1,5 +1,7 @@
 # agent-win-sandbox
 
+<img width="640" height="360" alt="image" src="https://github.com/user-attachments/assets/641b6d56-cc92-46b3-a48c-b53a0c94e5e1" />
+
 Give coding agents their own Windows identity, workspace, and controlled path
 to the internet. Keep your familiar PowerShell terminal and development tools.
 
