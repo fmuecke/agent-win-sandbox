@@ -45,7 +45,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
-$Version = '0.9.1'
+$Version = '0.10.0'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $InstalledConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $SettingsDefaultsSource = Join-Path $PSScriptRoot 'config\agent-sandbox.json'

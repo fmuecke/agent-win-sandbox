@@ -5,7 +5,7 @@
 # Initializes a plain PowerShell session as AgentSandbox. It deliberately does
 # not enter the Visual Studio Developer Shell or start an agent.
 #Requires -Version 7.0
-$Version = '0.9.1'
+$Version = '0.10.0'
 # Not %ProgramData%: AgentSandbox can redirect its own environment variables.
 $ProgramDataRoot = Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox'
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
