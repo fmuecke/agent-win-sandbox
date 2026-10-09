@@ -5,8 +5,21 @@ Git log.
 
 ## [unreleased] - 2026-10-09
 
-- Changed: Allowing sandbox to reach defined endoints (e.g. database server;
-  uses `wfp-lock v0.10.0`)
+- Added: One admin-write `config.json` holds the workspace, proxy port, proxy
+  allowed hosts, and labeled `directEndpoints` (IP:port the sandbox may reach
+  directly, e.g. a database server; uses `wfp-lock v0.10.0`). It replaces
+  `config\network-sandbox.json`; the proxy policy is generated from it.
+- Added: `Setup-AgentSandbox.ps1 -ConfigFile` merges settings over the installed
+  configuration; lists replace, omitted keys are kept.
+- Added: `Apply-Config.ps1` applies edited settings without setup. The launcher
+  refuses to start while settings are unapplied or when a non-admin can modify
+  the config or bootstrap scripts.
+- Changed: The proxy is started by the launcher only, not by setup's elevated
+  session.
+- Fixed: A failed shell startup check left an interactive AgentSandbox prompt
+  open. The session now closes, and the network lock is verified first.
+- Breaking: Installations from before this configuration format must be removed
+  with `Remove-AgentSandbox.ps1` before setup.
 - Changed: Default now is to accept and use existing agent workspace (switched options).
 - Removed: Handling for legacy installations
 

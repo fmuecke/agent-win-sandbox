@@ -208,15 +208,23 @@ and the allowlist in a separate protected ProgramData folder. The trusted
 launcher account starts one proxy on `127.0.0.1` and
 the shell sets proxy variables for clients that honor them. `wfp-lock`
 applies a per-account WFP policy that allows TCP only to the configured proxy
-port on loopback and blocks other outbound TCP/UDP attributed to `AgentSandbox`.
-Startup verifies the proxy and the WFP lock before opening an agent shell.
+port on loopback and to the labeled `directEndpoints`, and blocks other
+outbound TCP/UDP attributed to `AgentSandbox`. Each direct endpoint is a
+deliberate bypass of the proxy for one address and port; a loopback endpoint
+exposes a local service to the agent. Setup and `Apply-Config.ps1` derive both
+the proxy policy and the WFP allow set from the admin-write `config.json`. The
+launcher refuses to start when settings are unapplied or when a non-admin can
+modify the config or bootstrap scripts. The shell verifies the WFP lock against
+`config.json` first and closes the session on mismatch.
 The WFP lock supersedes the older sandbox-specific Windows Firewall port
 blocks.
 
 The proxy enforces destination host and port entries, including HTTP `CONNECT`;
 it does not inspect HTTPS requests inside a tunnel. The launcher account can
 write proxy runtime files but cannot change the protected allowlist without
-elevation. Other accounts running the public shortcut cannot start a session
+elevation. It does own the proxy process, so it could stop it and run its own
+proxy with any allowlist on the allowed port: the allowlist constrains the
+agent, not the launching user. Other accounts running the public shortcut cannot start a session
 until setup is run from the intended launcher account.
 
 This WFP policy does not cover ICMP, DNS queries issued by the Windows DNS Client

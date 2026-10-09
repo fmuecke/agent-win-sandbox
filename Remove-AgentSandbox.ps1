@@ -57,8 +57,10 @@ function Get-ConfiguredSandboxPath {
 
     try {
         $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-        if (-not [string]::IsNullOrWhiteSpace($config.sandboxPath)) {
-            return [string]$config.sandboxPath
+        # 'sandboxPath' is the name used before the shared configuration.
+        $workspace = if ($config.workspace) { $config.workspace } else { $config.sandboxPath }
+        if (-not [string]::IsNullOrWhiteSpace($workspace)) {
+            return [string]$workspace
         }
     }
     catch {

@@ -1,0 +1,15 @@
+{
+  "workspace": "C:\\AgentSandbox",
+  "proxy": {
+    "port": 8080,
+    "allowedHosts": [
+      "api.anthropic.com:443",
+      "claude.ai:443",
+      "platform.claude.com:443",
+      "downloads.claude.ai:443",
+      "microsoft.com:443",
+      "www.microsoft.com:443"
+    ]
+  },
+  "directEndpoints": []
+}

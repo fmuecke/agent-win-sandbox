@@ -76,9 +76,11 @@ param(
 
 $Version = '0.9.1'
 $LaunchAsVersion = 'v1.3.0'
-$WfpLockVersion = 'v0.9.0'
+$WfpLockVersion = 'v0.10.0'
 $NetworkSandboxVersion = 'v0.3.0'
 $ToolsRoot = Split-Path $ConfigFile -Parent
+$ConfigFunctionsScript = Join-Path (Join-Path $ToolsRoot 'bootstrap') 'AgentSandboxConfig.ps1'
+$ApplyConfigScript = Join-Path $ToolsRoot 'Apply-Config.ps1'
 $WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
 $NetworkSandboxConfig = Join-Path (Join-Path (Split-Path $ConfigFile -Parent) 'network-sandbox') 'network-sandbox.json'
@@ -280,17 +282,33 @@ if (-not (Test-Path $ConfigFile)) {
 else {
     Pass "Config present: $ConfigFile"
     try {
-        $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-        $SandboxPath = $config.sandboxPath
-        if ([string]::IsNullOrWhiteSpace($SandboxPath)) {
-            Fail "Config does not define sandboxPath."
+        . $ConfigFunctionsScript
+        $configTable = Read-AgentSandboxConfig -Path $ConfigFile
+        $settings = Get-AgentSandboxSettings -Config $configTable
+        try {
+            foreach ($warning in (Test-AgentSandboxSettings -Settings $settings)) { Warn $warning }
+            $SandboxPath = $settings.workspace
+            $proxyPort = [int]$settings.proxy.port
+            $lockEndpoints = Get-AgentSandboxLockEndpoints -Settings $settings
+            Pass "Configured sandbox path: $SandboxPath"
+            Pass "Configured proxy port: $proxyPort"
+            Info "Proxy allowed hosts: $(@($settings.proxy.allowedHosts) -join ', ')"
+            foreach ($entry in $settings.directEndpoints) {
+                Info "Direct endpoint: $($entry.endpoint) ($($entry.label))"
+            }
         }
-        elseif ((Split-Path $SandboxPath -Leaf) -ne 'AgentSandbox') {
-            Fail "sandboxPath must end in the fixed directory name 'AgentSandbox': $SandboxPath"
+        catch {
+            Fail "Config settings are invalid: $($_.Exception.Message)"
+        }
+        $appliedHash = if ($configTable['setup'] -is [Collections.IDictionary]) { $configTable['setup']['appliedSettingsHash'] }
+        if ($appliedHash -and $appliedHash -eq (Get-AgentSandboxSettingsHash -Config $configTable)) {
+            Pass 'Config settings match the last applied settings.'
         }
         else {
-            Pass "Configured sandbox path: $SandboxPath"
+            Fail 'Config settings changed since they were last applied. Run Apply-Config.ps1 elevated.'
         }
+
+        $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
 
         $setupProperty = $config.PSObject.Properties['setup']
         $setup = if ($setupProperty) { $setupProperty.Value } else { $null }
@@ -312,22 +330,17 @@ else {
             Test-ConfigSetupField -Setup $setup -Field 'wfpLockVersion' -Expected $WfpLockVersion -Description 'wfp-lock version'
             Test-ConfigSetupField -Setup $setup -Field 'networkSandboxVersion' -Expected $NetworkSandboxVersion -Description 'network-sandbox version'
             Test-ConfigSetupRequiredField -Setup $setup -Field 'proxyOwnerSid' -Description 'Proxy launcher account SID'
-            $proxyPort = [int]$setup.proxyPort
-            if ($proxyPort -ge 1 -and $proxyPort -le 65535) {
-                Pass "Configured proxy port: $proxyPort"
-            }
-            else {
-                Fail 'Configured proxy port is missing or invalid.'
-            }
         }
     }
     catch {
-        Fail "Config file is not valid JSON: $($_.Exception.Message)"
+        Fail "Config file could not be read: $($_.Exception.Message)"
     }
 
     $programDataRoot = Split-Path $ConfigFile -Parent
     Test-AdminWriteOnlyPath -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
     Test-AdminWriteOnlyPath -Path $ConfigFile -Description 'Sandbox config file' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $ConfigFunctionsScript -Description 'Config functions script' -UserName $UserName
+    Test-AdminWriteOnlyPath -Path $ApplyConfigScript -Description 'Apply-Config script' -UserName $UserName
 
     if ([string]::IsNullOrWhiteSpace($SandboxPath) -or ((Split-Path $SandboxPath -Leaf) -ne 'AgentSandbox')) {
         Section "Summary"
@@ -557,7 +570,7 @@ if ((Test-Path -LiteralPath $WfpLockExe -PathType Leaf) -and $proxyPort -ge 1 -a
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (($u -and $identity.User.Value -eq $u.SID.Value) -or
         $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        & $WfpLockExe verify --user $UserName --allow 127.0.0.1:$proxyPort
+        & $WfpLockExe verify --user $UserName --allow $lockEndpoints
         if ($LASTEXITCODE -eq 0) { Pass "Network lock verified for '$UserName'" }
         else { Fail "Network lock verification failed for '$UserName'" }
     }

@@ -15,13 +15,16 @@ $CopilotWrapper = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $CheckScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
 $ExposureCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxExposure.ps1'
 $WfpLockExe = Join-Path $ProgramDataRoot 'wfp-lock.exe'
+$ConfigFunctionsScript = Join-Path $BootstrapRoot 'AgentSandboxConfig.ps1'
 
 function Stop-ShellInitialization {
     param([string]$Message)
 
     Write-Host $Message -ForegroundColor Red
-    Write-Host 'Run Setup-AgentSandbox.ps1 again.' -ForegroundColor Yellow
-    exit 1
+    Write-Host 'An administrator must run Apply-Config.ps1 or Setup-AgentSandbox.ps1 again.' -ForegroundColor Yellow
+    Read-Host 'Press Enter to close'
+    # The shell runs with -NoExit; 'exit' would leave an interactive prompt open.
+    [Environment]::Exit(1)
 }
 
 function Set-AgentSandboxWindowTitle {
@@ -128,30 +131,35 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 if ($env:USERNAME -ne 'AgentSandbox') {
     Stop-ShellInitialization "Refusing to run: expected user 'AgentSandbox' but running as '$env:USERNAME'."
 }
-if (-not (Test-Path $ConfigFile)) {
-    Stop-ShellInitialization "Sandbox config missing: $ConfigFile"
+foreach ($required in $ConfigFile, $ConfigFunctionsScript) {
+    if (-not (Test-Path $required -PathType Leaf)) {
+        Stop-ShellInitialization "Sandbox config missing: $required"
+    }
 }
 
 try {
-    $config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-    $SandboxPath = $config.sandboxPath
-    $ProxyPort = [int]$config.setup.proxyPort
+    . $ConfigFunctionsScript
+    $settings = Get-AgentSandboxSettings -Config (Read-AgentSandboxConfig -Path $ConfigFile)
+    $null = Test-AgentSandboxSettings -Settings $settings
+    $SandboxPath = $settings.workspace
+    $ProxyPort = [int]$settings.proxy.port
+    $lockEndpoints = Get-AgentSandboxLockEndpoints -Settings $settings
 }
 catch {
     Stop-ShellInitialization "Sandbox config is invalid: $($_.Exception.Message)"
 }
-if ([string]::IsNullOrWhiteSpace($SandboxPath) -or -not (Test-Path $SandboxPath)) {
-    Stop-ShellInitialization "Sandbox path is missing or does not exist: $SandboxPath"
-}
-if ($ProxyPort -lt 1 -or $ProxyPort -gt 65535) {
-    Stop-ShellInitialization 'Sandbox proxy port is missing or invalid.'
-}
+
+# Verify the network lock before anything else uses the session.
 if (-not (Test-Path $WfpLockExe -PathType Leaf)) {
     Stop-ShellInitialization "Network lock is missing: $WfpLockExe"
 }
-& $WfpLockExe verify --user AgentSandbox --allow 127.0.0.1:$ProxyPort
+& $WfpLockExe verify --user AgentSandbox --allow $lockEndpoints
 if ($LASTEXITCODE -ne 0) {
     Stop-ShellInitialization 'Network lock verification failed.'
+}
+
+if ([string]::IsNullOrWhiteSpace($SandboxPath) -or -not (Test-Path $SandboxPath)) {
+    Stop-ShellInitialization "Sandbox path is missing or does not exist: $SandboxPath"
 }
 
 foreach ($commandScript in @($DevShellScript, $ClaudeWrapper, $CopilotWrapper, $CheckScript, $ExposureCheckScript)) {
@@ -176,7 +184,7 @@ Set-Alias -Name sandbox-check -Value $CheckScript -Scope Global
 function global:Invoke-SandboxExposure {
     $installedRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
     $installedConfig = Get-Content (Join-Path $installedRoot 'config.json') -Raw | ConvertFrom-Json
-    & (Join-Path $installedRoot 'Test-AgentSandboxExposure.ps1') -SandboxPath $installedConfig.sandboxPath @args
+    & (Join-Path $installedRoot 'Test-AgentSandboxExposure.ps1') -SandboxPath $installedConfig.workspace @args
 }
 Set-Alias -Name sandbox-exposure -Value Invoke-SandboxExposure -Scope Global
 

@@ -24,13 +24,22 @@
       them.
     - The sandbox username and workspace directory name are baked in
       (AgentSandbox); they are not configurable.
-    - The complete workspace directory is prompted for interactively if not passed.
+    - Settings (workspace, proxy port and allowed hosts, direct endpoints) are
+      merged in this order, later wins: config\agent-sandbox.json defaults,
+      the installed config.json, -ConfigFile, then -SandboxPath/-ProxyPort.
+      Objects merge by key; lists replace. Setup applies them with
+      Apply-Config.ps1.
+    - Installations from before the shared configuration must be removed
+      with Remove-AgentSandbox.ps1 first.
+    - On a new installation without -SandboxPath or a workspace in
+      -ConfigFile, the workspace directory is prompted for interactively.
 #>
 
 [CmdletBinding()]
 param(
-    [string]$SandboxPath, # if omitted, you will be prompted
-    [ValidateRange(1, 65535)][int]$ProxyPort = 8080
+    [string]$ConfigFile, # settings to merge over the installed configuration
+    [string]$SandboxPath,
+    [ValidateRange(1, 65535)][int]$ProxyPort
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,7 +47,10 @@ $ErrorActionPreference = 'Stop'
 $UserName = 'AgentSandbox'   # baked in; not configurable
 $Version = '0.9.1'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
-$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$InstalledConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$SettingsDefaultsSource = Join-Path $PSScriptRoot 'config\agent-sandbox.json'
+$ConfigFunctionsSource = Join-Path $PSScriptRoot 'bootstrap\AgentSandboxConfig.ps1'
+$ApplyConfigSource = Join-Path $PSScriptRoot 'Apply-Config.ps1'
 $LauncherSource = Join-Path $PSScriptRoot 'Start-AgentSandbox.ps1'
 $CheckerSource = Join-Path $PSScriptRoot 'Check-AgentSandbox.ps1'
 $ExposureCheckSource = Join-Path $PSScriptRoot 'Test-AgentSandboxExposure.ps1'
@@ -55,6 +67,8 @@ $ShellInitScript = Join-Path $BootstrapRoot 'Initialize-AgentSandboxShell.ps1'
 $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapperScript = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapperScript = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
+$ConfigFunctionsScript = Join-Path $BootstrapRoot 'AgentSandboxConfig.ps1'
+$ApplyConfigScript = Join-Path $ProgramDataRoot 'Apply-Config.ps1'
 $LaunchAsInstallRoot = Join-Path $env:ProgramFiles 'launch-as'
 $LaunchAsExe = Join-Path $LaunchAsInstallRoot 'launch-as.exe'
 $LaunchAsAdminExe = Join-Path $LaunchAsInstallRoot 'launch-as-admin.exe'
@@ -74,7 +88,6 @@ $NetworkSandboxUri = "https://github.com/fmuecke/network-sandbox/releases/downlo
 $NetworkSandboxSha256 = 'C4679D8CD93CDF31E88E290E2C881D30F6E18B67E6CF7382C21A43AD866D15D1'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
 $LegacyNetworkSandboxExe = Join-Path (Join-Path $env:ProgramFiles 'network-sandbox') 'network-sandbox.exe'
-$NetworkSandboxConfigSource = Join-Path $PSScriptRoot 'config\network-sandbox.json'
 $NetworkSandboxStateRoot = Join-Path $ProgramDataRoot 'network-sandbox'
 $NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.json'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
@@ -87,6 +100,8 @@ $LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $EveryoneSid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
 $AuthenticatedUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-11')
 $BroadReadSidValues = @($BuiltinUsersSid.Value, $EveryoneSid.Value, $AuthenticatedUsersSid.Value)
+
+. $ConfigFunctionsSource
 
 
 function Write-Step { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
@@ -307,57 +322,6 @@ function Install-PinnedExecutable {
         }
     }
 }
-function Get-NetworkSandboxPolicy {
-    if ((Test-Path -LiteralPath $NetworkSandboxConfig) -and
-        ((Get-Item -LiteralPath $NetworkSandboxConfig -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Refusing to update linked proxy policy: $NetworkSandboxConfig"
-    }
-    if (-not (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
-        $policy = Get-Content -LiteralPath $NetworkSandboxConfigSource -Raw
-    }
-    else {
-        $policy = Get-Content -LiteralPath $NetworkSandboxConfig -Raw
-    }
-    $document = [System.Text.Json.JsonDocument]::Parse($policy)
-    try {
-        $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($property in $document.RootElement.EnumerateObject()) {
-            if (-not $keys.Add($property.Name)) {
-                throw "Duplicate proxy policy key: $($property.Name)"
-            }
-        }
-    }
-    finally { $document.Dispose() }
-    $policy = $policy | ConvertFrom-Json -AsHashtable
-    if ($policy -isnot [System.Collections.IDictionary] -or -not $policy.Contains('port')) {
-        throw "Network proxy policy has no port setting: $NetworkSandboxConfig"
-    }
-    return $policy
-}
-function Install-NetworkSandboxPolicy {
-    $policy = Get-NetworkSandboxPolicy
-    if (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf) {
-        Write-Warning "Preserving the existing proxy allowlist at $NetworkSandboxConfig. Review it before starting agents."
-    }
-    if ($policy.port -ne $ProxyPort) {
-        Write-Warning "Setting the proxy policy port to $ProxyPort to match the network lock."
-    }
-    $policy.port = $ProxyPort
-    $policy.logfile = Join-Path $NetworkSandboxStateRoot 'network-sandbox.log'
-    Set-Content -LiteralPath $NetworkSandboxConfig -Value ($policy | ConvertTo-Json -Depth 10) -Encoding utf8NoBOM -NoNewline
-}
-function Test-NetworkSandboxRunning {
-    $output = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
-    return ($LASTEXITCODE -eq 0 -and ($output -join ' ') -match "127\.0\.0\.1:$ProxyPort(?!\d)")
-}
-function Start-NetworkSandbox {
-    if (-not (Test-NetworkSandboxRunning)) {
-        & $NetworkSandboxExe start -config $NetworkSandboxConfig
-    }
-    if (-not (Test-NetworkSandboxRunning)) {
-        throw "Network proxy did not start on 127.0.0.1:$ProxyPort; inspect its log."
-    }
-}
 function Test-ExistingSandboxProxyListener {
     param([object]$Listener)
 
@@ -406,23 +370,62 @@ function Remove-LegacyLaunchAsCopies {
         }
     }
 }
-function Stop-IfLegacyInstallationPresent {
-    $hasConfig = Test-Path -LiteralPath $ConfigFile -PathType Leaf
-
-    if (-not $hasConfig) {
-        return
+# Returns the installed settings, or $null on a new installation.
+function Get-InstalledSettings {
+    if (-not (Test-Path -LiteralPath $InstalledConfigFile -PathType Leaf)) {
+        return $null
     }
 
     try {
-        $installedConfig = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
-        $installedVersion = [string]$installedConfig.setup.launchAsVersion
+        $installedConfig = Read-AgentSandboxConfig -Path $InstalledConfigFile
     }
     catch {
-        throw "An unreadable Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it before installing launch-as $LaunchAsVersion."
+        throw "An unreadable Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it with Remove-AgentSandbox.ps1, then run setup again."
     }
-
+    if (-not $installedConfig.Contains('proxy') -or $installedConfig['setup'] -isnot [Collections.IDictionary]) {
+        throw "The installed Agent Sandbox predates the shared configuration. Uninstall it with Remove-AgentSandbox.ps1, then run setup again."
+    }
+    $installedVersion = [string]$installedConfig['setup']['launchAsVersion']
     if ($installedVersion -notin $SupportedLaunchAsVersions) {
         throw "Agent Sandbox uses launch-as '$installedVersion'. launch-as $LaunchAsVersion cannot share the AgentSandbox account with earlier versions. Uninstall the earlier Agent Sandbox version first, then run setup again."
+    }
+    return Get-AgentSandboxSettings -Config $installedConfig
+}
+
+function Resolve-Settings {
+    param([Collections.IDictionary]$InstalledSettings)
+
+    $settings = Read-AgentSandboxConfig -Path $SettingsDefaultsSource
+    if ($InstalledSettings) {
+        $settings = Merge-AgentSandboxSettings -Base $settings -Override $InstalledSettings
+    }
+    $workspaceGiven = [bool]$InstalledSettings
+    if ($ConfigFile) {
+        $override = Read-AgentSandboxConfig -Path $ConfigFile
+        if ($override.Contains('setup')) {
+            throw "-ConfigFile must not contain the generated 'setup' section: $ConfigFile"
+        }
+        $settings = Merge-AgentSandboxSettings -Base $settings -Override $override
+        $workspaceGiven = $workspaceGiven -or $override.Contains('workspace')
+    }
+    if ($SandboxPath) {
+        $settings.workspace = $SandboxPath
+    }
+    elseif (-not $workspaceGiven) {
+        $workspaceInput = Read-Host "Sandbox workspace folder [$($settings.workspace)]"
+        if (-not [string]::IsNullOrWhiteSpace($workspaceInput)) { $settings.workspace = $workspaceInput.Trim() }
+    }
+    if ($ProxyPort) {
+        $settings.proxy.port = $ProxyPort
+    }
+    return $settings
+}
+
+function Show-SettingsWarnings {
+    param([Collections.IDictionary]$Settings)
+
+    foreach ($warning in (Test-AgentSandboxSettings -Settings $Settings)) {
+        Write-Warning $warning
     }
 }
 # --- 0. Sanity ----------------------------------------------------------------
@@ -433,7 +436,7 @@ $pwshVersion = & $PwshExe -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion
 if ($LASTEXITCODE -ne 0) {
     throw "PowerShell 7 at $PwshExe could not be started."
 }
-Stop-IfLegacyInstallationPresent
+$installedSettings = Get-InstalledSettings
 $existingSandboxUser = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
 if ($existingSandboxUser) {
     $existingProfile = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='$($existingSandboxUser.SID.Value)'" -ErrorAction Stop
@@ -449,25 +452,19 @@ Write-Step "PowerShell 7: $pwshVersion"
 Write-Step "Calling user: $callingUser"
 Write-Step "Protecting profile: $callingProfile"
 
-# Validate the policy and resolve port conflicts before changing accounts, files, or network policy.
-if ((Test-Path -LiteralPath $NetworkSandboxStateRoot) -and
-    -not (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
-    throw "Existing proxy state has no JSON policy: $NetworkSandboxConfig. Provide a JSON policy before rerunning setup."
-}
-$null = Get-NetworkSandboxPolicy
-$ProxyPort = Resolve-ProxyPort -Port $ProxyPort
+# --- 0b. Resolve and validate settings ----------------------------------------
+# Validate settings and resolve port conflicts before changing accounts, files,
+# or network policy.
+$settings = Resolve-Settings -InstalledSettings $installedSettings
+Show-SettingsWarnings -Settings $settings
+$settings.proxy.port = Resolve-ProxyPort -Port $settings.proxy.port
+$null = Test-AgentSandboxSettings -Settings $settings
+$SandboxPath = $settings.workspace
+$ProxyPort = $settings.proxy.port
 Write-Step "Proxy port: $ProxyPort"
-
-# --- 0b. Resolve sandbox workspace directory interactively -------------------
-if (-not $SandboxPath) {
-    $workspaceInput = Read-Host 'Sandbox workspace folder [C:\AgentSandbox]'
-    $SandboxPath = if ([string]::IsNullOrWhiteSpace($workspaceInput)) { 'C:\AgentSandbox' } else { $workspaceInput.Trim() }
-}
-if ((Split-Path -Path $SandboxPath -Leaf) -ne 'AgentSandbox') {
-    throw "Sandbox workspace must be named 'AgentSandbox': $SandboxPath"
-}
 Write-Step "Sandbox workspace: $SandboxPath"
-if (Test-Path $SandboxPath) {
+$isInstalledWorkspace = $installedSettings -and $installedSettings.workspace -eq $SandboxPath
+if ((Test-Path $SandboxPath) -and -not $isInstalledWorkspace) {
     $answer = Read-Host "Sandbox workspace already exists. Use this existing shared folder? [Y/n]"
     if ($answer -match '^(n|no)$') {
         Write-Host 'Cancelled. Choose another workspace folder or review the existing workspace first.' -ForegroundColor Yellow
@@ -613,20 +610,30 @@ foreach ($runtimeName in 'network-sandbox.json.pid', 'network-sandbox.json.pid.l
 }
 Install-PinnedExecutable -Name 'network-sandbox' -DownloadUri $NetworkSandboxUri `
     -ExpectedSha256 $NetworkSandboxSha256 -InstallRoot $ToolsRoot
-Install-NetworkSandboxPolicy
-icacls $NetworkSandboxConfig /reset | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $NetworkSandboxConfig." }
-$adminConfigAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F'
-$systemConfigAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F'
-$usersConfigAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'RX'
-icacls $NetworkSandboxConfig /inheritance:r /grant:r $adminConfigAce $systemConfigAce $usersConfigAce | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Could not protect $NetworkSandboxConfig." }
-Set-AdminOwner -Path $NetworkSandboxConfig
-Start-NetworkSandbox
-& $WfpLockExe apply --user $UserName --allow 127.0.0.1:$ProxyPort
-if ($LASTEXITCODE -ne 0) { throw "Could not apply wfp-lock for '$UserName'." }
-& $WfpLockExe verify --user $UserName --allow 127.0.0.1:$ProxyPort
-if ($LASTEXITCODE -ne 0) { throw "Could not verify wfp-lock for '$UserName'." }
+
+# --- 1d. Write configuration and apply network settings ----------------------
+# config.json is the single source of truth for settings. It inherits the
+# admin-write / Users-RX ProgramData ACL; Apply-Config re-locks it.
+Write-Step "Writing sandbox configuration to ProgramData"
+if ((Test-Path -LiteralPath $InstalledConfigFile) -and (Get-Item -LiteralPath $InstalledConfigFile -Force).LinkType) {
+    throw "Refusing to write linked config: $InstalledConfigFile"
+}
+$config = Merge-AgentSandboxSettings -Base $settings -Override @{
+    setup = [ordered]@{
+        version               = $Version
+        createdAtUtc          = (Get-Date).ToUniversalTime().ToString('o')
+        userName              = $UserName
+        installedByUser       = $callingUser
+        launchAsVersion       = $LaunchAsVersion
+        wfpLockVersion        = $WfpLockVersion
+        networkSandboxVersion = $NetworkSandboxVersion
+        proxyOwnerSid         = $callingUserSid
+        provisionedWorkspace  = $SandboxPath
+    }
+}
+Set-Content -LiteralPath $InstalledConfigFile -Value ($config | ConvertTo-Json -Depth 10) -Encoding utf8NoBOM
+Write-Host "  wrote $InstalledConfigFile" -ForegroundColor Green
+& $ApplyConfigSource
 
 # --- 2. Shared workspace permissions -----------------------------------------
 Write-Step "Configuring shared workspace at $SandboxPath"
@@ -641,29 +648,7 @@ icacls $SandboxPath /grant "${callingUser}:(OI)(CI)M" | Out-Null
 icacls $SandboxPath /grant "${UserName}:(OI)(CI)M"     | Out-Null
 Write-Host "  granted Modify to $callingUser and $UserName" -ForegroundColor Green
 
-# --- 3. Write ProgramData configuration --------------------------------------
-# ProgramData config is the single source of truth for the sandbox path.
-# AgentSandbox can read it at launch but cannot alter where the bootstrap lands.
-Write-Step "Writing sandbox configuration to ProgramData"
-if (-not (Test-Path $ProgramDataRoot)) { New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null }
-$config = [ordered]@{
-    sandboxPath = $SandboxPath
-    setup       = [ordered]@{
-        version               = $Version
-        createdAtUtc          = (Get-Date).ToUniversalTime().ToString('o')
-        userName              = $UserName
-        installedByUser       = $callingUser
-        launchAsVersion       = $LaunchAsVersion
-        wfpLockVersion        = $WfpLockVersion
-        networkSandboxVersion = $NetworkSandboxVersion
-        proxyPort             = $ProxyPort
-        proxyOwnerSid         = $callingUserSid
-    }
-}
-$config | ConvertTo-Json -Depth 4 | Set-Content -Path $ConfigFile -Encoding UTF8
-Write-Host "  wrote $ConfigFile" -ForegroundColor Green
-
-# --- 3b. Optional Claude Code managed settings deployment --------------------
+# --- 3. Optional Claude Code managed settings deployment --------------------
 Write-Step "Optional Claude Code managed settings"
 Install-ClaudeManagedSettings -Source $ManagedSettingsSource -Destination $ManagedSettings -SandboxPath $SandboxPath
 
@@ -723,6 +708,8 @@ $bootstrapDir = $BootstrapRoot
 if (-not (Test-Path $bootstrapDir)) { New-Item -ItemType Directory -Path $bootstrapDir -Force | Out-Null }
 $launchArtifacts = @(
     [pscustomobject]@{ Name = 'launcher'; Source = $LauncherSource; Destination = $LauncherScript },
+    [pscustomobject]@{ Name = 'configuration apply command'; Source = $ApplyConfigSource; Destination = $ApplyConfigScript },
+    [pscustomobject]@{ Name = 'configuration functions'; Source = $ConfigFunctionsSource; Destination = $ConfigFunctionsScript },
     [pscustomobject]@{ Name = 'checker'; Source = $CheckerSource; Destination = $CheckerScript },
     [pscustomobject]@{ Name = 'exposure diagnostic'; Source = $ExposureCheckSource; Destination = $ExposureCheckScript },
     [pscustomobject]@{ Name = 'shell initializer'; Source = $ShellInitSource; Destination = $ShellInitScript },
@@ -750,8 +737,10 @@ $adminFullAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F'
 $systemFullAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F'
 $usersReadExecuteAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights 'RX'
 foreach ($protectedFile in @(
-        $ConfigFile,
+        $InstalledConfigFile,
         $LauncherScript,
+        $ApplyConfigScript,
+        $ConfigFunctionsScript,
         $CheckerScript,
         $ExposureCheckScript,
         $ShellInitScript,

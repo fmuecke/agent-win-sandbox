@@ -97,13 +97,59 @@ Code user. It downloads and hash-verifies the `launch-as` package, then lets
 `launch-as-admin` install the broker and all command-line tools together under
 `C:\Program Files\launch-as`. It also installs pinned `wfp-lock` and
 `network-sandbox` binaries together under protected
-`C:\ProgramData\agent-win-sandbox`, copies
-`config\network-sandbox.json` to protected ProgramData on first setup, starts the proxy
-under the setup account, and applies the per-user WFP lock after the proxy is
-running. An existing proxy allowlist is preserved with a warning; setup updates
-its port to match `-ProxyPort`. Review the installed allowlist before using
-agents. Setup enrolls `AgentSandbox` and creates the `Agent Sandbox` Public
-Desktop shortcut. Component directories are not added to `PATH`.
+`C:\ProgramData\agent-win-sandbox`, writes the protected `config.json`, and
+runs `Apply-Config.ps1` to generate the proxy policy and apply the per-user WFP
+lock. The launcher starts the proxy under the launcher account. Setup enrolls
+`AgentSandbox` and creates the `Agent Sandbox` Public Desktop shortcut.
+Component directories are not added to `PATH`.
+
+### Configuration
+
+All settings live in `C:\ProgramData\agent-win-sandbox\config.json`, which
+only administrators can modify:
+
+```json
+{
+  "workspace": "C:\\AgentSandbox",
+  "proxy": {
+    "port": 8080,
+    "allowedHosts": ["api.anthropic.com:443", "claude.ai:443"]
+  },
+  "directEndpoints": [
+    { "endpoint": "10.0.0.5:1433", "label": "Database server" }
+  ]
+}
+```
+
+- `proxy.allowedHosts`: `host:port` destinations the proxy forwards to.
+- `directEndpoints`: IP literals (`10.0.0.5:1433`, `[2001:db8::5]:443`) the
+  sandbox may reach directly, bypassing the proxy. Each needs a label that
+  explains why. Host names are rejected: the WFP lock matches addresses.
+  At most 31 entries.
+- Setup also writes a generated `setup` section; do not edit it.
+
+Setup merges settings in this order, later wins: `config\agent-sandbox.json`
+defaults, the installed `config.json`, `-ConfigFile`, then `-SandboxPath` and
+`-ProxyPort`. Objects merge key by key; a list replaces the earlier list.
+
+```powershell
+.\Setup-AgentSandbox.ps1 -ConfigFile .\my-sandbox.json
+```
+
+To change settings without setup, edit `config.json` as administrator, close
+all AgentSandbox sessions, then run elevated:
+
+```powershell
+& "$env:ProgramData\agent-win-sandbox\Apply-Config.ps1"
+```
+
+The launcher refuses to start while settings are unapplied, or if a non-admin
+can modify the config or the bootstrap scripts. Every session verifies the
+WFP lock against `config.json` first and closes on mismatch. A workspace change
+requires setup, which provisions the new folder.
+
+Installations from before this configuration format must be removed with
+`Remove-AgentSandbox.ps1` before setup.
 
 Setup upgrades supported brokered installations from `v1.0.0-preview`,
 `v1.1.0-preview`, `v1.1.0`, and `v1.2.0-preview`; after a successful component installation, it
@@ -199,8 +245,11 @@ copies in Program Files that other tools may use.
   by ordinary Windows users.
 - Claude managed settings do not govern Copilot CLI. Configure each agent's
   permissions independently.
-- The initial `network-sandbox.json` allowlist is intentionally small. Agent
+- The default `proxy.allowedHosts` list is intentionally small. Agent
   sign-in, updates, and package feeds may need additional reviewed destinations.
+- Each `directEndpoints` entry bypasses the proxy for that address and port.
+  A loopback entry exposes a local service on this machine to the agent; setup
+  and `Apply-Config.ps1` warn about it.
 - WFP covers outbound TCP/UDP attributed to `AgentSandbox`; ICMP and brokered
   DNS or traffic under another identity remain outside that per-user lock. The
   proxy controls destination hosts and ports, not HTTPS content. See the

@@ -41,10 +41,13 @@ Setup creates `AgentSandbox` when absent and:
   that user Modify access to the tree.
 - Warns if your profile is readable by Users or Everyone.
 - Blocks sandbox-account outbound TCP/UDP except the configured loopback proxy
-  port with [`wfp-lock`](https://github.com/fmuecke/wfp-lock).
-- Installs [`network-sandbox`](https://github.com/fmuecke/network-sandbox) and a protected allowlist. The launcher starts one
-  proxy shared by all sessions; setup preserves an existing allowlist with a
-  warning.
+  port and labeled `directEndpoints` with
+  [`wfp-lock`](https://github.com/fmuecke/wfp-lock).
+- Installs [`network-sandbox`](https://github.com/fmuecke/network-sandbox) with
+  a policy generated from `proxy.allowedHosts`. The launcher starts one proxy
+  shared by all sessions.
+- Merges settings over the installed `config.json` on update; `Apply-Config.ps1`
+  applies edited settings without rerunning setup.
 - Installs both network executables in the private, admin-write
   `C:\ProgramData\agent-win-sandbox` folder. Removal deletes that folder
   with the rest of the generated state; older shared Program Files copies remain.
