@@ -42,6 +42,7 @@ Of course any other agent like OpenCode can be installed within the Agent Sandbo
   files in admin-write locations.
 - Restricts the sandbox account's outbound TCP/UDP to the local proxy port with
   [`wfp-lock`](https://github.com/fmuecke/wfp-lock); [`network-sandbox`](https://github.com/fmuecke/network-sandbox) forwards only allowlisted destinations.
+- [Why not PsExec or runas.exe?](#why-not-psexec-or-runasexe)
 
 ## What it does not protect against
 
