@@ -39,7 +39,6 @@ $UserName = 'AgentSandbox'   # baked in; not configurable
 $Version = '0.9.1'
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
-$LegacySetupMarkerFile = Join-Path $ProgramDataRoot 'setup-marker.json'
 $LauncherSource = Join-Path $PSScriptRoot 'Start-AgentSandbox.ps1'
 $CheckerSource = Join-Path $PSScriptRoot 'Check-AgentSandbox.ps1'
 $ExposureCheckSource = Join-Path $PSScriptRoot 'Test-AgentSandboxExposure.ps1'
@@ -663,10 +662,6 @@ $config = [ordered]@{
 }
 $config | ConvertTo-Json -Depth 4 | Set-Content -Path $ConfigFile -Encoding UTF8
 Write-Host "  wrote $ConfigFile" -ForegroundColor Green
-if (Test-Path $LegacySetupMarkerFile) {
-    Remove-Item -LiteralPath $LegacySetupMarkerFile -Force
-    Write-Host "  removed legacy $LegacySetupMarkerFile" -ForegroundColor Green
-}
 
 # --- 3b. Optional Claude Code managed settings deployment --------------------
 Write-Step "Optional Claude Code managed settings"

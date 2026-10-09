@@ -37,8 +37,6 @@ $UserName = 'AgentSandbox'   # baked in; not configurable
 $ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
 $ConfigFile = Join-Path $ProgramDataRoot 'config.json'
 $LaunchAsAdminExe = Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as-admin.exe'
-$LegacyLaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
-$LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
 $LaunchAsVersion = 'v1.3.0'
 $SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
 $ToolsRoot = $ProgramDataRoot
@@ -73,14 +71,13 @@ function Get-ConfiguredSandboxPath {
 function Stop-IfLegacyInstallationPresent {
     $hasConfig = Test-Path -LiteralPath $ConfigFile -PathType Leaf
     $hasInstalledClient = Test-Path -LiteralPath (Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as.exe') -PathType Leaf
-    $hasLegacyClient = Test-Path -LiteralPath $LegacyLaunchAsExe -PathType Leaf
     $hasUser = $null -ne (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)
 
-    if (-not $hasConfig -and -not $hasLegacyClient -and -not $hasUser) {
+    if (-not $hasConfig -and -not $hasUser) {
         return
     }
-    if (-not $hasConfig -or (-not $hasInstalledClient -and -not $hasLegacyClient)) {
-        throw "A legacy or incomplete Agent Sandbox installation was found. This removal script supports only launch-as $LaunchAsVersion and will not alter the account or files. Uninstall the matching earlier Agent Sandbox version first."
+    if (-not $hasConfig -or (-not $hasInstalledClient)) {
+        throw "An incomplete Agent Sandbox installation was found. This removal script supports only launch-as $LaunchAsVersion and will not alter the account or files. Uninstall the matching earlier Agent Sandbox version first."
     }
 
     try {
@@ -164,9 +161,6 @@ function Get-ConfiguredLaunchAsVersion {
 function Get-LaunchAsAdminExecutable {
     if (Test-Path -LiteralPath $LaunchAsAdminExe -PathType Leaf) {
         return $LaunchAsAdminExe
-    }
-    if (Test-Path -LiteralPath $LegacyLaunchAsAdminExe -PathType Leaf) {
-        return $LegacyLaunchAsAdminExe
     }
 
     throw "launch-as broker administration tool is missing: $LaunchAsAdminExe. Refusing to delete broker-managed '$UserName' without unenrolling it."

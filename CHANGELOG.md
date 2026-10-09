@@ -8,6 +8,7 @@ Git log.
 - Changed: Allowing sandbox to reach defined endoints (e.g. database server;
   uses `wfp-lock v0.10.0`)
 - Changed: Default now is to accept and use existing agent workspace (switched options).
+- Removed: Handling for legacy installations
 
 ## 0.9.1 - 2026-10-07
 
