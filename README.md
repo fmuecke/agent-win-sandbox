@@ -267,6 +267,16 @@ copies in Program Files that other tools may use.
 
 ## FAQ
 
+### Why not `PsExec` or `runas.exe`?
+
+Both `PsExec` and `runas.exe` can start the agent under a dedicated Windows user, but they do not provide the same isolation as `launch-as`.
+
+In testing, both approaches retain the interactive user's **logon SID** in the child token. Consequently, the sandboxed process can still access processes belonging to the interactive user (`OpenProcess`/`VM_READ`) and, when launched interactively, shares the user's desktop. Identity separation therefore does **not** establish the intended security boundary.
+
+They also provide poor terminal integration: launching under the other user creates a separate console window rather than attaching the process cleanly to the existing terminal. This makes them unsuitable for workflows such as running an agent directly inside a VS Code integrated terminal.
+
+`launch-as` instead creates an **independent logon session with its own logon SID** and provides terminal integration while preserving that boundary.
+
 ### Why doesn't Microsoft build something like this?
 
 They do — but it is not a general solution yet.
