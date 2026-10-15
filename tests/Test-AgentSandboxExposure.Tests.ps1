@@ -474,6 +474,19 @@ try {
             Assert-Equal (@($script:Findings | Where-Object { $_.Capability -match 'replacement' }).Count) 1
         }
     }
+    foreach ($case in @(
+            @{ Name = 'Denied task enumeration excludes clean services from scoring'; Error = [UnauthorizedAccessException]::new('synthetic denial'); Write = 'denied'; Expected = 'na' },
+            @{ Name = 'Denied task enumeration still counts a writable service'; Error = [UnauthorizedAccessException]::new('synthetic denial'); Write = 'granted'; Expected = 'unmet' },
+            @{ Name = 'A failed task enumeration that is not a denial stays unknown'; Error = [InvalidOperationException]::new('synthetic failure'); Write = 'denied'; Expected = 'unknown' })) {
+        Test-Case $case.Name {
+            function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = '"C:\synthetic\service.exe"'; StartName = 'LocalSystem' } }
+            function Get-ScheduledTask { throw $case.Error }
+            function Test-Path { $true }
+            function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Write $case.Write }
+            Invoke-IndirectCheck
+            Assert-Equal $script:Criteria['A-SVC'].Outcome $case.Expected
+        }
+    }
     Test-Case 'Unresolved service binary permissions do not earn credit' {
         function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = '"C:\synthetic\service.exe"'; StartName = 'LocalSystem' } }
         function Get-ScheduledTask { @() }

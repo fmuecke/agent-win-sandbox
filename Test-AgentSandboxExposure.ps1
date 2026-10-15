@@ -933,6 +933,10 @@ public static class AgentSandboxAssessmentNative
                         if (GetFileType(handle) != 1) { continue; }   // FILE_TYPE_DISK only
                         var path = new StringBuilder(1024);
                         int written = GetFinalPathNameByHandleW(handle, path, path.Capacity, 0);
+                        // The normalized name needs traverse access to every
+                        // ancestor, which this identity can be denied; the
+                        // name the file was opened by (FILE_NAME_OPENED) does not.
+                        if (written <= 0) { written = GetFinalPathNameByHandleW(handle, path, path.Capacity, 8); }
                         if (written > 0 && written < path.Capacity) { held.Path = path.ToString(); }
                         break;
                     case "Key": held.Path = QueryObjectString(handle, 1, scratch, 0x2000); break;
@@ -3498,6 +3502,7 @@ function Invoke-IndirectCheck {
     $unresolvedServices = @()
     $inferredServices = @()
     $unenumerated = @()
+    $tasksDenied = $false
 
     # Services
     try {
@@ -3643,9 +3648,19 @@ function Invoke-IndirectCheck {
         }
     }
     catch {
-        $incomplete = $true
-        $unenumerated += 'scheduled tasks'
-        Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task enumeration failed: $($_.Exception.Message)"
+        # A denied enumeration cannot be evaluated from inside at all; it
+        # excludes the criterion unless an exposure was found. Any other
+        # failure leaves it unknown.
+        $exception = $_.Exception
+        if ($exception -is [UnauthorizedAccessException] -or
+            ($exception.PSObject.Properties.Name -contains 'NativeErrorCode' -and "$($exception.NativeErrorCode)" -eq 'AccessDenied')) {
+            $tasksDenied = $true
+        }
+        else {
+            $incomplete = $true
+            $unenumerated += 'scheduled tasks'
+        }
+        Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task enumeration failed: $($exception.Message)"
     }
 
     if ($probed -eq 0) {
@@ -3667,6 +3682,10 @@ function Invoke-IndirectCheck {
             -Reason ('Some service/task targets or access permissions could not be evaluated.' +
             $(if ($unenumerated.Count -gt 0) { " Not enumerable by this identity: $($unenumerated -join ', ')." } else { '' }) +
             $(if ($unresolvedServices.Count -gt 0) { " Unresolved service DLLs: $($unresolvedServices -join ', ')." } else { '' }))
+    }
+    elseif ($tasksDenied) {
+        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'na' -Method 'permission-analysis' `
+            -Reason "Not evaluable from inside: scheduled tasks are hidden from this identity. No service binary, config or parent directory is agent-writable ($probed probed); an exposed service or task would count."
     }
     else {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'met' -Method 'permission-analysis' `

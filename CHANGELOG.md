@@ -14,8 +14,10 @@ Git log.
 - Fixed: The exposure checker reported profile, adjacent-file, share, service
   and domain criteria as unknown when its own discovery was denied. It now reads
   profiles from ProfileList, probes a root whose listing is denied, and uses
-  registry and Win32 sources when CIM is denied. Scheduled tasks stay unknown
-  when they cannot be enumerated.
+  registry and Win32 sources when CIM is denied. When scheduled tasks are
+  hidden from the agent, A-SVC is excluded from scoring unless an exposed
+  service is found; other enumeration failures stay unknown. Held file handles are resolved by the name
+  they were opened with when the agent cannot traverse their parent folders.
 - Changed: The exposure checker's `-SandboxPath` is now `-AllowedPath`; the old
   name remains an alias. The report field `scope.sandboxPaths` is now
   `scope.allowedPaths`.
