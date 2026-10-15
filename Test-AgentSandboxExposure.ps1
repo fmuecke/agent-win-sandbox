@@ -59,13 +59,16 @@
     carries every criterion.
 
 .PARAMETER Workspace
-    The agent workspace. Defaults to the current directory.
+    The agent workspace, the project root for .mcp.json and git remotes.
+    Defaults to the current directory.
 
-.PARAMETER SandboxPath
+.PARAMETER AllowedPath
     Folders the agent owns and may fully use, such as C:\AgentSandbox. Like
-    the workspace, they are not counted as reach outside the workspace.
+    the workspace, they are not counted as reach outside the workspace, and
+    they are scanned for secrets and for content another identity consumes.
     Drive roots and system folders are ignored. Every report lists the
-    folders used, so a reviewer can see what was excluded.
+    folders used, so a reviewer can see what was excluded. Defaults to no
+    allowed folders; no sandbox configuration is read.
 
 .PARAMETER NetworkTarget
     Additional probe targets, for example a NAS or another PC. Forms:
@@ -107,7 +110,7 @@ param(
     [switch]$Json,
     [switch]$Brief,
     [string]$Workspace,
-    [string[]]$SandboxPath = @(),
+    [Alias('SandboxPath')][string[]]$AllowedPath = @(),
     [string[]]$NetworkTarget = @(),
     [string]$PolicyPath,
     [string]$OutputDirectory,
@@ -171,7 +174,7 @@ $CriterionRegistry = @(
         Remediation = 'Remove credential files from the agent profile, or keep them in an identity the agent cannot read.' 
     }
     @{ Id = 'R-SECRETS-SCAN'; Dimension = 'Reach'; Check = 'SECRETS'; Essential = $true; Severity = 'high'
-        Title = 'No suspected secrets in scanned workspace and configuration files'
+        Title = 'No suspected secrets in scanned workspace, allowed-folder and configuration files'
         Remediation = 'Remove or rotate the suspected secrets and load them from a store the agent cannot read.' 
     }
     @{ Id = 'R-SECRETS-CREDMAN'; Dimension = 'Reach'; Check = 'SECRETS'; Essential = $false; Severity = 'medium'
@@ -236,7 +239,7 @@ $CriterionRegistry = @(
         Remediation = 'Remove write/create rights for the agent identity on machine PATH directories, startup locations, Run keys, program directories, other profiles, and programs, DLLs or build scripts outside Program Files that other users run or build.'
     }
     @{ Id = 'A-HANDOFF-WORKSPACE'; Dimension = 'Authority'; Check = 'HANDOFF'; Essential = $true; Severity = 'medium'
-        Title = 'Agent-written workspace content is not consumed by another identity'
+        Title = 'Agent-written content in the workspace and allowed folders is not consumed by another identity'
         Remediation = 'Review agent output before another identity builds, runs or opens it; use a separate clone or a less privileged consumer. Give the agent its own clone, not write access to a repository another user owns, since git runs that repository''s hooks and config for its owner.'
     }
     @{ Id = 'A-REMOTE-DELEGATED'; Dimension = 'Authority'; Check = 'REMOTE'; Essential = $false; Severity = 'high'
@@ -483,6 +486,9 @@ public static class AgentSandboxAssessmentNative
     private static extern bool WTSQuerySessionInformationW(IntPtr server, int sessionId, int infoClass, out IntPtr buffer, out int bytes);
     [DllImport("wtsapi32.dll")] private static extern void WTSFreeMemory(IntPtr memory);
     [DllImport("kernel32.dll")] private static extern uint WTSGetActiveConsoleSessionId();
+
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetGetJoinInformation(string server, out IntPtr name, out int status);
+    [DllImport("netapi32.dll")] private static extern int NetApiBufferFree(IntPtr buffer);
 
     [DllImport("ntdll.dll")] private static extern int NtQueryInformationProcess(IntPtr process, int infoClass, IntPtr info, int length, out int returnLength);
     [DllImport("ntdll.dll")] private static extern int NtQueryObject(IntPtr handle, int infoClass, IntPtr info, int length, out int returnLength);
@@ -817,6 +823,18 @@ public static class AgentSandboxAssessmentNative
 
     // --- Session and job ------------------------------------------------------
 
+    // NETSETUP_JOIN_STATUS (1 unjoined, 2 workgroup, 3 domain) with the
+    // workgroup or domain name, or -1. Unlike CIM, needs no WMI access.
+    public static int GetJoinStatus(out string name)
+    {
+        IntPtr buffer;
+        int status;
+        name = null;
+        if (NetGetJoinInformation(null, out buffer, out status) != 0) { return -1; }
+        try { name = Marshal.PtrToStringUni(buffer); } finally { NetApiBufferFree(buffer); }
+        return status;
+    }
+
     public static string GetSessionUser()
     {
         IntPtr buffer;
@@ -991,7 +1009,7 @@ $script:Errors = New-Object System.Collections.Generic.List[object]
 $script:Inventory = [ordered]@{}
 $script:UserProfile = $null
 $script:WorkspacePath = $null
-$script:SandboxPaths = @()
+$script:AllowedPaths = @()
 $script:OtherProfiles = @()
 $script:NetworkProbed = $false
 $script:NetworkTargetsUsed = @()
@@ -1672,18 +1690,18 @@ function Invoke-ExecutionPolicyCheck {
 
 function Invoke-ContainmentCheck {
     # C-POLICY-INTEGRITY: launcher/policy/checker files must not be agent-writable.
-    $programDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
+    $installRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
     $scriptDir = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
     $policyTargets = New-Object System.Collections.Generic.List[string]
     foreach ($candidate in @(
-            $programDataRoot,
+            $installRoot,
             'C:\Program Files\ClaudeCode',
             'C:\Program Files\ClaudeCode\managed-settings.json',
             $PSCommandPath,
             $scriptDir)) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { $policyTargets.Add($candidate) | Out-Null }
     }
-    $controlRoots = @($programDataRoot | Where-Object { Test-Path -LiteralPath $_ })
+    $controlRoots = @($installRoot | Where-Object { Test-Path -LiteralPath $_ })
     # Check shipped nested wrappers/bootstrap independently of their directory ACL.
     if ($scriptDir) {
         foreach ($name in @('bootstrap', 'scripts')) {
@@ -2031,7 +2049,7 @@ function Invoke-MonitoringCheck {
 
 # --- FILES --------------------------------------------------------------------
 
-function Resolve-SandboxPaths {
+function Resolve-AllowedPaths {
     # Full paths of the declared agent-owned folders. A drive root or system
     # folder would hide everything beneath it, so those are ignored.
     param([string[]]$Path)
@@ -2041,19 +2059,32 @@ function Resolve-SandboxPaths {
     foreach ($candidate in @($Path | Where-Object { $_ })) {
         $full = [IO.Path]::GetFullPath($candidate).TrimEnd('\')
         if ($full -match '^[A-Za-z]:$' -or $full -match '^\\\\[^\\]+\\[^\\]+$' -or $systemRoots -contains $full) {
-            Write-Diag "Ignored sandbox path (drive root or system folder): $candidate"
+            Write-Diag "Ignored allowed path (drive root or system folder): $candidate"
             continue
         }
         $full
     }
 }
 
-function Test-InSandboxPath {
+function Test-InAllowedPath {
     param([Parameter(Mandatory)][string]$Path)
 
     $full = $Path.TrimEnd('\')
-    return [bool]@($script:SandboxPaths | Where-Object {
+    return [bool]@($script:AllowedPaths | Where-Object {
             $full -eq $_ -or $full.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) }).Count
+}
+
+function Get-AgentOwnedRoots {
+    # The workspace and the allowed folders. -Outermost drops folders nested
+    # in another root, so a recursive walk visits each folder once.
+    param([switch]$Outermost)
+
+    $roots = @(@($script:WorkspacePath) + @($script:AllowedPaths) | Where-Object { $_ } |
+        ForEach-Object { if ($_ -match '^[A-Za-z]:\\$') { $_ } else { $_.TrimEnd('\') } } | Sort-Object -Unique)
+    if (-not $Outermost) { return $roots }
+    return @($roots | Where-Object {
+            $root = $_
+            -not @($roots | Where-Object { $root.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) }).Count })
 }
 
 function Get-AdjacentDirectories {
@@ -2084,12 +2115,17 @@ function Get-AdjacentDirectories {
         $enumErrors = @()
         $children = @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue -ErrorVariable enumErrors |
             Select-Object -First ($MaxTargets + 1))
-        if ($enumErrors.Count -or $children.Count -gt $MaxTargets) { $incomplete = $true }
+        # A denied root listing hides child names from the agent as well; the
+        # root itself becomes the target so its read and write probes record
+        # the denial. Children opened by a guessed name stay untested.
+        $deniedErrors = @($enumErrors | Where-Object { $_.Exception -is [UnauthorizedAccessException] })
+        if ($deniedErrors.Count -and -not $paths.Contains($root)) { $paths.Add($root) }
+        if ($enumErrors.Count -gt $deniedErrors.Count -or $children.Count -gt $MaxTargets) { $incomplete = $true }
         foreach ($directory in $children) {
             $full = $directory.FullName.TrimEnd('\')
             if ($systemRoots -contains $full -or $ancestors -contains $full -or
                 $full.StartsWith($workspace + '\', [StringComparison]::OrdinalIgnoreCase) -or
-                (Test-InSandboxPath $full)) { continue }
+                (Test-InAllowedPath $full)) { continue }
             if ($paths.Contains($directory.FullName)) { continue }
             if ($paths.Count -ge $MaxTargets) { $incomplete = $true; break }
             $paths.Add($directory.FullName)
@@ -2155,19 +2191,42 @@ function Find-AdjacentItems {
     return [pscustomobject]@{ Paths = @($paths.ToArray()); Incomplete = $incomplete; MaxPerRoot = $MaxPerRoot }
 }
 
-function Invoke-FilesCheck {
-    $usersRoot = Join-Path $env:SystemDrive 'Users'
+function Get-OtherProfilePaths {
+    # Other users' profile folders under the users root, from its listing and
+    # from ProfileList. ProfileList stays readable when the listing is denied
+    # and names the paths an agent could open directly; discovery is
+    # incomplete only when neither source can be read. Unregistered leftover
+    # folders behind a denied listing are not found.
+    param([string]$UsersRoot = (Join-Path $env:SystemDrive 'Users'),
+        [string]$ProfileListKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList')
+
     $ownProfile = $env:USERPROFILE.TrimEnd('\')
     $excluded = @('Public', 'Default', 'Default User', 'All Users')
-
-    # R-FILES-PROFILES
-    $otherProfiles = @()
-    $profileErrors = @()
-    if (Test-Path -LiteralPath $usersRoot) {
-        $otherProfiles = @(Get-ChildItem -LiteralPath $usersRoot -Directory -Force -ErrorAction SilentlyContinue -ErrorVariable profileErrors |
-            Where-Object { $_.FullName.TrimEnd('\') -ne $ownProfile -and $excluded -notcontains $_.Name } |
+    $candidates = @()
+    $listingErrors = @()
+    if (Test-Path -LiteralPath $UsersRoot) {
+        $candidates = @(Get-ChildItem -LiteralPath $UsersRoot -Directory -Force -ErrorAction SilentlyContinue -ErrorVariable listingErrors |
             ForEach-Object { $_.FullName })
     }
+    $registryRead = $true
+    try {
+        foreach ($key in @(Get-ChildItem -LiteralPath $ProfileListKey -ErrorAction Stop)) {
+            $imagePath = [string]$key.GetValue('ProfileImagePath')
+            if ($imagePath) { $candidates += [Environment]::ExpandEnvironmentVariables($imagePath) }
+        }
+    }
+    catch { $registryRead = $false }
+
+    $paths = @($candidates | ForEach-Object { $_.TrimEnd('\') } | Where-Object {
+            (Split-Path -Parent $_) -eq $UsersRoot.TrimEnd('\') -and $_ -ne $ownProfile -and
+            $excluded -notcontains (Split-Path -Leaf $_) } | Sort-Object -Unique)
+    return [pscustomobject]@{ Paths = $paths; Incomplete = -not ($registryRead -or $listingErrors.Count -eq 0) }
+}
+
+function Invoke-FilesCheck {
+    # R-FILES-PROFILES
+    $profileDiscovery = Get-OtherProfilePaths
+    $otherProfiles = @($profileDiscovery.Paths)
     $script:OtherProfiles = $otherProfiles   # cached for HANDOFF (step 4)
     $profileRoots = @($otherProfiles)
     foreach ($root in $otherProfiles) {
@@ -2183,7 +2242,7 @@ function Invoke-FilesCheck {
         -NoneReason 'No other user profiles are present to evaluate.' `
         -MetReason 'No tested profile file or directory listing grants read access; descendants outside the sample are untested.' `
         -UnmetReasonFormat '{0} of {1} tested profile files or directory listings grant read access.' | Out-Null
-    if (($profileErrors.Count -or $profileSamples.Incomplete) -and $script:Criteria['R-FILES-PROFILES'].Outcome -ne 'unmet') {
+    if (($profileDiscovery.Incomplete -or $profileSamples.Incomplete) -and $script:Criteria['R-FILES-PROFILES'].Outcome -ne 'unmet') {
         Set-CriterionOutcome -Id 'R-FILES-PROFILES' -Outcome unknown -Method inventory -Reason 'Profile discovery or file sampling was incomplete.'
     }
 
@@ -2593,6 +2652,22 @@ function Invoke-ProxyProbe {
     finally { $client.Close() }
 }
 
+function Get-MappedDriveShares {
+    # Fallback when CIM is denied to the agent identity: connected network
+    # drives and persistent mappings, both readable without CIM. Connections
+    # without a drive letter are not listed.
+    $shares = [ordered]@{}
+    foreach ($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction Stop | Where-Object { $_.DisplayRoot -like '\\*' })) {
+        $shares["$($drive.Name):"] = $drive.DisplayRoot
+    }
+    if (Test-Path -LiteralPath 'HKCU:\Network') {
+        foreach ($key in @(Get-ChildItem -LiteralPath 'HKCU:\Network' -ErrorAction Stop)) {
+            $shares["$($key.PSChildName):"] = [string]$key.GetValue('RemotePath')
+        }
+    }
+    foreach ($local in $shares.Keys) { [ordered]@{ local = $local; remote = (Protect-Text $shares[$local]) } }
+}
+
 function Invoke-NetworkCheck {
     # Inventory (always): interfaces, gateways, DNS, proxy.
     $interfaces = @()
@@ -2625,17 +2700,23 @@ function Invoke-NetworkCheck {
     # of presence only; shares are never contacted or authenticated to here.
     $mappedShares = @()
     $sharesError = $null
+    $sharesSource = 'Win32_NetworkConnection'
     try {
         foreach ($connection in @(Get-CimInstance -ClassName Win32_NetworkConnection -ErrorAction Stop)) {
             $mappedShares += [ordered]@{ local = $connection.LocalName; remote = (Protect-Text $connection.RemoteName) }
         }
     }
-    catch { $sharesError = $_.Exception.Message }
+    catch {
+        $sharesSource = 'drive mappings (CIM denied or failed)'
+        try { $mappedShares = @(Get-MappedDriveShares) }
+        catch { $sharesError = $_.Exception.Message }
+    }
 
     $script:Inventory['network'] = [ordered]@{
-        interfaces   = @($interfaces)
-        proxy        = [ordered]@{ envHttps = (Protect-Text $env:HTTPS_PROXY); envHttp = (Protect-Text $env:HTTP_PROXY); user = $userProxy }
-        mappedShares = @($mappedShares)
+        interfaces         = @($interfaces)
+        proxy              = [ordered]@{ envHttps = (Protect-Text $env:HTTPS_PROXY); envHttp = (Protect-Text $env:HTTP_PROXY); user = $userProxy }
+        mappedShares       = @($mappedShares)
+        mappedSharesSource = $sharesSource
     }
 
     # R-NET-SHARES
@@ -2892,82 +2973,108 @@ function Invoke-HandoffCheck {
             -Reason "No shared execution location is agent-writable ($probedCount probed)."
     }
 
-    # A-HANDOFF-WORKSPACE: agent output consumed by another identity.
-    $ws = $script:WorkspacePath
-    $wsAccess = Get-PathAccess -Path $ws
-    $wsWritable = [bool](Test-AnyWrite -Access $wsAccess)
+    # A-HANDOFF-WORKSPACE: agent output consumed by another identity, in the
+    # workspace and every allowed folder. Each root's own ACL is read, since
+    # nested roots can differ; repositories are looked for in each root and
+    # its direct subdirectories.
     $ownSid = $null
     try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
     $benignSids = @($ownSid, 'S-1-5-18', 'S-1-3-0',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') | Where-Object { $_ }
-    $otherReaders = @()
-    $aclUnknown = $false
-    try {
-        $acl = Get-Acl -LiteralPath $ws -ErrorAction Stop
-        foreach ($rule in @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })) {
-            if ($rule.FileSystemRights.ToString() -notmatch 'Read|Modify|FullControl|ListDirectory|ExecuteFile') { continue }
-            $sid = $null
-            try {
-                $sid = if ($rule.IdentityReference -is [System.Security.Principal.SecurityIdentifier]) {
-                    $rule.IdentityReference.Value
+    $roots = @(Get-AgentOwnedRoots)
+    $writableRoots = 0
+    $sharedRoots = @()
+    $rootsUnknown = $false
+    $repositories = [Collections.Generic.List[string]]::new()
+    foreach ($root in $roots) {
+        $access = Get-PathAccess -Path $root
+        $writable = [bool](Test-AnyWrite -Access $access)
+        if ($writable) { $writableRoots++ }
+        $otherReaders = @()
+        $aclUnknown = $false
+        try {
+            $acl = Get-Acl -LiteralPath $root -ErrorAction Stop
+            foreach ($rule in @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })) {
+                if ($rule.FileSystemRights.ToString() -notmatch 'Read|Modify|FullControl|ListDirectory|ExecuteFile') { continue }
+                $sid = $null
+                try {
+                    $sid = if ($rule.IdentityReference -is [System.Security.Principal.SecurityIdentifier]) {
+                        $rule.IdentityReference.Value
+                    }
+                    else { $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
                 }
-                else { $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+                catch { $sid = $rule.IdentityReference.ToString() }
+                if ($benignSids -notcontains $sid) { $otherReaders += $sid }
             }
-            catch { $sid = $rule.IdentityReference.ToString() }
-            if ($benignSids -notcontains $sid) { $otherReaders += $sid }
+        }
+        catch {
+            $aclUnknown = $true
+            Add-AssessmentError -Check HANDOFF -Category 'acl-read' -Message "Could not read ACL of $(Format-SafePath $root): $($_.Exception.Message)"
+        }
+        $otherReaders = @($otherReaders | Select-Object -Unique)
+        if ($writable -and $otherReaders.Count -gt 0) {
+            $sharedRoots += $root
+            Add-Finding -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Target $root `
+                -Capability "agent-writable folder read by $($otherReaders.Count) other principal(s)" -Result observed -Method permission-analysis `
+                -Scope 'handoff' -Impact 'Agent-written source/config may be built, run or opened by another identity.' -Severity medium
+        }
+        elseif ((-not $writable -and (Test-UnknownWrite $access)) -or ($writable -and $aclUnknown)) { $rootsUnknown = $true }
+
+        # Linked subdirectories are not followed.
+        $children = @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object { $_.FullName })
+        foreach ($candidate in @($root) + $children) {
+            if ((Test-Path -LiteralPath (Join-Path $candidate '.git') -PathType Container) -and -not $repositories.Contains($candidate)) {
+                $repositories.Add($candidate)
+            }
         }
     }
-    catch {
-        $aclUnknown = $true
-        Add-AssessmentError -Check HANDOFF -Category 'acl-read' -Message "Could not read workspace ACL: $($_.Exception.Message)"
-    }
-    $otherReaders = @($otherReaders | Select-Object -Unique)
 
     # Inventory of executable handoff artifacts (counts only; never executed).
-    $artifact = [ordered]@{
-        gitHooks    = @(Get-ChildItem -LiteralPath (Join-Path $ws '.git\hooks') -File -ErrorAction SilentlyContinue |
+    $artifactDirectories = @($roots + $repositories | Sort-Object -Unique)
+    $script:Inventory['handoffArtifacts'] = [ordered]@{
+        repositories = $repositories.Count
+        gitHooks     = @($repositories | ForEach-Object {
+                Get-ChildItem -LiteralPath (Join-Path $_ '.git\hooks') -File -ErrorAction SilentlyContinue } |
             Where-Object { $_.Extension -ne '.sample' }).Count
-        vscodeTasks = [bool](Test-Path -LiteralPath (Join-Path $ws '.vscode\tasks.json'))
-        workflows   = @(Get-ChildItem -LiteralPath (Join-Path $ws '.github\workflows') -File -ErrorAction SilentlyContinue |
+        vscodeTasks  = @($artifactDirectories | Where-Object { Test-Path -LiteralPath (Join-Path $_ '.vscode\tasks.json') }).Count
+        workflows    = @($artifactDirectories | ForEach-Object {
+                Get-ChildItem -LiteralPath (Join-Path $_ '.github\workflows') -File -ErrorAction SilentlyContinue } |
             Where-Object { $_.Extension -in '.yml', '.yaml' }).Count
     }
-    $script:Inventory['handoffArtifacts'] = $artifact
 
     # Git runs hooks and config-defined commands (core.fsmonitor,
     # core.hooksPath) for the repository owner without a safe.directory
     # exception, so agent-writable git control files in a repository owned by
     # another identity hand code to that identity.
-    $gitMatched = @()
-    $gitDir = Join-Path $ws '.git'
-    if (Test-Path -LiteralPath $gitDir -PathType Container) {
+    $handedRepositories = 0
+    foreach ($repository in $repositories) {
+        $gitDir = Join-Path $repository '.git'
         $gitOwner = $null
         try { $gitOwner = Get-OwnerSid -Path $gitDir } catch { }
-        if ($gitOwner -and $gitOwner -ne $ownSid) {
-            $gitMatched = @((Get-MatchingTargets -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Right Write `
-                        -Path @((Join-Path $gitDir 'hooks'), (Join-Path $gitDir 'config')) `
-                        -Capability 'agent-writable git hooks or config in a repository owned by another identity' -Scope 'handoff' `
-                        -Impact 'Git runs hooks and config-defined commands as the repository owner.' -Severity high).Matched)
-        }
+        if (-not $gitOwner -or $gitOwner -eq $ownSid) { continue }
+        $matched = @((Get-MatchingTargets -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Right Write `
+                    -Path @((Join-Path $gitDir 'hooks'), (Join-Path $gitDir 'config')) `
+                    -Capability 'agent-writable git hooks or config in a repository owned by another identity' -Scope 'handoff' `
+                    -Impact 'Git runs hooks and config-defined commands as the repository owner.' -Severity high).Matched)
+        if ($matched.Count -gt 0) { $handedRepositories++ }
     }
 
-    if ($gitMatched.Count -gt 0) {
+    if ($handedRepositories -gt 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'unmet' -Method 'permission-analysis' `
-            -Reason 'The workspace repository is owned by another identity and the agent can write its git hooks or config; git runs them as the owner.'
+            -Reason "$handedRepositories of $($repositories.Count) repositories are owned by another identity and the agent can write their git hooks or config; git runs them as the owner."
     }
-    elseif ($wsWritable -and $otherReaders.Count -gt 0) {
+    elseif ($sharedRoots.Count -gt 0) {
         Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'unmet' -Method 'permission-analysis' `
-            -Reason "Workspace is agent-writable and its ACL grants read to $($otherReaders.Count) other principal(s); consumer privileges unknown."
-        Add-Finding -Check HANDOFF -Criterion 'A-HANDOFF-WORKSPACE' -Target $ws `
-            -Capability 'agent-writable workspace read by other identities' -Result observed -Method permission-analysis `
-            -Scope 'handoff' -Impact 'Agent-written source/config may be built, run or opened by another identity.' -Severity medium
+            -Reason "$($sharedRoots.Count) of $($roots.Count) agent-owned folders are agent-writable and readable by other principals; consumer privileges unknown."
     }
-    elseif ((-not $wsWritable -and (Test-UnknownWrite $wsAccess)) -or ($wsWritable -and $aclUnknown)) {
+    elseif ($rootsUnknown) {
         Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'unknown' -Method 'permission-analysis' `
-            -Reason 'Workspace write permissions or consumer access could not be evaluated.'
+            -Reason 'Write permissions or consumer access could not be evaluated for every agent-owned folder.'
     }
     else {
         Set-CriterionOutcome -Id 'A-HANDOFF-WORKSPACE' -Outcome 'met' -Method 'permission-analysis' `
-            -Reason $(if (-not $wsWritable) { 'Workspace is not agent-writable.' } else { 'No other principal has read access to the workspace.' })
+            -Reason $(if ($writableRoots -eq 0) { 'No agent-owned folder is agent-writable.' } else { 'No other principal has read access to an agent-writable folder.' })
     }
 }
 
@@ -3317,6 +3424,30 @@ function Get-ServiceDll {
     return [pscustomobject]@{ Path = $null; Key = $hiddenKey; Inferred = $false; Unresolved = 'ServiceDll key unreadable' }
 }
 
+function Get-ServiceConfigurations {
+    # Name, image path and account of each Win32 service. CIM omits values this
+    # identity cannot query and can be denied outright; the services registry
+    # keys usually stay readable and fill both gaps.
+    $root = 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services'
+    $services = @()
+    try {
+        $services = @(Get-CimInstance -ClassName Win32_Service -ErrorAction Stop |
+            ForEach-Object { [pscustomobject]@{ Name = $_.Name; PathName = $_.PathName; StartName = $_.StartName } })
+    }
+    catch {
+        # SERVICE_WIN32 (0x30): own- or shared-process services, not drivers.
+        $services = @(Get-ChildItem -LiteralPath $root -ErrorAction Stop |
+            Where-Object { [int]$_.GetValue('Type', 0) -band 0x30 } |
+            ForEach-Object { [pscustomobject]@{ Name = $_.PSChildName; PathName = $null; StartName = $null } })
+    }
+    foreach ($service in $services) {
+        $serviceKey = "$root\$($service.Name)"
+        if (-not $service.PathName) { $service.PathName = Expand-MachinePath ([string](Read-RegistryValue $serviceKey -Name 'ImagePath').Value) }
+        if (-not $service.StartName) { $service.StartName = [string](Read-RegistryValue $serviceKey -Name 'ObjectName').Value }
+        $service
+    }
+}
+
 function Invoke-IndirectCheck {
     $ownSid = $null
     try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
@@ -3327,19 +3458,13 @@ function Invoke-IndirectCheck {
     $incomplete = $false
     $unresolvedServices = @()
     $inferredServices = @()
+    $unenumerated = @()
 
     # Services
     try {
-        foreach ($service in @(Get-CimInstance -ClassName Win32_Service -ErrorAction Stop)) {
+        foreach ($service in @(Get-ServiceConfigurations)) {
             $pathName = $service.PathName
             $startName = $service.StartName
-            if (-not $pathName -or -not $startName) {
-                # CIM omits configuration this identity cannot query; the
-                # service's registry key is often still readable.
-                $serviceKey = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\$($service.Name)"
-                if (-not $pathName) { $pathName = Expand-MachinePath ([string](Read-RegistryValue $serviceKey -Name 'ImagePath').Value) }
-                if (-not $startName) { $startName = [string](Read-RegistryValue $serviceKey -Name 'ObjectName').Value }
-            }
             $exe = Get-ServiceImagePath -PathName $pathName
             if (-not $exe) { $incomplete = $true; continue }
             $probed++
@@ -3409,6 +3534,7 @@ function Invoke-IndirectCheck {
     }
     catch {
         $incomplete = $true
+        $unenumerated += 'services'
         Add-AssessmentError -Check INDIRECT -Category 'service-enum' -Message "Service enumeration failed: $($_.Exception.Message)"
     }
 
@@ -3479,12 +3605,14 @@ function Invoke-IndirectCheck {
     }
     catch {
         $incomplete = $true
+        $unenumerated += 'scheduled tasks'
         Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task enumeration failed: $($_.Exception.Message)"
     }
 
     if ($probed -eq 0) {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unknown' -Method 'permission-analysis' `
-            -Reason 'No service or task binaries were available to evaluate.'
+            -Reason ('No service or task binaries were available to evaluate.' +
+            $(if ($unenumerated.Count -gt 0) { " Not enumerable by this identity: $($unenumerated -join ', ')." } else { '' }))
     }
     elseif ($criticalHit) {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unmet' -Method 'permission-analysis' `
@@ -3498,6 +3626,7 @@ function Invoke-IndirectCheck {
     elseif ($incomplete) {
         Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unknown' -Method 'permission-analysis' `
             -Reason ('Some service/task targets or access permissions could not be evaluated.' +
+            $(if ($unenumerated.Count -gt 0) { " Not enumerable by this identity: $($unenumerated -join ', ')." } else { '' }) +
             $(if ($unresolvedServices.Count -gt 0) { " Unresolved service DLLs: $($unresolvedServices -join ', ')." } else { '' }))
     }
     else {
@@ -3521,7 +3650,18 @@ function Get-DomainIdentity {
         $info.domain = $computerSystem.Domain
         $info.workgroup = $computerSystem.Workgroup
     }
-    catch { $info.unresolved += 'AD membership' }
+    catch {
+        # CIM can be denied to the agent identity; NetGetJoinInformation is not.
+        $joinName = $null
+        $joinStatus = -1
+        try { $joinStatus = [AgentSandboxAssessmentNative]::GetJoinStatus([ref]$joinName) } catch { }
+        switch ($joinStatus) {
+            3 { $info.partOfDomain = $true; $info.domain = $joinName }
+            2 { $info.workgroup = $joinName }
+            1 { }
+            default { $info.unresolved += 'AD membership' }
+        }
+    }
     # Azure AD / Entra join leaves a GUID subkey under CloudDomainJoin\JoinInfo;
     # a missing key means not joined, any other failure is unresolved.
     try {
@@ -4185,7 +4325,7 @@ function Invoke-SecretContentScan {
     $entriesVisited = 0
     $limitHit = $null
     $pending = [Collections.Generic.Stack[string]]::new()
-    $pending.Push($script:WorkspacePath)
+    foreach ($root in @(Get-AgentOwnedRoots -Outermost)) { $pending.Push($root) }
     while ($pending.Count -gt 0 -and -not $limitHit) {
         if ($stopwatch.Elapsed.TotalSeconds -ge $budgetSeconds) { $limitHit = 'time-budget'; break }
         $directory = $pending.Pop()
@@ -4464,8 +4604,8 @@ function Write-HumanReport {
     Write-Host ("Identity: {0} (SID {1}), integrity {2}, elevated {3}, session {4}" -f `
             $Context.userName, $Context.userSid, $Context.integrityLevel, $Context.isElevated, $Context.sessionId)
     Write-Host ("Profile {0}/{1}  checker {2}  {3}" -f $ProfileId, $ProfileVersion, $CheckerVersion, $Context.timestampUtc) -ForegroundColor DarkGray
-    if ($script:SandboxPaths.Count -gt 0) {
-        Write-Host ("Sandbox folders (agent-owned, not counted as reach): {0}" -f ($script:SandboxPaths -join ', ')) -ForegroundColor DarkGray
+    if ($script:AllowedPaths.Count -gt 0) {
+        Write-Host ("Allowed folders (agent-owned, not counted as reach): {0}" -f ($script:AllowedPaths -join ', ')) -ForegroundColor DarkGray
     }
     if ($Brief) {
         Write-Host ''
@@ -4558,8 +4698,8 @@ function Get-MarkdownReport {
     $lines.Add("- Verdict scope: $VerdictScope")
     $lines.Add("- Identity: $($Context.userName) (integrity $($Context.integrityLevel), elevated $($Context.isElevated))")
     $lines.Add("- Profile $ProfileId/$ProfileVersion, checker $CheckerVersion, $($Context.timestampUtc)")
-    if ($script:SandboxPaths.Count -gt 0) {
-        $lines.Add("- Sandbox folders (agent-owned, not counted as reach): $($script:SandboxPaths -join ', ')")
+    if ($script:AllowedPaths.Count -gt 0) {
+        $lines.Add("- Allowed folders (agent-owned, not counted as reach): $($script:AllowedPaths -join ', ')")
     }
     $lines.Add('')
     $lines.Add('## Dimensions')
@@ -4596,7 +4736,7 @@ if ($Workspace) {
 else {
     $script:WorkspacePath = (Get-Location).Path
 }
-$script:SandboxPaths = @(Resolve-SandboxPaths -Path $SandboxPath)
+$script:AllowedPaths = @(Resolve-AllowedPaths -Path $AllowedPath)
 
 if ($PolicyPath -and -not (Test-Path -LiteralPath $PolicyPath -PathType Leaf)) {
     Write-Diag "Policy file not found: $PolicyPath"
@@ -4709,7 +4849,7 @@ $report = [ordered]@{
     executionContext  = $context
     scope             = [ordered]@{
         workspace            = (Format-SafePath $script:WorkspacePath)
-        sandboxPaths         = @($script:SandboxPaths | ForEach-Object { Format-SafePath $_ })
+        allowedPaths         = @($script:AllowedPaths | ForEach-Object { Format-SafePath $_ })
         checksEvaluated      = @($implementedAreas | Where-Object { $SkipCheck -notcontains $_ })
         checksSkipped        = @($SkipCheck)
         checksNotImplemented = @($notImplementedAreas)

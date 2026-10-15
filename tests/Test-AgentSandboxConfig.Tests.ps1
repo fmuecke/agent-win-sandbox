@@ -185,6 +185,50 @@ try {
     Assert-Rejected '-ConfigFile with setup section' { Resolve-Settings -InstalledSettings $installed } "must not contain the generated 'setup'"
     Write-Output 'PASS: setup settings precedence'
 
+    # Run only the exposure shortcut against a fixture checker, not installed code.
+    & {
+        $shellAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\bootstrap\Initialize-AgentSandboxShell.ps1'), [ref]$null, [ref]$null)
+        $definition = $shellAst.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'global:Invoke-SandboxExposure'
+            }, $true)
+        if (-not $definition) { throw 'Exposure shortcut must supply both allowed-path defaults.' }
+        $wrapper = $definition.Body.GetScriptBlock()
+        $fixtureInstallRoot = Join-Path $fixtureRoot 'exposure-shortcut'
+        New-Item -ItemType Directory -Path $fixtureInstallRoot | Out-Null
+        Set-Content -LiteralPath (Join-Path $fixtureInstallRoot 'config.json') -Value '{"workspace":"D:\\Agent Work"}'
+        $checkerAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\Test-AgentSandboxExposure.ps1'), [ref]$null, [ref]$null)
+        Set-Content -LiteralPath (Join-Path $fixtureInstallRoot 'Test-AgentSandboxExposure.ps1') -Value ($checkerAst.ParamBlock.Extent.Text + @'
+
+[pscustomobject]@{ AllowedPath = @($AllowedPath); Brief = [bool]$Brief; SkipCheck = @($SkipCheck) }
+'@)
+        $expectedInstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
+        function Join-Path {
+            param($Path, $ChildPath)
+            if ($Path -eq $expectedInstallRoot) { $Path = $fixtureInstallRoot }
+            Microsoft.PowerShell.Management\Join-Path -Path $Path -ChildPath $ChildPath
+        }
+        $defaults = @('D:\Agent Work', [Environment]::GetFolderPath('UserProfile'))
+        $actual = & $wrapper -Brief -SkipCheck NETWORK,DESKTOP
+        if (($actual.AllowedPath -join '|') -ne ($defaults -join '|') -or
+            -not $actual.Brief -or ($actual.SkipCheck -join ',') -ne 'NETWORK,DESKTOP') {
+            throw 'Exposure shortcut must supply the workspace and profile, and forward other options.'
+        }
+        $actual = & $wrapper -allowedpath 'E:\Extra Work','F:\More Work'
+        if (($actual.AllowedPath -join '|') -ne (($defaults + @('E:\Extra Work','F:\More Work')) -join '|')) {
+            throw 'Explicit allowed paths must be appended to both defaults without duplicate binding.'
+        }
+        $actual = & $wrapper -SandboxPath 'E:\Extra Work'
+        if (($actual.AllowedPath -join '|') -ne (($defaults + 'E:\Extra Work') -join '|')) {
+            throw 'Exposure shortcut must append paths passed through the legacy alias.'
+        }
+        $actual = & $wrapper -AllowedPath @()
+        if (($actual.AllowedPath -join '|') -ne ($defaults -join '|')) {
+            throw 'An empty explicit list must retain both shortcut defaults.'
+        }
+        Write-Output 'PASS: exposure shortcut supplies both defaults and appends explicit paths'
+    }
+
     # Evaluate only path declarations, never setup/removal or installed checks.
     # Every entry point must agree on the protected Program Files installation.
     $installedPaths = @{

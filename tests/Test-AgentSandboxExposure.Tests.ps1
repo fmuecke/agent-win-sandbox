@@ -71,6 +71,8 @@ public static class AgentSandboxAssessmentNative {
     public static readonly List<TestHeldHandle> Handles = new List<TestHeldHandle>();
     public static TestHeldHandle[] GetHeldHandles(out int status) { status = HandleStatus; return Handles.ToArray(); }
     public static string GetConsoleSessionSid() { return ConsoleSid; }
+    public static int JoinStatus = -1;
+    public static int GetJoinStatus(out string name) { name = JoinStatus == 2 ? "WORKGROUP" : null; return JoinStatus; }
     public static int GetSessionId(int pid) { return 0; }
     public static string GetConsoleSessionUser() { return null; }
     public static string GetSessionUser() { return "TestAgent"; }
@@ -109,7 +111,7 @@ function Test-Case {
     $env:HTTP_PROXY = $null
     $env:HTTPS_PROXY = $null
     $env:CLAUDECODE = $null
-    $script:SandboxPaths = @()
+    $script:AllowedPaths = @()
     $script:Findings.Clear()
     $script:Errors.Clear()
     $script:Inventory.Clear()
@@ -135,6 +137,7 @@ function Test-Case {
     [AgentSandboxAssessmentNative]::ProcessRequests.Clear()
     [AgentSandboxAssessmentNative]::HandleStatus = 0
     [AgentSandboxAssessmentNative]::Handles.Clear()
+    [AgentSandboxAssessmentNative]::JoinStatus = -1
     try {
         & $Body
         if ($Pending) {
@@ -242,6 +245,20 @@ try {
         Invoke-SecretContentScan
         Assert-Equal $script:Criteria['R-SECRETS-SCAN'].Outcome 'unmet'
         Assert-Equal ($script:Findings | ConvertTo-Json -Depth 8).Contains('A' * 36) $false
+    }
+    Test-Case 'The secret scan covers allowed folders outside the workspace' {
+        $allowed = Join-Path $testRoot ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $allowed | Out-Null
+        [IO.File]::WriteAllText((Join-Path $allowed 'notes.txt'), ('ghp_' + ('E' * 36)))
+        $script:AllowedPaths = @($allowed)
+        Invoke-SecretContentScan
+        Assert-Equal $script:Criteria['R-SECRETS-SCAN'].Outcome 'unmet'
+    }
+    Test-Case 'Nested agent-owned roots are walked once' {
+        $script:AllowedPaths = @((Split-Path -Parent $script:WorkspacePath), 'Q:\elsewhere\')
+        $outermost = @(Get-AgentOwnedRoots -Outermost)
+        Assert-Equal ($outermost -join ';') ((@('Q:\elsewhere', $testRoot.TrimEnd('\')) | Sort-Object) -join ';')
+        Assert-Equal @(Get-AgentOwnedRoots).Count 3
     }
     foreach ($case in @(
             @{ Name = 'a quoted JSON key'; File = 'settings.json'; Text = ('{"api_key": "' + ('q7Rt2kLm' * 3) + '"}'); Encoding = [Text.UTF8Encoding]::new($false) },
@@ -831,15 +848,33 @@ try {
         $script:NetworkTarget = @()
         function Invoke-TcpProbe { 'blocked' }
         function Get-CimInstance { param($ClassName) if ($ClassName -eq 'Win32_NetworkConnection') { throw 'synthetic CIM failure' } }
+        function Get-PSDrive { throw 'synthetic drive failure' }
         function Get-ItemProperty { throw 'No synthetic proxy' }
         Invoke-NetworkCheck
         Assert-Equal $script:Criteria['R-NET-SHARES'].Outcome 'unknown'
+    }
+    Test-Case 'Denied CIM falls back to drive mappings for mapped shares' {
+        $script:NetworkTarget = @()
+        function Invoke-TcpProbe { 'blocked' }
+        function Get-CimInstance { param($ClassName) if ($ClassName -eq 'Win32_NetworkConnection') { throw 'synthetic CIM failure' } }
+        function Get-PSDrive { [pscustomobject]@{ Name = 'Z'; DisplayRoot = '\\server\share' } }
+        function Test-Path { param($LiteralPath) $LiteralPath -ne 'HKCU:\Network' }
+        function Get-ItemProperty { throw 'No synthetic proxy' }
+        Invoke-NetworkCheck
+        Assert-Equal $script:Criteria['R-NET-SHARES'].Outcome 'unmet'
     }
     Test-Case 'A failed membership query leaves domain reach unknown' {
         function Get-CimInstance { throw 'synthetic CIM failure' }
         function Get-GitConfigPaths { @() }
         Invoke-RemoteCheck
         Assert-Equal $script:Criteria['A-REMOTE-DOMAIN'].Outcome 'unknown'
+    }
+    Test-Case 'Denied CIM falls back to join information for domain reach' {
+        function Get-CimInstance { throw 'synthetic CIM failure' }
+        function Get-GitConfigPaths { @() }
+        [AgentSandboxAssessmentNative]::JoinStatus = 2
+        Invoke-RemoteCheck
+        Assert-Equal $script:Criteria['A-REMOTE-DOMAIN'].Outcome 'met'
     }
     Test-Case 'PowerShell 7 script-block logging counts as configured logging' {
         function Get-Service { @() }
@@ -877,19 +912,111 @@ try {
         Assert-Equal (@($result.Paths) -contains $sibling) $true
         Assert-Equal (@($result.Paths) -contains $script:WorkspacePath) $false
     }
-    Test-Case 'Declared sandbox folders are not adjacent reach' {
+    Test-Case 'A denied root listing is probed instead of leaving discovery incomplete' {
+        $root = Join-Path $testRoot 'drive\root'
+        function Get-ChildItem {
+            [CmdletBinding()] param([string]$LiteralPath, [switch]$Directory, [switch]$Force)
+            if ($LiteralPath -eq $root) { Write-Error -Exception ([UnauthorizedAccessException]::new('synthetic denial')); return }
+            Microsoft.PowerShell.Management\Get-ChildItem @PSBoundParameters
+        }
+        function Get-ScanPathExclusion { $null }
+        $result = Get-AdjacentDirectories -DriveRoot @($root)
+        Assert-Equal (@($result.Paths) -contains $root) $true
+        Assert-Equal $result.Incomplete $false
+    }
+    $usersRoot = Join-Path $testRoot 'users'
+    Test-Case 'Profiles behind a denied users listing are found through ProfileList' {
+        $other = Join-Path $usersRoot 'other'
+        function Test-Path { $true }
+        function Get-ChildItem {
+            [CmdletBinding()] param([string]$LiteralPath, [switch]$Directory, [switch]$Force)
+            if ($LiteralPath -eq $usersRoot) { Write-Error -Exception ([UnauthorizedAccessException]::new('synthetic denial')); return }
+            $key = [pscustomobject]@{ ImagePath = $other }
+            $key | Add-Member ScriptMethod GetValue { param($Name) $this.ImagePath }
+            $key
+        }
+        $result = Get-OtherProfilePaths -UsersRoot $usersRoot -ProfileListKey 'synthetic'
+        Assert-Equal (@($result.Paths) -join ';') $other
+        Assert-Equal $result.Incomplete $false
+    }
+    Test-Case 'A denied users listing without ProfileList leaves profile discovery incomplete' {
+        function Test-Path { $true }
+        function Get-ChildItem {
+            [CmdletBinding()] param([string]$LiteralPath, [switch]$Directory, [switch]$Force)
+            if ($LiteralPath -eq $usersRoot) { Write-Error -Exception ([UnauthorizedAccessException]::new('synthetic denial')); return }
+            throw 'synthetic registry failure'
+        }
+        Assert-Equal (Get-OtherProfilePaths -UsersRoot $usersRoot -ProfileListKey 'synthetic').Incomplete $true
+    }
+    Test-Case 'Denied CIM falls back to service registry keys' {
+        function Get-CimInstance { throw 'synthetic CIM failure' }
+        function Get-ChildItem {
+            foreach ($entry in @(@{ Name = 'Svc'; Type = 0x10 }, @{ Name = 'Drv'; Type = 0x1 })) {
+                $key = [pscustomobject]@{ PSChildName = $entry.Name; Type = $entry.Type }
+                $key | Add-Member ScriptMethod GetValue { param($Name, $Default) $this.Type }
+                $key
+            }
+        }
+        function Read-RegistryValue {
+            param($Path, $Name)
+            [pscustomobject]@{ State = 'present'; Value = $(if ($Name -eq 'ImagePath') { 'C:\svc\svc.exe' } else { 'LocalSystem' }) }
+        }
+        $services = @(Get-ServiceConfigurations)
+        Assert-Equal ($services.Name -join ';') 'Svc'
+        Assert-Equal $services[0].PathName 'C:\svc\svc.exe'
+        Assert-Equal $services[0].StartName 'LocalSystem'
+    }
+    Test-Case 'Checker is self-contained and binds explicit allowed paths' {
+        # Run the real parameter binding and main initialization in a fixture.
+        # Stop before policy validation, native initialization, or any probes.
+        $entryPath = Join-Path $script:WorkspacePath 'Test-AgentSandboxExposure.ps1'
+        $configPath = Join-Path $script:WorkspacePath 'config.json'
+        $mainEnd = $source.IndexOf('if ($PolicyPath -and')
+        if ($mainEnd -lt 0) { throw 'Checker initialization boundary not found.' }
+        Set-Content -LiteralPath $entryPath -Value ($source.Substring(0, $mainEnd) + @'
+
+[pscustomobject]@{ AllowedPaths = @($script:AllowedPaths); Brief = [bool]$Brief; SkipCheck = @($SkipCheck) }
+'@)
+        $actual = & $entryPath -Json
+        Assert-Equal $actual.AllowedPaths.Count 0
+
+        Set-Content -LiteralPath $configPath -Value '{"workspace":"C:\\AgentSandbox"}'
+        $actual = & $entryPath -Json
+        Assert-Equal $actual.AllowedPaths.Count 0
+
+        $actual = & $entryPath -Json -allowedpath 'D:\Agent Work','C:\Users\AgentSandbox' -Brief -SkipCheck NETWORK,DESKTOP
+        Assert-Equal ($actual.AllowedPaths -join '|') 'D:\Agent Work|C:\Users\AgentSandbox'
+        Assert-Equal $actual.Brief $true
+        Assert-Equal ($actual.SkipCheck -join ',') 'NETWORK,DESKTOP'
+
+        $actual = & $entryPath -Json -SandboxPath 'D:\AgentSandbox'
+        Assert-Equal ($actual.AllowedPaths -join '|') 'D:\AgentSandbox'
+        $actual = & $entryPath -Json -AllowedP 'E:\AgentSandbox'
+        Assert-Equal ($actual.AllowedPaths -join '|') 'E:\AgentSandbox'
+        $actual = & $entryPath -Json -AllowedPath @()
+        Assert-Equal $actual.AllowedPaths.Count 0
+
+        foreach ($invalid in '{bad json', '{}', '{"workspace":["C:\\AgentSandbox"]}') {
+            Set-Content -LiteralPath $configPath -Value $invalid
+            $actual = & $entryPath -Json
+            Assert-Equal $actual.AllowedPaths.Count 0
+            $actual = & $entryPath -Json -AllowedPath 'D:\AgentSandbox'
+            Assert-Equal ($actual.AllowedPaths -join '|') 'D:\AgentSandbox'
+        }
+    }
+    Test-Case 'Declared allowed folders are not adjacent reach' {
         $script:WorkspacePath = Join-Path $testRoot 'sandbox-ws\workspace'
         $sandbox = Join-Path $testRoot 'sandbox-ws\agent-owned'
         $other = Join-Path $testRoot 'sandbox-ws\other'
         New-Item -ItemType Directory -Path $script:WorkspacePath, $sandbox, $other -Force | Out-Null
-        $script:SandboxPaths = @(Resolve-SandboxPaths -Path ($sandbox + '\'))
+        $script:AllowedPaths = @(Resolve-AllowedPaths -Path ($sandbox + '\'))
         $result = Get-AdjacentDirectories -DriveRoot @()
         Assert-Equal (@($result.Paths) -contains $sandbox) $false
         Assert-Equal (@($result.Paths) -contains $other) $true
     }
-    Test-Case 'Drive roots and system folders are not accepted as sandbox folders' {
+    Test-Case 'Drive roots and system folders are not accepted as allowed folders' {
         $kept = Join-Path $testRoot 'agent-owned'
-        $resolved = @(Resolve-SandboxPaths -Path 'C:\', 'D:', $env:SystemRoot, $env:ProgramFiles, (Join-Path $env:SystemDrive 'Users'), '\\server\share', $kept 6>$null 2>$null)
+        $resolved = @(Resolve-AllowedPaths -Path 'C:\', 'D:', $env:SystemRoot, $env:ProgramFiles, (Join-Path $env:SystemDrive 'Users'), '\\server\share', $kept 6>$null 2>$null)
         Assert-Equal ($resolved -join ',') $kept
     }
     Test-Case 'Nested control files are checked independently' {
@@ -1726,6 +1853,18 @@ finally {
             $hookFindings = @($script:Findings | Where-Object { $_.Criterion -eq 'A-HANDOFF-WORKSPACE' -and $_.Target -like '*.git\hooks' })
             Assert-Equal $hookFindings.Count $case.Expected
         }
+    }
+    Test-Case 'Writable hooks in a repository inside an allowed folder are reported' {
+        $allowed = Join-Path $testRoot ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $allowed 'repo\.git\hooks') | Out-Null
+        $script:AllowedPaths = @($allowed)
+        $script:OtherProfiles = @()
+        function Get-OwnerSid { 'S-1-5-21-101-102-103-1002' }
+        function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Write granted }
+        Invoke-HandoffCheck
+        Assert-Equal $script:Criteria['A-HANDOFF-WORKSPACE'].Outcome 'unmet'
+        $hookFindings = @($script:Findings | Where-Object { $_.Criterion -eq 'A-HANDOFF-WORKSPACE' -and $_.Target -like '*repo\.git\hooks' })
+        Assert-Equal $hookFindings.Count 1
     }
 }
 finally {

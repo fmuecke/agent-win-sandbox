@@ -183,9 +183,12 @@ Set-Alias -Name copilot -Value $CopilotWrapper -Scope Global
 Set-Alias -Name sandbox-check -Value $CheckScript -Scope Global
 
 function global:Invoke-SandboxExposure {
+    param([string[]]$AllowedPath = @())
+
     $installedRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
     $installedConfig = Get-Content (Join-Path $installedRoot 'config.json') -Raw | ConvertFrom-Json
-    & (Join-Path $installedRoot 'Test-AgentSandboxExposure.ps1') -AllowedPath $installedConfig.workspace @args
+    $paths = @($installedConfig.workspace, [Environment]::GetFolderPath('UserProfile')) + $AllowedPath
+    & (Join-Path $installedRoot 'Test-AgentSandboxExposure.ps1') -AllowedPath $paths @args
 }
 Set-Alias -Name sandbox-exposure -Value Invoke-SandboxExposure -Scope Global
 
@@ -193,7 +196,7 @@ function global:sandbox-help {
     Write-Host @'
 Agent Sandbox commands:
   sandbox-check  Check the sandbox configuration
-  sandbox-exposure  Assess this session's exposure with the workspace path
+  sandbox-exposure  Assess this session with the workspace and profile allowed
   sandbox-help   Show this help
   devshell       Enter the Visual Studio Developer Shell in this terminal
   claude         Install, update, or launch Claude Code

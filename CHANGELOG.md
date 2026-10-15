@@ -11,6 +11,18 @@ Git log.
   under `C:\Program Files\agent-win-sandbox` in preparation for the planned
   `launch-as --restrict-reads` option excluding ProgramData. Existing installations
   must be removed with their matching removal script first; no migration is provided.
+- Fixed: The exposure checker reported profile, adjacent-file, share, service
+  and domain criteria as unknown when its own discovery was denied. It now reads
+  profiles from ProfileList, probes a root whose listing is denied, and uses
+  registry and Win32 sources when CIM is denied. Scheduled tasks stay unknown
+  when they cannot be enumerated.
+- Changed: The exposure checker's `-SandboxPath` is now `-AllowedPath`; the old
+  name remains an alias. The report field `scope.sandboxPaths` is now
+  `scope.allowedPaths`.
+- Changed: The exposure checker scans allowed folders, not only the workspace,
+  for secrets and for content another identity consumes, including git
+  repositories directly below them. `inventory.handoffArtifacts` now counts
+  repositories and VS Code task files.
 
 ## 0.10.0 - 2026-10-09
 

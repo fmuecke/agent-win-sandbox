@@ -132,13 +132,14 @@ devshell       # Enter the Visual Studio Developer Shell
 claude         # Install, update, or launch Claude Code
 copilot        # Install, update, or launch GitHub Copilot CLI
 sandbox-check  # Check the sandbox configuration
-sandbox-exposure # Assess this session using the configured -SandboxPath
+sandbox-exposure # Assess this session with the configured workspace and user profile allowed
 sandbox-help   # Show these commands
 ```
 
 `claude` installs Claude Code per-user through Anthropic's native installer.
 `copilot` downloads GitHub's latest Windows x64 release into `~\.local\bin` and verifies it against the release's `SHA256SUMS.txt`. No npm or WinGet is used.
 `sandbox-exposure` reports the access currently available to the session; the checker itself does not enforce isolation.
+`sandbox-exposure` always passes the configured workspace and sandbox user profile as allowed paths; explicit `-AllowedPath` values are added to them. The standalone checker reads no sandbox configuration: `& 'C:\Program Files\agent-win-sandbox\Test-AgentSandboxExposure.ps1' -AllowedPath 'C:\AgentSandbox','C:\Users\AgentSandbox'`.
 
 On first Copilot launch, enter a user-owned fine-grained PAT with `Copilot Requests` as its only added permission and minimal repository access.
 The wrapper stores it as the sandbox user's persistent `COPILOT_GITHUB_TOKEN`. Every process running as `AgentSandbox` can read it; scope and expire it accordingly.
