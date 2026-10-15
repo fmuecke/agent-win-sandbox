@@ -314,6 +314,14 @@ Limitations:
 - This is defense in depth, not a kernel boundary.
 - Path and command policies are intentionally narrow and incomplete.
 - Agent bugs or future Claude Code behavior changes can affect enforcement.
+- Accepted tradeoff: the agent CLIs live in the agent-writable
+  `C:\Users\AgentSandbox\.local\bin`, and the wrappers do not verify them at
+  launch. A session that runs code can replace or shim them, so later sessions
+  run without this policy while the Program Files policy file still looks
+  intact. This adds no rights beyond `AgentSandbox`; the identity, ACL and
+  network boundaries are unaffected. The exposure checker therefore records
+  writable startup paths in the agent's own profile as expected, not as
+  persistence exposure.
 - These settings do not govern GitHub Copilot CLI. Its permissions and
   organization policy must be configured independently.
 
@@ -357,6 +365,7 @@ Limitations:
 | Poisoned build uses sandbox Git credentials or authenticated remotes | Developer and sandbox credentials are separate; `git push` should require agent approval. | Build tools can use sandbox credentials and HTTPS. Scope sandbox tokens as compromised. |
 | Poisoned build reads the Copilot PAT | The PAT is scoped to the sandbox identity and Copilot Requests. | The persistent environment value is readable by every sandbox process; use minimal scope and expiry. |
 | Prompt injection attempts SMB, NetBIOS, WinRM, RDP, or RPC traffic | WFP blocks direct TCP/UDP outside the proxy; deny-network-logon limits inbound authentication. | Allowed proxy destinations and requests relayed under another identity remain possible. |
+| Prompt injection replaces the agent CLI or plants startup code in the sandbox profile | Changes run only as `AgentSandbox`; Program Files bootstrap, policy and network controls stay admin-write. | Later sessions can run without the managed tool policy; the CLI binary is not verified at launch. |
 | Agent rewrites bootstrap or launch configuration | Installed files are readable but not writable by `AgentSandbox`; checker detects broad write ACLs. | Fails if setup was not elevated, ACLs drift, or an administrator is compromised. |
 | Prompt injection changes or deletes workspace files | Damage stays within the workspace and sandbox-accessible resources. | Repositories, artifacts, local branches, and uncommitted work can be lost; no snapshots, copy-on-write isolation, or rollback. |
 | Domain SSO, mapped drives, or network shortcuts expose resources | Bootstrap warns about visible mappings and shortcuts; WFP blocks direct TCP/UDP outside the proxy. | Allowed web destinations and local brokers may expose resources; sandbox credentials remain usable by its processes. |

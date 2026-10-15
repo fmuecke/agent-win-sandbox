@@ -23,6 +23,10 @@ Git log.
   for secrets and for content another identity consumes, including git
   repositories directly below them. `inventory.handoffArtifacts` now counts
   repositories and VS Code task files.
+- Changed: The exposure checker records writable startup paths in the agent's
+  own profile, such as `~\.local\bin`, as expected; only paths outside it count
+  against C-PERSIST-SELF. The threat model documents the accepted tradeoff that
+  a session can replace the agent CLI for later sessions.
 
 ## 0.10.0 - 2026-10-09
 

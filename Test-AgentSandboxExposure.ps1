@@ -272,8 +272,8 @@ $CriterionRegistry = @(
         Remediation = 'Launch the agent inside a job object with kill-on-close and no breakaway.' 
     }
     @{ Id = 'C-PERSIST-SELF'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
-        Title = 'Agent cannot persist code into later sandbox sessions'
-        Remediation = 'Reset or lock agent-writable startup paths (profile scripts, user PATH directories, agent hooks) between sessions.' 
+        Title = 'Agent cannot persist code through startup paths outside its own profile'
+        Remediation = 'Remove the agent''s write access to user PATH directories outside its profile, or drop them from its PATH. Startup paths inside its own profile are an accepted tradeoff (docs/threat-model.md).'
     }
     @{ Id = 'C-PROXY-INTEGRITY'; Dimension = 'Containment'; Check = 'CONTAINMENT'; Essential = $false; Severity = 'medium'
         Title = 'Configured proxy cannot be changed by the agent'
@@ -1688,6 +1688,12 @@ function Invoke-ExecutionPolicyCheck {
     }
 }
 
+function Get-UserPathDirectories {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath) { return @() }
+    return @($userPath -split ';' | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+}
+
 function Invoke-ContainmentCheck {
     # C-POLICY-INTEGRITY: launcher/policy/checker files must not be agent-writable.
     $installRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
@@ -1801,12 +1807,7 @@ function Invoke-ContainmentCheck {
 
     # C-PERSIST-SELF
     $persistTargets = New-Object System.Collections.Generic.List[string]
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($userPath) {
-        foreach ($dir in ($userPath -split ';' | Where-Object { $_ -and $_.Trim() })) {
-            $persistTargets.Add($dir.Trim()) | Out-Null
-        }
-    }
+    foreach ($dir in @(Get-UserPathDirectories)) { $persistTargets.Add($dir) | Out-Null }
     $persistTargets.Add((Join-Path $env:USERPROFILE '.local\bin')) | Out-Null
     # GetFolderPath returns an empty string when Documents cannot be resolved.
     $documents = [Environment]::GetFolderPath('MyDocuments')
@@ -1828,12 +1829,50 @@ function Invoke-ContainmentCheck {
     if (-not $managedBlocksHooks) {
         $persistTargets.Add((Join-Path $claudeHome 'settings.json')) | Out-Null
     }
-    Resolve-AccessTargets -Check CONTAINMENT -Criterion 'C-PERSIST-SELF' -Right Write -Path @($persistTargets) `
-        -Capability 'writable startup path' -Scope 'persistence' `
-        -Impact 'Code placed here runs in later agent sessions.' -Severity medium `
-        -NoneReason 'No persistence targets (user PATH, profile, agent hooks) exist to evaluate.' `
-        -MetReason 'No evaluated startup/persistence paths are agent-writable.' `
-        -UnmetReasonFormat '{0} startup/persistence paths are agent-writable.' | Out-Null
+    # Startup paths in the agent's own profile run only as the agent, with
+    # rights it already has, and the wrappers must write .local\bin; they are
+    # expected and not counted. Accepted tradeoff: a session can replace the
+    # agent CLI there for later sessions (docs/threat-model.md).
+    $ownProfile = $env:USERPROFILE.TrimEnd('\')
+    $ownTargets = @()
+    $otherTargets = @()
+    foreach ($target in @($persistTargets | Select-Object -Unique)) {
+        $full = try { [IO.Path]::GetFullPath($target).TrimEnd('\') } catch { $target }
+        if ($full -eq $ownProfile -or $full.StartsWith($ownProfile + '\', [StringComparison]::OrdinalIgnoreCase)) { $ownTargets += $full }
+        else { $otherTargets += $target }
+    }
+    $ownExisting = 0
+    $ownWritable = 0
+    foreach ($target in $ownTargets) {
+        $access = Get-PathAccess -Path $target
+        if (-not $access.Exists -and $access.ErrorCategory -eq 'not-found') { continue }
+        $ownExisting++
+        if (Test-AnyWrite -Access $access) {
+            $ownWritable++
+            Add-Finding -Check CONTAINMENT -Criterion 'C-PERSIST-SELF' -Target $target `
+                -Capability 'writable startup path in the agent''s own profile (expected)' -Result granted -Method $access.Method `
+                -Scope 'persistence' -Impact 'Expected: runs only as the agent in later sessions; not counted against this criterion.' -Severity info
+        }
+    }
+    $persist = Get-MatchingTargets -Check CONTAINMENT -Criterion 'C-PERSIST-SELF' -Right Write -Path $otherTargets `
+        -Capability 'writable startup path outside the agent''s profile' -Scope 'persistence' `
+        -Impact 'Code placed here runs in later agent sessions and in any other session that uses this path.' -Severity medium
+    if ($persist.Matched.Count -gt 0) {
+        Set-CriterionOutcome -Id 'C-PERSIST-SELF' -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "$($persist.Matched.Count) of $($persist.Existing.Count) startup paths outside the agent's profile are agent-writable."
+    }
+    elseif ($persist.Unknown.Count -gt 0) {
+        Set-CriterionOutcome -Id 'C-PERSIST-SELF' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason "Access could not be fully evaluated on $($persist.Unknown.Count) of $($persist.Existing.Count) startup paths outside the agent's profile."
+    }
+    elseif ($persist.Existing.Count + $ownExisting -eq 0) {
+        Set-CriterionOutcome -Id 'C-PERSIST-SELF' -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason 'No persistence targets (user PATH, profile, agent hooks) exist to evaluate.'
+    }
+    else {
+        Set-CriterionOutcome -Id 'C-PERSIST-SELF' -Outcome 'met' -Method 'permission-analysis' `
+            -Reason "No startup path outside the agent's own profile is agent-writable ($($persist.Existing.Count) probed); $ownWritable writable path(s) in its own profile are expected."
+    }
 
     # C-PROXY-INTEGRITY: the agent can always change its own environment and
     # HKCU proxy settings, and can ignore any proxy setting. A change only

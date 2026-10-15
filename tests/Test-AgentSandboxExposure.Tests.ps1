@@ -733,6 +733,24 @@ try {
         Invoke-ContainmentCheck
         Assert-Equal $script:Criteria['C-PROXY-INTEGRITY'].Outcome 'na'
     }
+    foreach ($case in @(
+            @{ Name = 'Writable startup paths in the agent''s own profile are expected'; PathDirs = @('{profile}\AppData\Local\Microsoft\WindowsApps'); Expected = 'met' },
+            @{ Name = 'A writable user PATH entry outside the agent''s profile is unmet'; PathDirs = @('{profile}\.local\bin', 'C:\SharedTools'); Expected = 'unmet' },
+            @{ Name = 'A user PATH entry that leaves the profile through .. is outside it'; PathDirs = @('{profile}\..\other\bin'); Expected = 'unmet' })) {
+        Test-Case $case.Name {
+            $userProfile = $env:USERPROFILE
+            function Get-UserPathDirectories { @($case.PathDirs | ForEach-Object { $_.Replace('{profile}', $userProfile) }) }
+            function Test-Path { $true }
+            function Get-ChildItem { @() }
+            function Get-ItemProperty { [pscustomobject]@{ CallLegacyWCMPolicies = 0 } }
+            function Get-Content { '{"allowManagedHooksOnly":true}' }
+            function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Write granted }
+            Invoke-ContainmentCheck
+            Assert-Equal $script:Criteria['C-PERSIST-SELF'].Outcome $case.Expected
+            $expected = @($script:Findings | Where-Object { $_.Criterion -eq 'C-PERSIST-SELF' -and $_.Severity -eq 'info' })
+            if ($case.Expected -eq 'met' -and $expected.Count -eq 0) { throw 'No expected own-profile finding was recorded.' }
+        }
+    }
     # Containment fixtures: a protected managed-settings file and an
     # environment proxy; each case varies the network evidence or policy.
     function Set-ContainmentFixture {
