@@ -7,7 +7,7 @@
 <#
 .SYNOPSIS
     Launches a PowerShell 7 terminal as the low-privilege AgentSandbox user,
-    scoped to the workspace stored in ProgramData config.
+    scoped to the workspace stored in Program Files config.
 
 .DESCRIPTION
     Part of agent-win-sandbox. Assumes Setup-AgentSandbox.ps1 has provisioned
@@ -20,7 +20,7 @@
     Shell, Claude Code, Copilot CLI, and the sandbox checker.
 
 .EXAMPLE
-    & "$env:ProgramData\agent-win-sandbox\Start-AgentSandbox.ps1"
+    & "$env:ProgramFiles\agent-win-sandbox\Start-AgentSandbox.ps1"
     Launches an Agent Sandbox PowerShell terminal.
 #>
 
@@ -30,17 +30,17 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'
-$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
-$BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
+$InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
+$BootstrapRoot = Join-Path $InstallRoot 'bootstrap'
 $ShellInitScript = Join-Path $BootstrapRoot 'Initialize-AgentSandboxShell.ps1'
 $ConfigFunctionsScript = Join-Path $BootstrapRoot 'AgentSandboxConfig.ps1'
 $LaunchAsExe = Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as.exe'
-$CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
-$ApplyConfigScript = Join-Path $ProgramDataRoot 'Apply-Config.ps1'
-$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$CheckerScript = Join-Path $InstallRoot 'Check-AgentSandbox.ps1'
+$ApplyConfigScript = Join-Path $InstallRoot 'Apply-Config.ps1'
+$ConfigFile = Join-Path $InstallRoot 'config.json'
 $PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
-$NetworkSandboxExe = Join-Path $ProgramDataRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.json'
+$NetworkSandboxExe = Join-Path $InstallRoot 'network-sandbox.exe'
+$NetworkSandboxConfig = Join-Path (Join-Path $InstallRoot 'network-sandbox') 'network-sandbox.json'
 
 function Stop-LauncherError {
     param([string]$Message)
@@ -82,7 +82,9 @@ function Get-WriteAccessIssue {
         return "$Path is owned by $owner."
     }
     foreach ($ace in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        # Inherit-only entries apply to descendants, not to this checked path.
         if ($ace.AccessControlType -eq 'Allow' -and
+            -not ($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
             $ace.IdentityReference.Value -notin $trustedSids -and
             ([int]$ace.FileSystemRights -band $writeMask)) {
             return "$Path is writable by $($ace.IdentityReference.Value)."
@@ -191,7 +193,7 @@ foreach ($required in $ConfigFile, $ConfigFunctionsScript) {
     }
 }
 # Only administrators may change the config or what the session runs.
-foreach ($protectedPath in $ProgramDataRoot, $BootstrapRoot, $ConfigFile, $ConfigFunctionsScript, $ShellInitScript) {
+foreach ($protectedPath in $InstallRoot, $BootstrapRoot, $ConfigFile, $ConfigFunctionsScript, $ShellInitScript) {
     $issue = Get-WriteAccessIssue -Path $protectedPath
     if ($issue) {
         Stop-LauncherError "Refusing to launch: $issue Only administrators may modify it. Run Setup-AgentSandbox.ps1 again."

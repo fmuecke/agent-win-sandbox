@@ -3,9 +3,9 @@
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
 # Enters the Visual Studio Developer Shell in the current Agent Sandbox terminal.
-# Not %ProgramData%: AgentSandbox can redirect its own environment variables.
-$ProgramDataRoot = Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox'
-$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
+# Not %ProgramFiles%: AgentSandbox can redirect its own environment variables.
+$InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
+$ConfigFile = Join-Path $InstallRoot 'config.json'
 
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'Agent Sandbox requires PowerShell 7 or later.'

@@ -15,7 +15,7 @@ This threat model covers the current `agent-win-sandbox` implementation:
 - `scripts/claude-wrapper.ps1`
 - `scripts/copilot-wrapper.ps1`
 - `managed-settings.json`
-- generated state under `C:\ProgramData\agent-win-sandbox`
+- generated state under `C:\Program Files\agent-win-sandbox`
 - agent CLIs installed per-user under `C:\Users\AgentSandbox`
 - the shared sandbox workspace, normally `C:\AgentSandbox`
 
@@ -70,8 +70,7 @@ Primary assets to protect:
 - Development-domain services, repositories, package feeds, shares, and build
   systems reachable from the developer VLAN.
 - Source trees outside `C:\AgentSandbox`.
-- Trusted launcher files under ProgramData and Claude Code policy under
-  Program Files.
+- Trusted launcher files and Claude Code policy under Program Files.
 - Agent configuration and credentials scoped to `AgentSandbox`.
 
 Assets intentionally exposed to the agent:
@@ -87,7 +86,7 @@ Assets intentionally exposed to the agent:
 - **Developer to sandbox account:** Default NTFS profile ACLs prevent
   `AgentSandbox` from reading the developer profile on a correctly configured
   system.
-- **Trusted control plane to workspace:** ProgramData launcher/configuration
+- **Trusted control plane to workspace:** Program Files launcher/configuration
   files are admin-write / Users-read-execute; managed policy in Program Files is
   admin-write / Users-read. The writable workspace is never trusted launcher
   code.
@@ -107,7 +106,7 @@ Assets intentionally exposed to the agent:
 | Curious or mistaken agent | Runs incorrect commands, edits wrong files, follows malicious text, or overreaches | Yes |
 | Network attacker on developer VLAN | Can scan or attack exposed services from the same VLAN | Partially |
 | Compromised developer-domain service | Serves malicious content or captures credentials presented by `AgentSandbox` | Partially |
-| Local administrator or malware already on the host | Can change ACLs, read memory, tamper with ProgramData, or elevate | No |
+| Local administrator or malware already on the host | Can change ACLs, read memory, tamper with Program Files, or elevate | No |
 | Production-domain attacker | Attempts cross-domain movement from development to production | Out of scope except as a design concern |
 
 ## Main Controls
@@ -164,7 +163,7 @@ Limitations:
 Setup downloads and verifies launch-as, then lets its administrator tool install
 the broker and command-line tools together under `C:\Program Files\launch-as`.
 It copies the launcher, checker, shell initializer, and agent command wrappers,
-and writes configuration under `C:\ProgramData\agent-win-sandbox`, then locks
+and writes configuration under `C:\Program Files\agent-win-sandbox`, then locks
 that directory admin-write / Users-read-execute. The managed Claude Code policy
 is also intended to live under `C:\Program Files\ClaudeCode\managed-settings.json`
 with admin-write permissions.
@@ -203,8 +202,8 @@ Limitations:
 `HTTP_PROXY` and `HTTPS_PROXY` are cooperative application configuration, not a
 security boundary. A process running as `AgentSandbox` can unset them, configure
 a proxy bypass, or invoke a client that ignores them. Setup installs
-both network executables under protected `C:\ProgramData\agent-win-sandbox`
-and the allowlist in a separate protected ProgramData folder. The trusted
+both network executables under protected `C:\Program Files\agent-win-sandbox`
+and the allowlist in its protected `network-sandbox` subdirectory. The trusted
 launcher account starts one proxy on `127.0.0.1` and
 the shell sets proxy variables for clients that honor them. `wfp-lock`
 applies a per-account WFP policy that allows TCP only to the configured proxy
@@ -344,7 +343,7 @@ Limitations:
 | Category | Relevant threats | Current controls | Residual risk |
 |----------|------------------|------------------|---------------|
 | Spoofing | Agent uses developer identity or domain credentials | Separate local user, separate Credential Manager, per-user agent installs | `AgentSandbox` may still receive its own git/PAT credentials |
-| Tampering | Agent rewrites launcher, policy, or config | ProgramData admin-write locks, checker coverage | Admin compromise or ACL drift defeats this |
+| Tampering | Agent rewrites launcher, policy, or config | Program Files admin-write locks, checker coverage | Admin compromise or ACL drift defeats this |
 | Repudiation | Hard to know what the agent did | Claude Code transcript/history, git history, manual review | No centralized audit trail in this repo |
 | Information disclosure | Agent reads secrets, profile data, repo secrets, network shares | Separate user, profile ACL check, managed deny rules, WFP lock and allowlist proxy | Secrets in workspace or broad ACL locations remain exposed |
 | Denial of service | Agent deletes workspace, consumes CPU/disk, breaks repos | Low-priv user limits system impact | Workspace is fully writable; no job-object or resource limit |
@@ -358,7 +357,7 @@ Limitations:
 | Poisoned build uses sandbox Git credentials or authenticated remotes | Developer and sandbox credentials are separate; `git push` should require agent approval. | Build tools can use sandbox credentials and HTTPS. Scope sandbox tokens as compromised. |
 | Poisoned build reads the Copilot PAT | The PAT is scoped to the sandbox identity and Copilot Requests. | The persistent environment value is readable by every sandbox process; use minimal scope and expiry. |
 | Prompt injection attempts SMB, NetBIOS, WinRM, RDP, or RPC traffic | WFP blocks direct TCP/UDP outside the proxy; deny-network-logon limits inbound authentication. | Allowed proxy destinations and requests relayed under another identity remain possible. |
-| Agent rewrites bootstrap or launch configuration | ProgramData files are readable but not writable by `AgentSandbox`; checker detects broad write ACLs. | Fails if setup was not elevated, ACLs drift, or an administrator is compromised. |
+| Agent rewrites bootstrap or launch configuration | Installed files are readable but not writable by `AgentSandbox`; checker detects broad write ACLs. | Fails if setup was not elevated, ACLs drift, or an administrator is compromised. |
 | Prompt injection changes or deletes workspace files | Damage stays within the workspace and sandbox-accessible resources. | Repositories, artifacts, local branches, and uncommitted work can be lost; no snapshots, copy-on-write isolation, or rollback. |
 | Domain SSO, mapped drives, or network shortcuts expose resources | Bootstrap warns about visible mappings and shortcuts; WFP blocks direct TCP/UDP outside the proxy. | Allowed web destinations and local brokers may expose resources; sandbox credentials remain usable by its processes. |
 
@@ -407,7 +406,7 @@ or formal regulatory isolation requirements.
 Run after setup and after material local policy changes:
 
 ```powershell
-& 'C:\ProgramData\agent-win-sandbox\Check-AgentSandbox.ps1'
+& 'C:\Program Files\agent-win-sandbox\Check-AgentSandbox.ps1'
 ```
 
 For full coverage, run it elevated. Review every WARN and FAIL, especially:
@@ -415,7 +414,7 @@ For full coverage, run it elevated. Review every WARN and FAIL, especially:
 - `AgentSandbox` is not an administrator and has no risky group memberships.
 - Network and RDP logon deny rights are present.
 - Interactive logon is still allowed.
-- ProgramData config, launcher/checker, shell initializer, command wrappers,
+- Program Files config, launcher/checker, shell initializer, command wrappers,
   the Program Files launch-as component, and the Program Files Claude policy
   file are admin-write-only.
 - The sandbox workspace exists and grants `AgentSandbox` write access.

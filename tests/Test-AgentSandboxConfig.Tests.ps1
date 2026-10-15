@@ -185,6 +185,77 @@ try {
     Assert-Rejected '-ConfigFile with setup section' { Resolve-Settings -InstalledSettings $installed } "must not contain the generated 'setup'"
     Write-Output 'PASS: setup settings precedence'
 
+    # Evaluate only path declarations, never setup/removal or installed checks.
+    # Every entry point must agree on the protected Program Files installation.
+    $installedPaths = @{
+        ProgramDataRoot = ''
+        InstallRoot = ''
+        ToolsRoot = ''
+        InstalledConfigFile = 'config.json'
+        ConfigFile = 'config.json'
+        BootstrapRoot = 'bootstrap'
+        LauncherScript = 'Start-AgentSandbox.ps1'
+        CheckerScript = 'Check-AgentSandbox.ps1'
+        ExposureCheckScript = 'Test-AgentSandboxExposure.ps1'
+        ApplyConfigScript = 'Apply-Config.ps1'
+        WfpLockExe = 'wfp-lock.exe'
+        NetworkSandboxExe = 'network-sandbox.exe'
+        NetworkSandboxStateRoot = 'network-sandbox'
+        NetworkSandboxConfig = 'network-sandbox\network-sandbox.json'
+        ShellInitScript = 'bootstrap\Initialize-AgentSandboxShell.ps1'
+        DevShellScript = 'bootstrap\Enter-DevShell.ps1'
+        ClaudeWrapperScript = 'bootstrap\claude-wrapper.ps1'
+        CopilotWrapperScript = 'bootstrap\copilot-wrapper.ps1'
+        ConfigFunctionsScript = 'bootstrap\AgentSandboxConfig.ps1'
+        ClaudeWrapper = 'bootstrap\claude-wrapper.ps1'
+        CopilotWrapper = 'bootstrap\copilot-wrapper.ps1'
+        CheckScript = 'Check-AgentSandbox.ps1'
+        InstalledCheckScript = 'Check-AgentSandbox.ps1'
+        launcher = 'Start-AgentSandbox.ps1'
+        installedRoot = ''
+        expectedRoot = ''
+    }
+    foreach ($relativePath in @('Setup-AgentSandbox.ps1', 'Remove-AgentSandbox.ps1',
+            'Start-AgentSandbox.ps1', 'Apply-Config.ps1', 'Check-AgentSandbox.ps1',
+            'bootstrap\Initialize-AgentSandboxShell.ps1', 'bootstrap\Enter-DevShell.ps1',
+            'bootstrap\Initialize-AgentSandboxDemo.ps1', 'Test-AgentSandboxExposure.ps1')) {
+        & {
+            $pathAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot "..\$relativePath"), [ref]$null, [ref]$null)
+            $expectedInstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
+            if ($pathAst.ParamBlock) {
+                foreach ($parameter in $pathAst.ParamBlock.Parameters) {
+                    $name = $parameter.Name.VariablePath.UserPath
+                    if ($installedPaths.ContainsKey($name) -and $parameter.DefaultValue) {
+                        $actual = & ([scriptblock]::Create($parameter.DefaultValue.Extent.Text))
+                        if ($actual -ine (Join-Path $expectedInstallRoot $installedPaths[$name])) {
+                            throw "$relativePath : default $name is outside the installation."
+                        }
+                        Set-Variable -Name $name -Value $actual
+                    }
+                }
+            }
+            $declarations = @($pathAst.FindAll({
+                        param($node)
+                        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                        $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+                        $installedPaths.ContainsKey($node.Left.VariablePath.UserPath) -and
+                        ($node -in $pathAst.EndBlock.Statements -or $node.Right.Extent.Text.Contains("'agent-win-sandbox'"))
+                    }, $true))
+            foreach ($declaration in $declarations) {
+                . ([scriptblock]::Create($declaration.Extent.Text))
+                $name = $declaration.Left.VariablePath.UserPath
+                $expectedPath = if ($installedPaths[$name]) { Join-Path $expectedInstallRoot $installedPaths[$name] } else { $expectedInstallRoot }
+                if ((Get-Variable -Name $name -ValueOnly) -ine $expectedPath) {
+                    throw "$relativePath : $name must resolve to $expectedPath."
+                }
+            }
+            if ($declarations.Count -eq 0 -and $relativePath -ne 'Check-AgentSandbox.ps1') {
+                throw "$relativePath : no installation paths checked."
+            }
+        }
+    }
+    Write-Output 'PASS: installed paths agree on Program Files'
+
     # AgentSandbox can set its own environment variables (HKCU\Environment) for
     # later sessions. Scripts it runs must not locate trusted files through them.
     $sandboxScripts = @(

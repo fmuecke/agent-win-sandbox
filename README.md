@@ -67,6 +67,8 @@ Use `-ProxyPort 18080` to try another port, or `-PrepareOnly` to create and insp
 
 ## Installation
 
+Note: Existing installations must be removed with their matching `Remove-AgentSandbox.ps1` before setup. There is no automatic migration.
+
 Run once from an elevated PowerShell 7 session, using the account that will normally launch the sandbox:
 
 ```powershell
@@ -76,13 +78,13 @@ Run once from an elevated PowerShell 7 session, using the account that will norm
 Run setup and removal only from a reviewed release or a clone the agent cannot write. An elevated script in an agent-writable checkout runs whatever the agent changed in it, with administrator rights.
 
 Setup optionally deploys the Claude Code managed settings to `C:\Program Files\ClaudeCode\managed-settings.json`; it asks before replacing an existing file because this policy is machine-wide and shared by every Claude Code user. 
-It downloads and hash-verifies the `launch-as` package, then lets `launch-as-admin` install the broker and all command-line tools together under `C:\Program Files\launch-as`. It also installs pinned `wfp-lock` and `network-sandbox` binaries together under protected `C:\ProgramData\agent-win-sandbox`, writes the protected `config.json`, and runs `Apply-Config.ps1` to generate the proxy policy and apply the per-user WFP lock.
+It downloads and hash-verifies the `launch-as` package, then lets `launch-as-admin` install the broker and all command-line tools together under `C:\Program Files\launch-as`. It also installs pinned `wfp-lock` and `network-sandbox` binaries together under protected `C:\Program Files\agent-win-sandbox`, writes the protected `config.json`, and runs `Apply-Config.ps1` to generate the proxy policy and apply the per-user WFP lock.
 The launcher starts the proxy under the launcher account. Setup enrolls `AgentSandbox` and creates the `Agent Sandbox` Public Desktop shortcut.
 Component directories are not added to `PATH`.
 
 ### Configuration
 
-All settings live in `C:\ProgramData\agent-win-sandbox\config.json`, which only administrators can modify:
+All settings live in `C:\Program Files\agent-win-sandbox\config.json`, which only administrators can modify:
 
 ```json
 {
@@ -110,22 +112,17 @@ Setup merges settings in this order, later wins: `config\agent-sandbox.json` def
 To change settings without setup, edit `config.json` as administrator, close all AgentSandbox sessions, then run elevated:
 
 ```powershell
-& "$env:ProgramData\agent-win-sandbox\Apply-Config.ps1"
+& "$env:ProgramFiles\agent-win-sandbox\Apply-Config.ps1"
 ```
 
 The launcher refuses to start while settings are unapplied, or if a non-admin can modify the config or the bootstrap scripts. Every session verifies the WFP lock against `config.json` first and closes on mismatch. A workspace change requires setup, which provisions the new folder.
 
-Installations from before this configuration format must be removed with
-`Remove-AgentSandbox.ps1` before setup.
-
-Setup upgrades supported brokered installations from `v1.0.0-preview`, `v1.1.0-preview`, `v1.1.0`, and `v1.2.0-preview`; after a successful component installation, it deploys the new ProgramData launcher and then removes the obsolete ProgramData client/admin copies. 
-Unknown or incomplete installations still require removal with their matching Agent Sandbox version.
 The shared workspace remains untouched by removal.
 
 Start the sandbox with that shortcut, or run:
 
 ```powershell
-& 'C:\ProgramData\agent-win-sandbox\Start-AgentSandbox.ps1'
+& 'C:\Program Files\agent-win-sandbox\Start-AgentSandbox.ps1'
 ```
 
 The terminal provides:
@@ -170,7 +167,7 @@ Open a PowerShell 7 terminal in your preferred host:
 Then run this command in that terminal pane:
 
 ```powershell
-& 'C:\ProgramData\agent-win-sandbox\Start-AgentSandbox.ps1'
+& 'C:\Program Files\agent-win-sandbox\Start-AgentSandbox.ps1'
 ```
 
 The pane becomes the `AgentSandbox` console; run `claude`, `copilot`, or `devshell` there. The IDE itself and its other terminals still run as your normal Windows user.
@@ -183,7 +180,7 @@ Run from an elevated PowerShell 7 session:
 .\Remove-AgentSandbox.ps1
 ```
 
-This stops the proxy and removes the account's WFP lock, user and profile, generated ProgramData state, broker enrollment, shortcut, and installed `wfp-lock` and `network-sandbox` executables. 
+This stops the proxy and removes the account's WFP lock, user and profile, installed sandbox files, broker enrollment, shortcut, and installed `wfp-lock` and `network-sandbox` executables.
 It uninstalls the `launch-as` broker and executables when no other broker accounts remain. 
 It keeps the workspace, such as `C:\AgentSandbox`, and any older network-tool copies in Program Files that other tools may use.
 

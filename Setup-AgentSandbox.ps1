@@ -19,7 +19,7 @@
     - PowerShell 7 is required. standard users need no extra Program Files grants.
     - DENY ACEs override ALLOW. Review every Deny path before running.
     - The workspace config, launcher/check scripts, and shell commands are
-      written into ProgramData (Users-traversable by default) and locked
+      written into Program Files (Users-traversable by default) and locked
       admin-write/Users-RX, so AgentSandbox can read/run them but not modify
       them.
     - The sandbox username and workspace directory name are baked in
@@ -29,8 +29,8 @@
       the installed config.json, -ConfigFile, then -SandboxPath/-ProxyPort.
       Objects merge by key; lists replace. Setup applies them with
       Apply-Config.ps1.
-    - Installations from before the shared configuration must be removed
-      with Remove-AgentSandbox.ps1 first.
+    - Existing installations must be removed with their matching
+      Remove-AgentSandbox.ps1 first. There is no automatic migration.
     - On a new installation without -SandboxPath or a workspace in
       -ConfigFile, the workspace directory is prompted for interactively.
 #>
@@ -46,8 +46,8 @@ $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
 $Version = '0.10.0'
-$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
-$InstalledConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'    # baked in; not configurable
+$InstalledConfigFile = Join-Path $InstallRoot 'config.json'
 $SettingsDefaultsSource = Join-Path $PSScriptRoot 'config\agent-sandbox.json'
 $ConfigFunctionsSource = Join-Path $PSScriptRoot 'bootstrap\AgentSandboxConfig.ps1'
 $ApplyConfigSource = Join-Path $PSScriptRoot 'Apply-Config.ps1'
@@ -59,21 +59,19 @@ $DevShellSource = Join-Path $PSScriptRoot 'bootstrap\Enter-DevShell.ps1'
 $ClaudeWrapperSource = Join-Path $PSScriptRoot 'scripts\claude-wrapper.ps1'
 $CopilotWrapperSource = Join-Path $PSScriptRoot 'scripts\copilot-wrapper.ps1'
 $ManagedSettingsSource = Join-Path $PSScriptRoot 'config\managed-settings.json'
-$LauncherScript = Join-Path $ProgramDataRoot 'Start-AgentSandbox.ps1'
-$CheckerScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
-$ExposureCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxExposure.ps1'
-$BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
+$LauncherScript = Join-Path $InstallRoot 'Start-AgentSandbox.ps1'
+$CheckerScript = Join-Path $InstallRoot 'Check-AgentSandbox.ps1'
+$ExposureCheckScript = Join-Path $InstallRoot 'Test-AgentSandboxExposure.ps1'
+$BootstrapRoot = Join-Path $InstallRoot 'bootstrap'
 $ShellInitScript = Join-Path $BootstrapRoot 'Initialize-AgentSandboxShell.ps1'
 $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapperScript = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapperScript = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
 $ConfigFunctionsScript = Join-Path $BootstrapRoot 'AgentSandboxConfig.ps1'
-$ApplyConfigScript = Join-Path $ProgramDataRoot 'Apply-Config.ps1'
+$ApplyConfigScript = Join-Path $InstallRoot 'Apply-Config.ps1'
 $LaunchAsInstallRoot = Join-Path $env:ProgramFiles 'launch-as'
 $LaunchAsExe = Join-Path $LaunchAsInstallRoot 'launch-as.exe'
 $LaunchAsAdminExe = Join-Path $LaunchAsInstallRoot 'launch-as-admin.exe'
-$LegacyLaunchAsExe = Join-Path $ProgramDataRoot 'launch-as.exe'
-$LegacyLaunchAsAdminExe = Join-Path $ProgramDataRoot 'launch-as-admin.exe'
 $LaunchAsVersion = 'v1.3.0'
 $LaunchAsDownloadUri = "https://github.com/fmuecke/launch-as/releases/download/$LaunchAsVersion/launch-as-$LaunchAsVersion-win64.zip"
 $LaunchAsSha256 = '1CCDA8A7736C24846102D94A9C12A6D3F0C29733EB282504CCCCED69E0543A8F'
@@ -81,14 +79,14 @@ $SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1
 $WfpLockVersion = 'v0.10.0'
 $WfpLockUri = "https://github.com/fmuecke/wfp-lock/releases/download/$WfpLockVersion/wfp-lock-$WfpLockVersion-win64.zip"
 $WfpLockSha256 = 'B4A4E52FB92DDF6CE4E1AA97F713438388DCA0BA213C6077BE4DEB273BB207E8'
-$ToolsRoot = $ProgramDataRoot
+$ToolsRoot = $InstallRoot
 $WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
 $NetworkSandboxVersion = 'v0.3.0'
 $NetworkSandboxUri = "https://github.com/fmuecke/network-sandbox/releases/download/$NetworkSandboxVersion/network-sandbox-$NetworkSandboxVersion.zip"
 $NetworkSandboxSha256 = 'C4679D8CD93CDF31E88E290E2C881D30F6E18B67E6CF7382C21A43AD866D15D1'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
 $LegacyNetworkSandboxExe = Join-Path (Join-Path $env:ProgramFiles 'network-sandbox') 'network-sandbox.exe'
-$NetworkSandboxStateRoot = Join-Path $ProgramDataRoot 'network-sandbox'
+$NetworkSandboxStateRoot = Join-Path $InstallRoot 'network-sandbox'
 $NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.json'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
@@ -357,19 +355,6 @@ function Resolve-ProxyPort {
         $Port = $replacementPort
     }
 }
-function Remove-LegacyLaunchAsCopies {
-    param(
-        [string]$LegacyClientPath,
-        [string]$LegacyAdminPath
-    )
-
-    foreach ($legacyPath in $LegacyClientPath, $LegacyAdminPath) {
-        if (Test-Path -LiteralPath $legacyPath -PathType Leaf) {
-            Remove-Item -LiteralPath $legacyPath -Force
-            Write-Host "  removed obsolete launch-as copy: $legacyPath" -ForegroundColor Green
-        }
-    }
-}
 # Returns the installed settings, or $null on a new installation.
 function Get-InstalledSettings {
     if (-not (Test-Path -LiteralPath $InstalledConfigFile -PathType Leaf)) {
@@ -380,7 +365,7 @@ function Get-InstalledSettings {
         $installedConfig = Read-AgentSandboxConfig -Path $InstalledConfigFile
     }
     catch {
-        throw "An unreadable Agent Sandbox installation was found under $ProgramDataRoot. Uninstall it with Remove-AgentSandbox.ps1, then run setup again."
+        throw "An unreadable Agent Sandbox installation was found under $InstallRoot. Uninstall it with Remove-AgentSandbox.ps1, then run setup again."
     }
     if (-not $installedConfig.Contains('proxy') -or $installedConfig['setup'] -isnot [Collections.IDictionary]) {
         throw "The installed Agent Sandbox predates the shared configuration. Uninstall it with Remove-AgentSandbox.ps1, then run setup again."
@@ -475,8 +460,8 @@ if ((Test-Path $SandboxPath) -and -not $isInstalledWorkspace) {
 
 # --- 1. Install and enroll the broker-managed user ---------------------------
 Write-Step "Installing launch-as $LaunchAsVersion and creating '$UserName'"
-if (-not (Test-Path $ProgramDataRoot)) {
-    New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null
+if (-not (Test-Path $InstallRoot)) {
+    New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 }
 Install-LaunchAs -InstallRoot $LaunchAsInstallRoot `
     -DownloadUri $LaunchAsDownloadUri -ExpectedSha256 $LaunchAsSha256
@@ -560,18 +545,18 @@ Write-Host "  hidden from the login screen" -ForegroundColor Green
 
 # --- 1c. Protected proxy and account-scoped network lock --------------------
 Write-Step "Installing network proxy $NetworkSandboxVersion and wfp-lock $WfpLockVersion"
-New-Item -ItemType Directory -Path $ProgramDataRoot -Force | Out-Null
-if ((Get-Item -LiteralPath $ProgramDataRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-    throw "Refusing to install into linked ProgramData directory: $ProgramDataRoot"
+New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+if ((Get-Item -LiteralPath $InstallRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw "Refusing to install into linked Program Files directory: $InstallRoot"
 }
-icacls $ProgramDataRoot /reset | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $ProgramDataRoot." }
+icacls $InstallRoot /reset | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $InstallRoot." }
 $adminRootAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights '(OI)(CI)F'
 $systemRootAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F'
 $usersRootAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
-icacls $ProgramDataRoot /inheritance:r /grant:r $adminRootAce $systemRootAce $usersRootAce | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Could not protect $ProgramDataRoot." }
-Set-AdminOwner -Path $ProgramDataRoot
+icacls $InstallRoot /inheritance:r /grant:r $adminRootAce $systemRootAce $usersRootAce | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not protect $InstallRoot." }
+Set-AdminOwner -Path $InstallRoot
 New-Item -ItemType Directory -Path $NetworkSandboxStateRoot -Force | Out-Null
 if ((Get-Item -LiteralPath $NetworkSandboxStateRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
     throw "Refusing to use linked proxy state directory: $NetworkSandboxStateRoot"
@@ -613,8 +598,8 @@ Install-PinnedExecutable -Name 'network-sandbox' -DownloadUri $NetworkSandboxUri
 
 # --- 1d. Write configuration and apply network settings ----------------------
 # config.json is the single source of truth for settings. It inherits the
-# admin-write / Users-RX ProgramData ACL; Apply-Config re-locks it.
-Write-Step "Writing sandbox configuration to ProgramData"
+# admin-write / Users-RX Program Files ACL; Apply-Config re-locks it.
+Write-Step "Writing sandbox configuration to Program Files"
 if ((Test-Path -LiteralPath $InstalledConfigFile) -and (Get-Item -LiteralPath $InstalledConfigFile -Force).LinkType) {
     throw "Refusing to write linked config: $InstalledConfigFile"
 }
@@ -697,12 +682,10 @@ else {
 
 # Standard users can run machine-wide tools without extra Program Files grants.
 
-# --- 6. Copy trusted launch artifacts into ProgramData -----------------------
-# ProgramData is traversable by Users by default, so AgentSandbox can reach the
-# launcher/check/bootstrap regardless of where this repo was cloned (no
-# profile-traversal trap). We copy them here and LOCK them admin-write / Users-RX,
-# so the sandbox user can run them but cannot rewrite what executes at launch.
-Write-Step "Copying trusted launch artifacts to ProgramData"
+# --- 6. Copy trusted launch artifacts into Program Files ---------------------
+# Keep launch files outside the writable workspace and readable by AgentSandbox.
+# Lock them admin-write / Users-RX so the agent cannot rewrite launch code.
+Write-Step "Copying trusted launch artifacts to Program Files"
 
 $bootstrapDir = $BootstrapRoot
 if (-not (Test-Path $bootstrapDir)) { New-Item -ItemType Directory -Path $bootstrapDir -Force | Out-Null }
@@ -725,13 +708,13 @@ foreach ($artifact in $launchArtifacts) {
     Write-Host "  wrote $($artifact.Destination)" -ForegroundColor Green
 }
 
-# Lock ProgramData artifacts down: admin-write only, Users get read+execute
+# Lock Program Files artifacts down: admin-write only, Users get read+execute
 # (read/run but not modify). Mirrors the managed-settings.json lock so the
 # sandbox user can't tamper with config or what runs at launch.
 $adminFullInheritAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights '(OI)(CI)F'
 $systemFullInheritAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F'
 $usersReadExecuteInheritAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
-icacls $ProgramDataRoot /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
+icacls $InstallRoot /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
 icacls $bootstrapDir /inheritance:r /grant $adminFullInheritAce $systemFullInheritAce $usersReadExecuteInheritAce | Out-Null
 $adminFullAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights 'F'
 $systemFullAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights 'F'
@@ -750,12 +733,7 @@ foreach ($protectedFile in @(
     )) {
     icacls $protectedFile /inheritance:r /grant $adminFullAce $systemFullAce $usersReadExecuteAce | Out-Null
 }
-Write-Host "  locked ProgramData artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
-Remove-LegacyLaunchAsCopies -LegacyClientPath $LegacyLaunchAsExe -LegacyAdminPath $LegacyLaunchAsAdminExe
-$obsoleteSurfaceCheck = Join-Path $ProgramDataRoot 'Test-AgentSandboxAttackSurfaces.ps1'
-if (Test-Path -LiteralPath $obsoleteSurfaceCheck -PathType Leaf) {
-    Remove-Item -LiteralPath $obsoleteSurfaceCheck -Force
-}
+Write-Host "  locked Program Files artifacts: Administrators/SYSTEM full, Users read+execute" -ForegroundColor Green
 
 # --- 6b. Desktop shortcut for double-click launch ----------------------------
 Write-Step "Creating desktop shortcut"

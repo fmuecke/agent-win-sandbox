@@ -25,9 +25,9 @@ $applyNetwork = Get-ScriptSection -Source $applySource -StartMarker '# --- Proxy
 foreach ($case in 'apply', 'port-in-use', 'stop-failure', 'apply-failure', 'verify-failure') {
     & {
         $UserName = 'AgentSandbox'
-        $NetworkSandboxStateRoot = 'C:\fixture'
-        $NetworkSandboxConfig = 'C:\fixture\network-sandbox.json'
-        $ConfigFile = 'C:\fixture\config.json'
+        $NetworkSandboxStateRoot = 'C:\Program Files\fixture'
+        $NetworkSandboxConfig = 'C:\Program Files\fixture\network-sandbox.json'
+        $ConfigFile = 'C:\Program Files\fixture\config.json'
         $NetworkSandboxExe = 'Invoke-TestProxy'
         $WfpLockExe = 'Invoke-TestNetworkLock'
         $settings = Read-AgentSandboxConfig -Path (Join-Path $PSScriptRoot '..\config\agent-sandbox.json')
@@ -85,7 +85,7 @@ foreach ($case in 'apply', 'port-in-use', 'stop-failure', 'apply-failure', 'veri
         if ($case -eq 'apply') {
             $policy = $policies[0] | ConvertFrom-Json
             if ($policy.port -ne 18080 -or $policy.privateaddresses -cne 'deny' -or
-                $policy.logfile -cne 'C:\fixture\network-sandbox.log' -or ($policy.allowed -join ',') -cne 'example.com:443') {
+                $policy.logfile -cne 'C:\Program Files\fixture\network-sandbox.log' -or ($policy.allowed -join ',') -cne 'example.com:443') {
                 throw 'Generated proxy policy is wrong.'
             }
         }

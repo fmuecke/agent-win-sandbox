@@ -11,8 +11,8 @@
 .DESCRIPTION
     This is the teardown counterpart to Setup-AgentSandbox.ps1. It removes the
     fixed AgentSandbox local user, that user's Windows profile,
-    the hidden-login-screen registry value, generated ProgramData files under
-    the agent-win-sandbox ProgramData directory, the installed network executables,
+    the hidden-login-screen registry value, files under
+    Program Files\agent-win-sandbox, including the network executables,
     and the Public Desktop shortcut. It also uninstalls launch-as when no other
     broker accounts remain.
 
@@ -34,15 +34,15 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
-$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'    # baked in; not configurable
-$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
+$InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'    # baked in; not configurable
+$ConfigFile = Join-Path $InstallRoot 'config.json'
 $LaunchAsAdminExe = Join-Path (Join-Path $env:ProgramFiles 'launch-as') 'launch-as-admin.exe'
 $LaunchAsVersion = 'v1.3.0'
 $SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
-$ToolsRoot = $ProgramDataRoot
+$ToolsRoot = $InstallRoot
 $WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
 $NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path $ProgramDataRoot 'network-sandbox') 'network-sandbox.json'
+$NetworkSandboxConfig = Join-Path (Join-Path $InstallRoot 'network-sandbox') 'network-sandbox.json'
 $ShortcutPaths = @(
     (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
@@ -271,7 +271,7 @@ if ($profile) {
 else {
     Write-Host "  profile: not found" -ForegroundColor Yellow
 }
-Write-Host "  ProgramData: $ProgramDataRoot"
+Write-Host "  Program Files: $InstallRoot"
 Write-Host "  shared broker: $(Split-Path $LaunchAsAdminExe -Parent) (removed when no other accounts remain)"
 Write-Host "  shortcuts: $($ShortcutPaths -join ', ')"
 if ([string]::IsNullOrWhiteSpace($ResolvedSandboxPath)) {
@@ -283,7 +283,7 @@ else {
 
 if (-not $Force -and -not $WhatIfPreference) {
     Write-Host ''
-    Write-Host 'This removes the sandbox user, profile, ProgramData state, shortcuts, and installed network components.' -ForegroundColor Yellow
+    Write-Host 'This removes the sandbox user, profile, Program Files state, shortcuts, and installed network components.' -ForegroundColor Yellow
     Write-Host 'It also uninstalls launch-as if no other broker accounts remain.' -ForegroundColor Yellow
     Write-Host 'The shared workspace directory and its ACLs are left intact for manual review.' -ForegroundColor Yellow
     Write-Host ''
@@ -348,21 +348,21 @@ else {
     Write-Skipped "local user '$UserName' (not found)"
 }
 
-# --- 6. Remove generated ProgramData files -----------------------------------
-Write-Step "Removing ProgramData sandbox files"
-if (Test-Path $ProgramDataRoot) {
-    if ($PSCmdlet.ShouldProcess($ProgramDataRoot, 'Remove generated ProgramData files recursively')) {
-        $expectedRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'agent-win-sandbox'
-        if ([IO.Path]::GetFullPath($ProgramDataRoot) -ine [IO.Path]::GetFullPath($expectedRoot) -or
-            ((Get-Item -LiteralPath $ProgramDataRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Refusing to remove an unexpected or linked ProgramData directory: $ProgramDataRoot"
+# --- 6. Remove installed sandbox files ---------------------------------------
+Write-Step "Removing Program Files sandbox files"
+if (Test-Path $InstallRoot) {
+    if ($PSCmdlet.ShouldProcess($InstallRoot, 'Remove installed sandbox files recursively')) {
+        $expectedRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
+        if ([IO.Path]::GetFullPath($InstallRoot) -ine [IO.Path]::GetFullPath($expectedRoot) -or
+            ((Get-Item -LiteralPath $InstallRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing to remove an unexpected or linked Program Files directory: $InstallRoot"
         }
-        Remove-Item -LiteralPath $ProgramDataRoot -Recurse -Force
-        Write-Removed $ProgramDataRoot
+        Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+        Write-Removed $InstallRoot
     }
 }
 else {
-    Write-Skipped "$ProgramDataRoot (not found)"
+    Write-Skipped "$InstallRoot (not found)"
 }
 
 # --- 7. Remove the shared broker when unused ---------------------------------
@@ -372,7 +372,7 @@ Remove-LaunchAsInstallation
 # --- 8. Done ------------------------------------------------------------------
 Write-Step "Removal complete"
 $workspaceMessage = if ([string]::IsNullOrWhiteSpace($ResolvedSandboxPath)) {
-    '  (unknown - config was missing or unreadable before ProgramData cleanup)'
+    '  (unknown - config was missing or unreadable before Program Files cleanup)'
 }
 else {
     "  $ResolvedSandboxPath"

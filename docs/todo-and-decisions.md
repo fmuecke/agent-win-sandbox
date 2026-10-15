@@ -33,17 +33,18 @@ _Last updated: 2026-08-31_
 ### Filesystem and setup state
 
 - **Control plane:** keep config, launcher, checker, and bootstrap in
-  `C:\ProgramData\agent-win-sandbox`; let `launch-as` own its broker and
+  `C:\Program Files\agent-win-sandbox`; let `launch-as` own its broker and
   client/admin tools under `C:\Program Files\launch-as`; keep managed settings
   in `C:\Program Files\ClaudeCode\managed-settings.json`. These files are
   admin-write and Users-RX/read, preventing sandbox-user poisoning. Program
-  Files is required because current Claude Code no longer supports the legacy
+  Files keeps the control plane readable under the planned launch-as read
+  restrictions. Claude Code no longer supports the legacy
   ProgramData managed-settings location on Windows.
 - **Workspace:** default to `C:\AgentSandbox`; prompt for the complete path
   without appending a child directory. Its fixed name is for awareness, not
   security. The `repos\` subdirectory was unnecessary; the workspace README
   explains its purpose.
-- **Generated state:** setup copies ProgramData artifacts from the repository,
+- **Generated state:** setup copies trusted artifacts from the repository,
   writes the resolved sandbox path and nested setup metadata to one
   `config.json`, and deploys trusted daily entrypoints there. The source repo
   remains canonical; a separate setup-marker file is unnecessary.
@@ -94,13 +95,13 @@ _Last updated: 2026-08-31_
 
 ### Completed filesystem migration
 
-- [x] Moved the bootstrap to `C:\ProgramData\agent-win-sandbox\bootstrap\`.
+- [x] Moved the bootstrap to `C:\Program Files\agent-win-sandbox\bootstrap\`.
 - [x] Changed the workspace default from `C:\dev\repo` to
   `C:\AgentSandbox`; setup now proposes the complete folder and grants Modify
   on that tree.
 - [x] Added the required Public Desktop shortcut and updated checker and README
   paths.
-- [x] Deployed the launcher and checker to trusted ProgramData rather than
+- [x] Deployed the launcher and checker to trusted Program Files rather than
   launching from the mutable repository; the launch-as component is installed
   independently under Program Files.
 - [ ] Update the Windows Terminal profile snippet after finalizing the launcher

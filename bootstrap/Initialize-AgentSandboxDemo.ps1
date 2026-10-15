@@ -55,7 +55,7 @@ try {
 
     Write-Host 'Demo configured. Try sandbox-exposure, claude, or copilot in the AgentSandbox console.' -ForegroundColor Cyan
     Write-Host 'Git and Visual Studio are not preinstalled in this fresh guest.' -ForegroundColor Yellow
-    $launcher = Join-Path (Join-Path $env:ProgramData 'agent-win-sandbox') 'Start-AgentSandbox.ps1'
+    $launcher = Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'Start-AgentSandbox.ps1'
     # The Sandbox logon command has a hidden console. Open a separate visible
     # console so the initial broker session is available on the guest desktop.
     Start-Process -FilePath $pwsh -WindowStyle Normal `

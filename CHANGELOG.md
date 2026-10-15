@@ -3,6 +3,15 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
+## Unreleased
+
+- Fixed: The launcher rejected protected directories with inherit-only
+  CREATOR OWNER entries, incorrectly reporting them as writable.
+- Changed: Install network tools, configuration, bootstrap, and runtime scripts
+  under `C:\Program Files\agent-win-sandbox` in preparation for the planned
+  `launch-as --restrict-reads` option excluding ProgramData. Existing installations
+  must be removed with their matching removal script first; no migration is provided.
+
 ## 0.10.0 - 2026-10-09
 
 - Added: One admin-write `config.json` holds the workspace, proxy port, proxy

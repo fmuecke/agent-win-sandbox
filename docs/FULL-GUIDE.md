@@ -14,7 +14,7 @@ start your coding agent as needed.
 1. **`Setup-AgentSandbox.ps1`** (elevated, once) creates and hardens the
    `AgentSandbox` local user, creates its workspace, applies ACLs and
    account-scoped WFP policy, installs the proxy and locked
-   ProgramData control files, checks PowerShell 7, and creates the shortcut.
+   Program Files control files, checks PowerShell 7, and creates the shortcut.
 2. **`managed-settings.json`** (optional, elevated) deploys Claude Code policy
    that disables bypass/auto modes, restricts web, hooks, MCP, plugin-sideload,
    and agent-control-file surfaces, and pre-approves routine read-only Git and
@@ -49,9 +49,9 @@ Setup creates `AgentSandbox` when absent and:
 - Merges settings over the installed `config.json` on update; `Apply-Config.ps1`
   applies edited settings without rerunning setup.
 - Installs both network executables in the private, admin-write
-  `C:\ProgramData\agent-win-sandbox` folder. Removal deletes that folder
+  `C:\Program Files\agent-win-sandbox` folder. Removal deletes that folder
   with the rest of the generated state; older shared Program Files copies remain.
-- Records configuration in `C:\ProgramData\agent-win-sandbox\config.json` and
+- Records configuration in `C:\Program Files\agent-win-sandbox\config.json` and
   installs the launcher, checker, and shell commands there with admin-write /
   Users-RX permissions. After hash verification, `launch-as-admin` installs the
   broker and all four launch-as executables together under
@@ -94,7 +94,7 @@ devshell       # Activate the Visual Studio Developer Shell in this terminal
 claude         # Install, update, or launch Claude Code
 copilot        # Install, update, or launch GitHub Copilot CLI
 sandbox-check  # Run the read-only checker
-sandbox-exposure # Run the standalone exposure checker with -SandboxPath
+sandbox-exposure # Run the standalone exposure checker with -AllowedPath
 sandbox-help   # Show this list
 ```
 
@@ -131,14 +131,13 @@ Run from an elevated PowerShell:
 Setup prompts for the workspace base (Enter accepts `C:\dev`), confirmation to
 reuse an existing workspace, and optional managed-settings deployment. It
 installs and enrolls the broker-managed account without displaying its password.
-It upgrades supported brokered installations from `v1.0.0-preview`,
-`v1.1.0-preview`, and `v1.1.0`; unknown or incomplete installations require
-removal with their matching Agent Sandbox version first.
+Existing ProgramData installations require removal with their matching
+Agent Sandbox version first; there is no automatic migration.
 
 Start the sandbox:
 
 ```powershell
-& 'C:\ProgramData\agent-win-sandbox\Start-AgentSandbox.ps1'
+& 'C:\Program Files\agent-win-sandbox\Start-AgentSandbox.ps1'
 ```
 
 The `Agent Sandbox` desktop shortcut does the same. Verify inside it with:
@@ -166,7 +165,7 @@ Run from an elevated PowerShell:
 
 This removes the sandbox account and profile, including its per-user agent
 installs, settings, and Copilot PAT environment variable. It also removes
-the broker enrollment, generated ProgramData state, network lock, proxy process,
+the broker enrollment, generated Program Files state, network lock, proxy process,
 hidden-login registry value, and desktop shortcuts. It keeps the workspace—for example,
 `C:\AgentSandbox`—and its ACLs. Close all Agent Sandbox terminals first;
 removal stops before changing state when the `AgentSandbox` profile is still

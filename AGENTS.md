@@ -29,12 +29,12 @@ user `AgentSandbox`.
 ## Repository map
 
 - `Setup-AgentSandbox.ps1`: elevated provisioning, ACLs, hardening, bootstrap.
-- `Remove-AgentSandbox.ps1`: elevated removal of the account, login-screen registry value, and generated ProgramData state.
+- `Remove-AgentSandbox.ps1`: elevated removal of the account, login-screen registry value, and generated Program Files state.
 - `Start-AgentSandbox.ps1`: normal daily PowerShell 7 launcher using
   `launch-as`.
 - `Check-AgentSandbox.ps1`: read-only verifier.
 - `bootstrap/`: shell initialization and Developer Shell command copied to
-  locked ProgramData.
+  locked Program Files.
 - `scripts/*-wrapper.ps1`: protected per-agent install/update/launch commands.
 - `config/managed-settings.json`: policy template for
   `C:\Program Files\ClaudeCode\managed-settings.json`.
@@ -53,10 +53,10 @@ user `AgentSandbox`.
   ```
 
 - Do not run setup or removal casually: they change local users, ACLs, registry,
-  policy, and ProgramData. Prefer parser checks and review; test real changes on
+  policy, and Program Files. Prefer parser checks and review; test real changes on
   a disposable VM or dedicated development machine.
 - Use the repository `Check-AgentSandbox.ps1` only for explicit installed-state
-  verification. Do not elevate it or use the ProgramData copy unless explicitly
+  verification. Do not elevate it or use the Program Files copy unless explicitly
   requested.
 
 ## PowerShell and security

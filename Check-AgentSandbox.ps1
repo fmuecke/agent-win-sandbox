@@ -44,10 +44,10 @@
     Machine-wide Claude Code policy registry key.
 
 .PARAMETER ConfigFile
-    agent-win-sandbox ProgramData config file.
+    agent-win-sandbox Program Files config file.
 
 .EXAMPLE
-    & "$env:ProgramData\agent-win-sandbox\Check-AgentSandbox.ps1"
+    & "$env:ProgramFiles\agent-win-sandbox\Check-AgentSandbox.ps1"
     Runs all checks and prints a PASS/WARN/FAIL summary.
 
 .NOTES
@@ -60,18 +60,18 @@
 [CmdletBinding()]
 param(
     [string]$UserName = 'AgentSandbox',
-    [string]$ShellInitScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'Initialize-AgentSandboxShell.ps1'),
-    [string]$DevShellScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'Enter-DevShell.ps1'),
-    [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
-    [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
-    [string]$LauncherScript = (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'Start-AgentSandbox.ps1'),
+    [string]$ShellInitScript = (Join-Path (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'bootstrap') 'Initialize-AgentSandboxShell.ps1'),
+    [string]$DevShellScript = (Join-Path (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'bootstrap') 'Enter-DevShell.ps1'),
+    [string]$ClaudeWrapperScript = (Join-Path (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'bootstrap') 'claude-wrapper.ps1'),
+    [string]$CopilotWrapperScript = (Join-Path (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'bootstrap') 'copilot-wrapper.ps1'),
+    [string]$LauncherScript = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'Start-AgentSandbox.ps1'),
     [string]$LaunchAsExe = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles'))'launch-as') 'launch-as.exe'),
     [string]$LaunchAsAdminExe = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles'))'launch-as') 'launch-as-admin.exe'),
-    [string]$InstalledCheckScript = (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'Check-AgentSandbox.ps1'),
+    [string]$InstalledCheckScript = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'Check-AgentSandbox.ps1'),
     [string]$ManagedSettings = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles'))'ClaudeCode') 'managed-settings.json'),
     [string]$ManagedSettingsRegistryPath = 'HKLM:\SOFTWARE\Policies\ClaudeCode',
     [string]$ManagedSettingsRegistryValue = 'Settings',
-    [string]$ConfigFile = (Join-Path (Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox') 'config.json')
+    [string]$ConfigFile = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'config.json')
 )
 
 $Version = '0.10.0'
@@ -270,7 +270,7 @@ if (-not $isAdmin) {
     Write-Host "Note: not elevated - some checks (user-rights, HKLM, other profiles) may be limited." -ForegroundColor DarkYellow
 }
 
-# --- 0. ProgramData config ----------------------------------------------------
+# --- 0. Program Files config -------------------------------------------------
 Section "Sandbox configuration"
 $SandboxPath = $null
 if (-not (Test-Path $ConfigFile)) {
@@ -336,8 +336,8 @@ else {
         Fail "Config file could not be read: $($_.Exception.Message)"
     }
 
-    $programDataRoot = Split-Path $ConfigFile -Parent
-    Test-AdminWriteOnlyPath -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
+    $installRoot = Split-Path $ConfigFile -Parent
+    Test-AdminWriteOnlyPath -Path $installRoot -Description 'Program Files sandbox directory' -UserName $UserName
     Test-AdminWriteOnlyPath -Path $ConfigFile -Description 'Sandbox config file' -UserName $UserName
     Test-AdminWriteOnlyPath -Path $ConfigFunctionsScript -Description 'Config functions script' -UserName $UserName
     Test-AdminWriteOnlyPath -Path $ApplyConfigScript -Description 'Apply-Config script' -UserName $UserName
@@ -470,8 +470,8 @@ else {
 
 # --- 6. Installed scripts + tooling ------------------------------------------
 Section "Installed scripts & toolchain"
-$programDataRoot = Split-Path $ConfigFile -Parent
-Test-AdminWriteOnlyPath -Path $programDataRoot -Description 'ProgramData sandbox directory' -UserName $UserName
+$installRoot = Split-Path $ConfigFile -Parent
+Test-AdminWriteOnlyPath -Path $installRoot -Description 'Program Files sandbox directory' -UserName $UserName
 
 if (Test-Path $LauncherScript) {
     Pass "Launcher present: $LauncherScript"
@@ -504,7 +504,7 @@ foreach ($component in @(
         [pscustomobject]@{ Description = 'wfp-lock'; Path = $WfpLockExe },
         [pscustomobject]@{ Description = 'network-sandbox'; Path = $NetworkSandboxExe },
         [pscustomobject]@{ Description = 'proxy policy'; Path = $NetworkSandboxConfig },
-        [pscustomobject]@{ Description = 'exposure checker'; Path = (Join-Path $programDataRoot 'Test-AgentSandboxExposure.ps1') }
+        [pscustomobject]@{ Description = 'exposure checker'; Path = (Join-Path $installRoot 'Test-AgentSandboxExposure.ps1') }
     )) {
     if (Test-Path -LiteralPath $component.Path -PathType Leaf) {
         Pass "$($component.Description) present: $($component.Path)"

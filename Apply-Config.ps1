@@ -11,7 +11,7 @@
 
 .DESCRIPTION
     Part of agent-win-sandbox. Reads
-    C:\ProgramData\agent-win-sandbox\config.json, validates it, regenerates
+    C:\Program Files\agent-win-sandbox\config.json, validates it, regenerates
     the proxy policy, stops the running proxy, and replaces the wfp-lock policy
     with the proxy endpoint plus the configured directEndpoints. The launcher
     restarts the proxy as the launcher account on the next start.
@@ -23,7 +23,7 @@
     Workspace changes are not applied here; run Setup-AgentSandbox.ps1.
 
 .EXAMPLE
-    & "$env:ProgramData\agent-win-sandbox\Apply-Config.ps1"
+    & "$env:ProgramFiles\agent-win-sandbox\Apply-Config.ps1"
 #>
 
 [CmdletBinding()]
@@ -32,11 +32,11 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $UserName = 'AgentSandbox'
-$ProgramDataRoot = Join-Path $env:ProgramData 'agent-win-sandbox'
-$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
-$WfpLockExe = Join-Path $ProgramDataRoot 'wfp-lock.exe'
-$NetworkSandboxExe = Join-Path $ProgramDataRoot 'network-sandbox.exe'
-$NetworkSandboxStateRoot = Join-Path $ProgramDataRoot 'network-sandbox'
+$InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
+$ConfigFile = Join-Path $InstallRoot 'config.json'
+$WfpLockExe = Join-Path $InstallRoot 'wfp-lock.exe'
+$NetworkSandboxExe = Join-Path $InstallRoot 'network-sandbox.exe'
+$NetworkSandboxStateRoot = Join-Path $InstallRoot 'network-sandbox'
 $NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.json'
 $AdminFullAce = '*S-1-5-32-544:F'
 $SystemFullAce = '*S-1-5-18:F'

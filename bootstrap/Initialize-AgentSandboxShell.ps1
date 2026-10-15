@@ -6,16 +6,16 @@
 # not enter the Visual Studio Developer Shell or start an agent.
 #Requires -Version 7.0
 $Version = '0.10.0'
-# Not %ProgramData%: AgentSandbox can redirect its own environment variables.
-$ProgramDataRoot = Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox'
-$ConfigFile = Join-Path $ProgramDataRoot 'config.json'
-$BootstrapRoot = Join-Path $ProgramDataRoot 'bootstrap'
+# Not %ProgramFiles%: AgentSandbox can redirect its own environment variables.
+$InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
+$ConfigFile = Join-Path $InstallRoot 'config.json'
+$BootstrapRoot = Join-Path $InstallRoot 'bootstrap'
 $DevShellScript = Join-Path $BootstrapRoot 'Enter-DevShell.ps1'
 $ClaudeWrapper = Join-Path $BootstrapRoot 'claude-wrapper.ps1'
 $CopilotWrapper = Join-Path $BootstrapRoot 'copilot-wrapper.ps1'
-$CheckScript = Join-Path $ProgramDataRoot 'Check-AgentSandbox.ps1'
-$ExposureCheckScript = Join-Path $ProgramDataRoot 'Test-AgentSandboxExposure.ps1'
-$WfpLockExe = Join-Path $ProgramDataRoot 'wfp-lock.exe'
+$CheckScript = Join-Path $InstallRoot 'Check-AgentSandbox.ps1'
+$ExposureCheckScript = Join-Path $InstallRoot 'Test-AgentSandboxExposure.ps1'
+$WfpLockExe = Join-Path $InstallRoot 'wfp-lock.exe'
 $ConfigFunctionsScript = Join-Path $BootstrapRoot 'AgentSandboxConfig.ps1'
 
 function Stop-ShellInitialization {
@@ -183,9 +183,9 @@ Set-Alias -Name copilot -Value $CopilotWrapper -Scope Global
 Set-Alias -Name sandbox-check -Value $CheckScript -Scope Global
 
 function global:Invoke-SandboxExposure {
-    $installedRoot = Join-Path ([IO.Path]::GetPathRoot([Environment]::SystemDirectory)) 'ProgramData\agent-win-sandbox'
+    $installedRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
     $installedConfig = Get-Content (Join-Path $installedRoot 'config.json') -Raw | ConvertFrom-Json
-    & (Join-Path $installedRoot 'Test-AgentSandboxExposure.ps1') -SandboxPath $installedConfig.workspace @args
+    & (Join-Path $installedRoot 'Test-AgentSandboxExposure.ps1') -AllowedPath $installedConfig.workspace @args
 }
 Set-Alias -Name sandbox-exposure -Value Invoke-SandboxExposure -Scope Global
 

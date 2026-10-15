@@ -120,7 +120,7 @@ filesystem policy synchronized with the current command's permission profile.
 
 Agent Sandbox implication:
 
-- A setup marker under `C:\ProgramData\agent-win-sandbox` would be useful even
+- A setup marker under `C:\Program Files\agent-win-sandbox` would be useful even
   without porting the full runtime refresh system.
 - If we keep one fixed workspace grant, refresh can remain simple.
 - If we add per-repo/per-run permissions, we need Codex-like ACL reconciliation.
@@ -274,7 +274,7 @@ Codex separates trusted control-plane files from writable workspaces:
 
 Agent Sandbox implication:
 
-- Keep `C:\ProgramData\agent-win-sandbox\config.json`, launcher/checker, and
+- Keep `C:\Program Files\agent-win-sandbox\config.json`, launcher/checker, and
   bootstrap scripts admin-write / Users-RX.
 - Keep `C:\Program Files\ClaudeCode\managed-settings.json` admin-write.
 - Do not put trusted launch scripts under the writable workspace.
@@ -283,8 +283,8 @@ Agent Sandbox implication:
 
 ## What We Can Adapt Soon
 
-1. Keep setup metadata in the ProgramData config.
-2. Keep checker coverage for ProgramData locks and setup metadata compatibility.
+1. Keep setup metadata in the Program Files config.
+2. Keep checker coverage for Program Files locks and setup metadata compatibility.
 3. Keep optional outbound firewall blocking scoped to `AgentSandbox`.
 4. Document clearly that deny-network-logon is not outbound network isolation.
 5. Keep trusted launcher/check/bootstrap/config/policy files out of the writable
@@ -315,7 +315,7 @@ launcher/runner helper plus a PowerShell setup/check layer around it.
 For this repository, the practical path is:
 
 1. Keep the current single `AgentSandbox` user for now.
-2. Add Codex-style setup state/versioning under ProgramData.
+2. Add Codex-style setup state/versioning under Program Files.
 3. Add optional account-scoped outbound firewall blocking.
 4. Keep using launch-as until we need restricted tokens or per-run writable
    roots.
