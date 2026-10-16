@@ -128,7 +128,7 @@ $SchemaVersion = 'agent-sandbox-assessment/1'
 $CheckerVersion = '0.2.0'
 $ReportHeader = 'Agent sandbox exposure checker - inside-only assessment | Copyright (c) 2026 Florian Mücke'
 $ProfileId = 'default'
-$ProfileVersion = '5'
+$ProfileVersion = '6'
 $MinimumCoverageForVerdict = 0.6
 # Every verdict is bounded to the OS process: tools that execute outside it
 # (MCP servers, account connectors, browser actions) are not assessed. Egress
@@ -231,8 +231,12 @@ $CriterionRegistry = @(
         Remediation = 'Launch the agent without inheritable handles from a more privileged or other-identity process (for example, start it through a broker that clears handle inheritance).'
     }
     @{ Id = 'A-SVC'; Dimension = 'Authority'; Check = 'INDIRECT'; Essential = $true; Severity = 'critical'
-        Title = 'Service and task binaries and configuration are not agent-writable'
-        Remediation = 'Fix ACLs on the listed service/task binaries, directories, registry keys and service objects.' 
+        Title = 'Service binaries and configuration are not agent-writable'
+        Remediation = 'Fix ACLs on the listed service binaries, directories, registry keys and service objects.'
+    }
+    @{ Id = 'A-TASK'; Dimension = 'Authority'; Check = 'INDIRECT'; Essential = $true; Severity = 'critical'
+        Title = 'Scheduled-task programs and configuration are not agent-writable'
+        Remediation = 'Fix ACLs on the listed task programs, argument paths, directories and COM registrations.'
     }
     @{ Id = 'A-HANDOFF-SHARED'; Dimension = 'Authority'; Check = 'HANDOFF'; Essential = $true; Severity = 'high'
         Title = 'No agent-writable location is executed by other identities'
@@ -496,6 +500,46 @@ public static class AgentSandboxAssessmentNative
     [DllImport("kernel32.dll")] private static extern int GetProcessIdOfThread(IntPtr thread);
     [DllImport("kernel32.dll")] private static extern uint GetFileType(IntPtr file);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern int GetFinalPathNameByHandleW(IntPtr file, StringBuilder path, int length, uint flags);
+    [DllImport("ntdll.dll")] private static extern int NtQueryInformationFile(IntPtr file, out IoStatusBlock status, out long information, int length, int infoClass);
+    [DllImport("ntdll.dll")] private static extern int NtQueryVolumeInformationFile(IntPtr file, out IoStatusBlock status, IntPtr information, int length, int infoClass);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoStatusBlock { public IntPtr Status; public IntPtr Information; }
+
+    // File index (FileInternalInformation) and volume serial
+    // (FileFsVolumeInformation); neither needs an access right on the handle.
+    private static bool TryGetFileIdentity(IntPtr file, out uint volume, out long index)
+    {
+        IoStatusBlock io;
+        volume = 0;
+        if (NtQueryInformationFile(file, out io, out index, 8, 6) != 0) { return false; }
+        IntPtr buffer = Marshal.AllocHGlobal(128);
+        try
+        {
+            // VolumeCreationTime (8 bytes), then VolumeSerialNumber. A long
+            // volume label returns STATUS_BUFFER_OVERFLOW with the fixed part filled.
+            int status = NtQueryVolumeInformationFile(file, out io, buffer, 128, 1);
+            if (status != 0 && status != unchecked((int)0x80000005)) { return false; }
+            volume = unchecked((uint)Marshal.ReadInt32(buffer, 8));
+            return true;
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    // True when the path opens the same file as the handle. A name the file
+    // was opened by can be stale after a rename. Zero desired access reads
+    // metadata only and ignores share modes. The open still needs traverse
+    // access; without it the name is rejected and the handle stays unresolved.
+    public static bool IsSameFile(IntPtr handle, string path)
+    {
+        uint heldVolume, namedVolume;
+        long heldIndex, namedIndex;
+        if (!TryGetFileIdentity(handle, out heldVolume, out heldIndex)) { return false; }
+        IntPtr other = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero);
+        if (other == new IntPtr(-1)) { return false; }
+        try { return TryGetFileIdentity(other, out namedVolume, out namedIndex) && namedVolume == heldVolume && namedIndex == heldIndex; }
+        finally { CloseHandle(other); }
+    }
 
     private static IntPtr identificationToken = IntPtr.Zero;
     private static IntPtr serviceManager = IntPtr.Zero;
@@ -936,8 +980,9 @@ public static class AgentSandboxAssessmentNative
                         // The normalized name needs traverse access to every
                         // ancestor, which this identity can be denied; the
                         // name the file was opened by (FILE_NAME_OPENED) does not.
-                        if (written <= 0) { written = GetFinalPathNameByHandleW(handle, path, path.Capacity, 8); }
-                        if (written > 0 && written < path.Capacity) { held.Path = path.ToString(); }
+                        bool opened = false;
+                        if (written <= 0) { written = GetFinalPathNameByHandleW(handle, path, path.Capacity, 8); opened = true; }
+                        if (written > 0 && written < path.Capacity && (!opened || IsSameFile(handle, path.ToString()))) { held.Path = path.ToString(); }
                         break;
                     case "Key": held.Path = QueryObjectString(handle, 1, scratch, 0x2000); break;
                     default: continue;
@@ -1154,7 +1199,7 @@ function Get-ErrorCategory {
 function Set-CriterionOutcome {
     param(
         [Parameter(Mandatory)][string]$Id,
-        [Parameter(Mandatory)][ValidateSet('met', 'unmet', 'unknown', 'na')][string]$Outcome,
+        [Parameter(Mandatory)][ValidateSet('met', 'unmet', 'unknown', 'na', 'out-of-reach')][string]$Outcome,
         [string]$Reason,
         [string]$Method,
         [switch]$Critical,
@@ -2161,7 +2206,7 @@ function Get-AdjacentDirectories {
         # A denied root listing hides child names from the agent as well; the
         # root itself becomes the target so its read and write probes record
         # the denial. Children opened by a guessed name stay untested.
-        $deniedErrors = @($enumErrors | Where-Object { $_.Exception -is [UnauthorizedAccessException] })
+        $deniedErrors = @($enumErrors | Where-Object { Test-AccessDeniedError $_.Exception })
         if ($deniedErrors.Count -and -not $paths.Contains($root)) { $paths.Add($root) }
         if ($enumErrors.Count -gt $deniedErrors.Count -or $children.Count -gt $MaxTargets) { $incomplete = $true }
         foreach ($directory in $children) {
@@ -3491,27 +3536,85 @@ function Get-ServiceConfigurations {
     }
 }
 
-function Invoke-IndirectCheck {
-    $ownSid = $null
-    try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
+function Test-AccessDeniedError {
+    # True when an exception, or one it wraps, reports that the platform
+    # denied this identity: Win32 or .NET denial, CIM_ERR_ACCESS_DENIED, or a
+    # CIM provider error carrying E_ACCESSDENIED.
+    param([Exception]$Exception)
 
-    $probed = 0
-    $unmet = @()
-    $criticalHit = $false
-    $incomplete = $false
-    $unresolvedServices = @()
-    $inferredServices = @()
-    $unenumerated = @()
-    $tasksDenied = $false
+    for ($e = $Exception; $e; $e = $e.InnerException) {
+        if ($e -is [UnauthorizedAccessException] -or $e -is [Security.SecurityException]) { return $true }
+        if ($e.HResult -eq -2147024891) { return $true }   # 0x80070005
+        if ($e.GetType().FullName -ne 'Microsoft.Management.Infrastructure.CimException') { continue }
+        if ("$($e.NativeErrorCode)" -eq 'AccessDenied' -or [int]$e.StatusCode -eq 2) { return $true }
+        $errorCode = $null
+        try { $errorCode = $e.ErrorData.CimInstanceProperties['error_Code'].Value } catch { }
+        # Providers store error_Code signed or unsigned; compare the low 32 bits
+        # with 0x80070005 (the hex literal itself is a negative Int32).
+        if ($errorCode -is [ValueType] -and ([int64]$errorCode -band 0xFFFFFFFFL) -eq 2147942405L) { return $true }
+    }
+    return $false
+}
 
-    # Services
+function New-ExecutionTally {
+    return @{ Probed = 0; Unmet = @(); Critical = $false; Incomplete = $false; Hidden = @(); Unresolved = @(); Notes = @() }
+}
+
+function Set-ExecutionTargetOutcome {
+    # Exposure always counts. A part the platform hides from this identity is
+    # out of reach and unscored; any other gap leaves the criterion unknown.
+    param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][string]$Noun, [Parameter(Mandatory)][hashtable]$Tally)
+
+    $hidden = if ($Tally.Hidden.Count -gt 0) { " Hidden from this identity: $($Tally.Hidden -join ', ')." } else { '' }
+    $unresolved = if ($Tally.Unresolved.Count -gt 0) { " Unresolved: $($Tally.Unresolved -join ', ')." } else { '' }
+    $notes = if ($Tally.Notes.Count -gt 0) { " $($Tally.Notes -join '; ')." } else { '' }
+    if ($Tally.Critical) {
+        Set-CriterionOutcome -Id $Id -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "$($Tally.Unmet.Count) of $($Tally.Probed) $Noun targets are agent-writable, including an execution file or config for SYSTEM." `
+            -Critical -CriticalReason 'Agent-writable execution file or config with a resolved SYSTEM consumer identity.'
+    }
+    elseif ($Tally.Unmet.Count -gt 0) {
+        Set-CriterionOutcome -Id $Id -Outcome 'unmet' -Method 'permission-analysis' `
+            -Reason "$($Tally.Unmet.Count) of $($Tally.Probed) $Noun targets expose writable execution files, configuration or parent directories; privileged execution is unverified."
+    }
+    elseif ($Tally.Incomplete) {
+        Set-CriterionOutcome -Id $Id -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason "Some $Noun targets or access permissions could not be evaluated.$hidden$unresolved"
+    }
+    elseif ($Tally.Hidden.Count -gt 0) {
+        Set-CriterionOutcome -Id $Id -Outcome 'out-of-reach' -Method 'permission-analysis' `
+            -Reason "Out of reach from inside.$hidden $($Tally.Probed) visible $Noun target(s) checked; none is agent-writable.$notes"
+    }
+    elseif ($Tally.Probed -eq 0) {
+        Set-CriterionOutcome -Id $Id -Outcome 'unknown' -Method 'permission-analysis' `
+            -Reason "No $Noun targets were available to evaluate."
+    }
+    else {
+        Set-CriterionOutcome -Id $Id -Outcome 'met' -Method 'permission-analysis' `
+            -Reason "No $Noun binary, config or parent directory is agent-writable ($($Tally.Probed) probed).$notes"
+    }
+}
+
+function Invoke-ServiceTargetCheck {
+    param([string]$OwnSid)
+
+    $tally = New-ExecutionTally
+    $inferred = @()
+    # Only a denied enumeration hides services; an error while evaluating
+    # one service leaves the criterion unknown.
+    $services = @()
+    try { $services = @(Get-ServiceConfigurations) }
+    catch {
+        if (Test-AccessDeniedError $_.Exception) { $tally.Hidden += 'service configuration' } else { $tally.Incomplete = $true }
+        Add-AssessmentError -Check INDIRECT -Category 'service-enum' -Message "Service enumeration failed: $($_.Exception.Message)"
+    }
     try {
-        foreach ($service in @(Get-ServiceConfigurations)) {
+        foreach ($service in $services) {
             $pathName = $service.PathName
             $startName = $service.StartName
             $exe = Get-ServiceImagePath -PathName $pathName
-            if (-not $exe) { $incomplete = $true; continue }
-            $probed++
+            if (-not $exe) { $tally.Incomplete = $true; continue }
+            $tally.Probed++
             # The consumer identity only grades severity; an unresolved one
             # does not make denied write access unknown.
             $consumerSid = Get-ExecutionIdentitySid $startName
@@ -3526,9 +3629,9 @@ function Invoke-IndirectCheck {
                 if ($serviceDll.Key -and $serviceDll.Key -notin $registryKeys) { $registryKeys += $serviceDll.Key }
                 if ($serviceDll.Path) {
                     $files += @{ Path = $serviceDll.Path; Label = $(if ($serviceDll.Inferred) { 'ServiceDll (inferred)' } else { 'ServiceDll' }); Neighbors = $false }
-                    if ($serviceDll.Inferred) { $inferredServices += $service.Name }
+                    if ($serviceDll.Inferred) { $inferred += $service.Name }
                 }
-                else { $incomplete = $true; $unresolvedServices += "$($service.Name) ($($serviceDll.Unresolved))" }
+                else { $tally.Incomplete = $true; $tally.Unresolved += "$($service.Name) ($($serviceDll.Unresolved))" }
             }
             $fileChanges = @()
             $binaryWritable = $false
@@ -3536,7 +3639,7 @@ function Invoke-IndirectCheck {
             $deletable = $false
             foreach ($file in $files) {
                 $exposure = Get-ExecutionFileExposure -Path $file.Path
-                if ($exposure.Incomplete) { $incomplete = $true }
+                if ($exposure.Incomplete) { $tally.Incomplete = $true }
                 if ($exposure.Writable) { $binaryWritable = $true; $fileChanges += "$($file.Label) ($($exposure.Writable)) [$($file.Path)]" }
                 if ($exposure.Replacement) { $binaryWritable = $true; $fileChanges += "$($file.Label) replacement via delete and parent file-create rights [$($file.Path)]" }
                 elseif ($exposure.Deletable) { $deletable = $true; $fileChanges += "$($file.Label) deletion [$($file.Path)]" }
@@ -3549,22 +3652,22 @@ function Invoke-IndirectCheck {
                     @{ Name = 'change-owner'; Mask = 0x80000 })) {
                 $probe = [AgentSandboxAssessmentNative]::ProbeService($service.Name, [uint32]$right.Mask)
                 if ($probe -eq 0) { $svcRights += $right.Name }
-                elseif ($probe -ne 5) { $incomplete = $true }
+                elseif ($probe -ne 5) { $tally.Incomplete = $true }
             }
             $svcConfig = ($svcRights.Count -gt 0)
             $writableKeys = @()
             foreach ($registryKey in $registryKeys) {
                 $regProbe = [AgentSandboxAssessmentNative]::ProbeRegistryKey(2, $registryKey, 0x2)
                 if ($regProbe -eq 0) { $writableKeys += "HKLM\$registryKey" }
-                elseif ($regProbe -notin 2, 3, 5) { $incomplete = $true }
+                elseif ($regProbe -notin 2, 3, 5) { $tally.Incomplete = $true }
             }
             $regSet = ($writableKeys.Count -gt 0)
 
             $configWritable = $binaryWritable -or $svcConfig -or $regSet
             if ($configWritable -or $parentAdd -or $deletable) {
-                $unmet += $service.Name
+                $tally.Unmet += $service.Name
                 $severity = if ($configWritable -and $consumerSid -eq 'S-1-5-18' -and $ownSid -ne $consumerSid) { 'critical' } else { 'high' }
-                if ($severity -eq 'critical') { $criticalHit = $true }
+                if ($severity -eq 'critical') { $tally.Critical = $true }
                 $how = @(
                     $fileChanges
                     if ($svcConfig) { "service object ($($svcRights -join ', '))" }
@@ -3577,69 +3680,90 @@ function Invoke-IndirectCheck {
         }
     }
     catch {
-        $incomplete = $true
-        $unenumerated += 'services'
-        Add-AssessmentError -Check INDIRECT -Category 'service-enum' -Message "Service enumeration failed: $($_.Exception.Message)"
+        $tally.Incomplete = $true
+        Add-AssessmentError -Check INDIRECT -Category 'service-enum' -Message "Service evaluation failed: $($_.Exception.Message)"
     }
+    if ($inferred.Count -gt 0) { $tally.Notes += "ServiceDll hidden from this identity and inferred from the service's name resource: $($inferred -join ', ')" }
+    Set-ExecutionTargetOutcome -Id 'A-SVC' -Noun 'service' -Tally $tally
+}
 
-    # Scheduled tasks
+function Invoke-TaskTargetCheck {
+    param([string]$OwnSid)
+
+    $tally = New-ExecutionTally
+    # Every visible task is evaluated; a denied folder hides only its own
+    # tasks, so the error list is collected instead of stopping at it.
+    $taskErrors = @()
+    $tasks = @()
+    try { $tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue -ErrorVariable taskErrors) }
+    # -ErrorVariable may already hold a terminating error.
+    catch {
+        $thrown = $_
+        if (-not @($taskErrors | Where-Object { [object]::ReferenceEquals($_.Exception, $thrown.Exception) }).Count) { $taskErrors += $thrown }
+    }
+    $deniedErrors = @($taskErrors | Where-Object { Test-AccessDeniedError $_.Exception })
+    if ($deniedErrors.Count -gt 0) { $tally.Hidden += "scheduled tasks ($($deniedErrors.Count) enumeration denial(s))" }
+    if ($taskErrors.Count -gt $deniedErrors.Count) { $tally.Incomplete = $true }
+    foreach ($taskError in $taskErrors) {
+        Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task enumeration failed: $($taskError.Exception.Message)"
+    }
     try {
-        foreach ($task in @(Get-ScheduledTask -ErrorAction Stop)) {
+        foreach ($task in $tasks) {
             $principal = $null
             if ($task.Principal) { $principal = $task.Principal.UserId }
             $consumerSid = Get-ExecutionIdentitySid $principal
             foreach ($action in @($task.Actions)) {
                 $targets = Get-TaskActionTargets $action -PrincipalSid $consumerSid
-                if ($targets.Incomplete) { $incomplete = $true }
+                if ($targets.Incomplete) { $tally.Incomplete = $true }
                 foreach ($key in $targets.Keys) {
                     $keyProbe = [AgentSandboxAssessmentNative]::ProbeRegistryKey($key.Hive, $key.Sub, [uint32]$key.Access)
                     if ($keyProbe -eq 0) {
-                        $unmet += "task:$($task.TaskName)"
+                        $tally.Unmet += "task:$($task.TaskName)"
                         $severity = if ($consumerSid -eq 'S-1-5-18' -and $ownSid -ne $consumerSid) { 'critical' } else { 'high' }
-                        if ($severity -eq 'critical') { $criticalHit = $true }
-                        Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "task:$($task.TaskName) [$principal]" `
+                        if ($severity -eq 'critical') { $tally.Critical = $true }
+                        Add-Finding -Check INDIRECT -Criterion 'A-TASK' -Target "task:$($task.TaskName) [$principal]" `
                             -Capability "agent-writable task COM registration [$($key.Display)]" -Result granted -Method access-request `
                             -Scope 'broker' -Impact 'Agent can redirect the COM handler a task loads; execution was not exercised.' -Severity $severity
                     }
-                    elseif ($keyProbe -notin 2, 3, 5) { $incomplete = $true }
+                    elseif ($keyProbe -notin 2, 3, 5) { $tally.Incomplete = $true }
                 }
                 foreach ($argumentPath in $targets.ArgumentPaths) {
                     # A missing argument may be an output the program creates, so it
                     # is not treated as plantable; it stays unresolved.
                     if (-not (Test-Path -LiteralPath $argumentPath -ErrorAction SilentlyContinue) -and
-                        (Get-PathAccess -Path $argumentPath).ErrorCategory -eq 'not-found') { $incomplete = $true; continue }
-                    $probed++
+                        (Get-PathAccess -Path $argumentPath).ErrorCategory -eq 'not-found') { $tally.Incomplete = $true; continue }
+                    $tally.Probed++
                     $argumentAccess = Get-PathAccess -Path $argumentPath
                     $how = Test-AnyWrite -Access $argumentAccess
                     if ($how) {
-                        $unmet += "task:$($task.TaskName)"
-                        Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "task:$($task.TaskName) [$principal]" `
+                        $tally.Unmet += "task:$($task.TaskName)"
+                        Add-Finding -Check INDIRECT -Criterion 'A-TASK' -Target "task:$($task.TaskName) [$principal]" `
                             -Capability "agent-writable task argument path ($how) [$argumentPath]" -Result granted -Method permission-analysis `
                             -Scope 'broker' -Impact 'A path passed to a task program is agent-writable; whether the program loads code from it is unverified.' -Severity high
                     }
-                    elseif (Test-UnknownWrite $argumentAccess) { $incomplete = $true }
+                    elseif (Test-UnknownWrite $argumentAccess) { $tally.Incomplete = $true }
                 }
                 $executionResolved = -not $targets.Incomplete -and $targets.Paths.Count -gt 0 -and
                 (Test-Path -LiteralPath $targets.Paths[0] -ErrorAction SilentlyContinue)
                 foreach ($exe in $targets.Paths) {
-                    $probed++
+                    $tally.Probed++
                     $exposure = Get-ExecutionFileExposure -Path $exe
-                    if ($exposure.Incomplete) { $incomplete = $true }
+                    if ($exposure.Incomplete) { $tally.Incomplete = $true }
                     if ($exposure.Missing) {
                         if ($exposure.Writable) {
-                            $unmet += "task:$($task.TaskName)"
-                            Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "task:$($task.TaskName) [$principal]" `
+                            $tally.Unmet += "task:$($task.TaskName)"
+                            Add-Finding -Check INDIRECT -Criterion 'A-TASK' -Target "task:$($task.TaskName) [$principal]" `
                                 -Capability "agent-writable task target: missing execution file is creatable [$exe]" -Result granted -Method permission-analysis `
                                 -Scope 'broker' -Impact 'Agent can plant a missing task executable or script; execution was not exercised.' -Severity high
                         }
                         continue
                     }
                     if ($exposure.Writable -or $exposure.ParentAdd -or $exposure.Deletable) {
-                        $unmet += "task:$($task.TaskName)"
+                        $tally.Unmet += "task:$($task.TaskName)"
                         $severity = if (($exposure.Writable -or $exposure.Replacement) -and $executionResolved -and $consumerSid -eq 'S-1-5-18' -and $ownSid -ne $consumerSid) { 'critical' } else { 'high' }
-                        if ($severity -eq 'critical') { $criticalHit = $true }
+                        if ($severity -eq 'critical') { $tally.Critical = $true }
                         $how = if ($exposure.Writable) { "execution file ($($exposure.Writable))" } elseif ($exposure.Replacement) { 'execution file replacement' } elseif ($exposure.Deletable) { 'execution file deletion' } else { 'execution file parent directory' }
-                        Add-Finding -Check INDIRECT -Criterion 'A-SVC' -Target "task:$($task.TaskName) [$principal]" `
+                        Add-Finding -Check INDIRECT -Criterion 'A-TASK' -Target "task:$($task.TaskName) [$principal]" `
                             -Capability "agent-writable task target: $how [$exe]" -Result granted -Method permission-analysis `
                             -Scope 'broker' -Impact 'Agent can alter a task executable, script or its parent directory; ambiguous arguments remain unverified.' -Severity $severity
                     }
@@ -3648,50 +3772,17 @@ function Invoke-IndirectCheck {
         }
     }
     catch {
-        # A denied enumeration cannot be evaluated from inside at all; it
-        # excludes the criterion unless an exposure was found. Any other
-        # failure leaves it unknown.
-        $exception = $_.Exception
-        if ($exception -is [UnauthorizedAccessException] -or
-            ($exception.PSObject.Properties.Name -contains 'NativeErrorCode' -and "$($exception.NativeErrorCode)" -eq 'AccessDenied')) {
-            $tasksDenied = $true
-        }
-        else {
-            $incomplete = $true
-            $unenumerated += 'scheduled tasks'
-        }
-        Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task enumeration failed: $($exception.Message)"
+        $tally.Incomplete = $true
+        Add-AssessmentError -Check INDIRECT -Category 'task-enum' -Message "Scheduled-task evaluation failed: $($_.Exception.Message)"
     }
+    Set-ExecutionTargetOutcome -Id 'A-TASK' -Noun 'task' -Tally $tally
+}
 
-    if ($probed -eq 0) {
-        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unknown' -Method 'permission-analysis' `
-            -Reason ('No service or task binaries were available to evaluate.' +
-            $(if ($unenumerated.Count -gt 0) { " Not enumerable by this identity: $($unenumerated -join ', ')." } else { '' }))
-    }
-    elseif ($criticalHit) {
-        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unmet' -Method 'permission-analysis' `
-            -Reason "$($unmet.Count) of $probed service/task targets are agent-writable, including an execution file or config for SYSTEM." `
-            -Critical -CriticalReason 'Agent-writable execution file or config with a resolved SYSTEM consumer identity.'
-    }
-    elseif ($unmet.Count -gt 0) {
-        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unmet' -Method 'permission-analysis' `
-            -Reason "$($unmet.Count) of $probed service/task targets expose writable execution files, configuration or parent directories; privileged execution is unverified."
-    }
-    elseif ($incomplete) {
-        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'unknown' -Method 'permission-analysis' `
-            -Reason ('Some service/task targets or access permissions could not be evaluated.' +
-            $(if ($unenumerated.Count -gt 0) { " Not enumerable by this identity: $($unenumerated -join ', ')." } else { '' }) +
-            $(if ($unresolvedServices.Count -gt 0) { " Unresolved service DLLs: $($unresolvedServices -join ', ')." } else { '' }))
-    }
-    elseif ($tasksDenied) {
-        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'na' -Method 'permission-analysis' `
-            -Reason "Not evaluable from inside: scheduled tasks are hidden from this identity. No service binary, config or parent directory is agent-writable ($probed probed); an exposed service or task would count."
-    }
-    else {
-        Set-CriterionOutcome -Id 'A-SVC' -Outcome 'met' -Method 'permission-analysis' `
-            -Reason ("No service or task binary, config or parent directory is agent-writable ($probed probed)." +
-            $(if ($inferredServices.Count -gt 0) { " ServiceDll hidden from this identity and inferred from the service's name resource: $($inferredServices -join ', ')." } else { '' }))
-    }
+function Invoke-IndirectCheck {
+    $ownSid = $null
+    try { $ownSid = [AgentSandboxAssessmentNative]::GetCurrentToken().UserSid } catch { }
+    Invoke-ServiceTargetCheck -OwnSid $ownSid
+    Invoke-TaskTargetCheck -OwnSid $ownSid
 }
 
 # --- REMOTE -------------------------------------------------------------------
@@ -4527,7 +4618,8 @@ function Measure-Assessment {
     $sumCoverage = 0.0
     foreach ($dim in $Dimensions) {
         $items = @($script:Criteria.Values | Where-Object { $_.Dimension -eq $dim })
-        $applicable = @($items | Where-Object { $_.Outcome -ne 'na' })
+        # Not-applicable and out-of-reach criteria leave the denominator.
+        $applicable = @($items | Where-Object { $_.Outcome -notin 'na', 'out-of-reach' })
         $met = @($applicable | Where-Object { $_.Outcome -eq 'met' }).Count
         $unmet = @($applicable | Where-Object { $_.Outcome -eq 'unmet' }).Count
         $unknown = @($applicable | Where-Object { $_.Outcome -eq 'unknown' }).Count
@@ -4595,6 +4687,7 @@ function Test-Policy {
             'met' { 'compliant' }
             'na' { 'compliant' }
             'unmet' { 'violation' }
+            'out-of-reach' { 'unknown' }   # unscored, never passed
             default { 'unknown' }
         }
         [pscustomobject]@{ Criterion = $id; Required = 'met'; Outcome = $criterion.Outcome; Compliance = $compliance }
@@ -4632,6 +4725,13 @@ function Get-TopFindings {
     return $ranked
 }
 
+function Get-OutOfReachNote {
+    # The verdict excludes out-of-reach criteria; the scope line says which.
+    $ids = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'out-of-reach' } | ForEach-Object { $_.Id } | Sort-Object)
+    if ($ids.Count -eq 0) { return '' }
+    return " Not scored, out of reach from inside: $($ids -join ', ')."
+}
+
 function Get-OutcomeColor {
     param([Parameter(Mandatory)][string]$Outcome)
 
@@ -4639,6 +4739,7 @@ function Get-OutcomeColor {
         'met' { 'Green' }
         'unmet' { 'Red' }
         'na' { 'DarkGray' }
+        'out-of-reach' { 'DarkGray' }
         default { 'Yellow' }
     }
 }
@@ -4683,7 +4784,7 @@ function Write-HumanReport {
             if ($dim.Unknown -gt 0) { $summary += ", $($dim.Unknown) unknown" }
             Write-Host ("  {0} ({1})" -f $dim.Dimension, $summary) -ForegroundColor White
             foreach ($criterion in $items) {
-                $tag = "[$($criterion.Outcome.ToUpper())]".PadRight(9)
+                $tag = "[$($criterion.Outcome.ToUpper())]".PadRight(14)
                 $essential = if ($criterion.Essential) { '*' } else { ' ' }
                 Write-Host ("    {0} {1}{2,-20} {3}" -f $tag, $essential, $criterion.Id, $criterion.Title) `
                     -ForegroundColor (Get-OutcomeColor $criterion.Outcome)
@@ -4691,7 +4792,7 @@ function Write-HumanReport {
             }
         }
         Write-Host ''
-        Write-Host '  * essential criterion (must be met or unmet for a bounded verdict)' -ForegroundColor DarkGray
+        Write-Host '  * essential criterion (must be met or unmet for a bounded verdict, unless out of reach)' -ForegroundColor DarkGray
     }
     $top = @(Get-TopFindings)
     if ($top.Count -gt 0) {
@@ -4714,6 +4815,15 @@ function Write-HumanReport {
             Write-Host ("        why: {0}" -f (Protect-Text $criterion.Reason)) -ForegroundColor DarkGray
         }
     }
+    $outOfReach = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'out-of-reach' } | Sort-Object Id)
+    if ($outOfReach.Count -gt 0) {
+        Write-Host ''
+        Write-Host "Out of reach from inside, not scored ($($outOfReach.Count)):" -ForegroundColor DarkGray
+        foreach ($criterion in $outOfReach) {
+            Write-Host ("  {0}  {1}" -f $criterion.Id, $criterion.Title)
+            Write-Host ("        why: {0}" -f (Protect-Text $criterion.Reason)) -ForegroundColor DarkGray
+        }
+    }
     # The verdict concludes the evidence above and leads into remediation.
     # Show the whole verdict scale; the current verdict is raised and colored.
     Write-Host ''
@@ -4728,7 +4838,7 @@ function Write-HumanReport {
         else { Write-Host $scale[$i] -NoNewline -ForegroundColor DarkGray }
     }
     Write-Host ''
-    Write-Host "Verdict scope: $VerdictScope" -ForegroundColor DarkGray
+    Write-Host "Verdict scope: $VerdictScope$(Get-OutOfReachNote)" -ForegroundColor DarkGray
     $remediable = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unmet' })
     if ($remediable.Count -gt 0) {
         Write-Host ''
@@ -4753,7 +4863,7 @@ function Get-MarkdownReport {
     $lines.Add("- Control score: $($Measure.ScoreLower)-$($Measure.ScoreUpper) / 100" +
         $(if ($Measure.CriticalCapApplied) { ' (critical cap applied)' } else { '' }))
     $lines.Add("- Verdict: **$($Measure.Verdict)**")
-    $lines.Add("- Verdict scope: $VerdictScope")
+    $lines.Add("- Verdict scope: $VerdictScope$(Get-OutOfReachNote)")
     $lines.Add("- Identity: $($Context.userName) (integrity $($Context.integrityLevel), elevated $($Context.isElevated))")
     $lines.Add("- Profile $ProfileId/$ProfileVersion, checker $CheckerVersion, $($Context.timestampUtc)")
     if ($script:AllowedPaths.Count -gt 0) {
@@ -4915,7 +5025,7 @@ $report = [ordered]@{
         networkTargets       = @($script:NetworkTargetsUsed)
     }
     verdict           = $measure.Verdict
-    verdictScope      = $VerdictScope
+    verdictScope      = "$VerdictScope$(Get-OutOfReachNote)"
     score             = [ordered]@{ lower = $measure.ScoreLower; upper = $measure.ScoreUpper; criticalCapApplied = $measure.CriticalCapApplied }
     coverage          = $measure.Coverage
     dimensions        = @($measure.Dimensions | ForEach-Object {
@@ -4928,6 +5038,9 @@ $report = [ordered]@{
     essentialUnknowns = @($measure.EssentialUnknowns | ForEach-Object { $_.Id })
     notEvaluated      = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'unknown' } | ForEach-Object {
             [ordered]@{ id = $_.Id; title = $_.Title; dimension = $_.Dimension; essential = $_.Essential; reason = (Protect-Text $_.Reason) }
+        })
+    outOfReach        = @($script:Criteria.Values | Where-Object { $_.Outcome -eq 'out-of-reach' } | ForEach-Object {
+            [ordered]@{ id = $_.Id; title = $_.Title; dimension = $_.Dimension; reason = (Protect-Text $_.Reason) }
         })
     policy            = $policyResult
     inventory         = $script:Inventory

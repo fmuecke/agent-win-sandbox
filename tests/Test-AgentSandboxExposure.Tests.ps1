@@ -443,6 +443,7 @@ try {
     }
     foreach ($targetKind in @('service', 'task')) {
         Test-Case "Replacement of a SYSTEM $targetKind target requires file creation" {
+            $criterionId = if ($targetKind -eq 'task') { 'A-TASK' } else { 'A-SVC' }
             $exe = Join-Path $script:WorkspacePath 'synthetic.exe'
             [IO.File]::WriteAllText($exe, '')
             [AgentSandboxAssessmentNative]::NamedPath = $exe
@@ -461,31 +462,129 @@ try {
                 }
             }
             Invoke-IndirectCheck
-            Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
-            Assert-Equal $script:Criteria['A-SVC'].Critical $false
+            Assert-Equal $script:Criteria[$criterionId].Outcome 'unmet'
+            Assert-Equal $script:Criteria[$criterionId].Critical $false
             Assert-Equal (Measure-Assessment).CriticalCapApplied $false
             Assert-Equal (@($script:Findings | Where-Object { $_.Capability -match 'replacement' }).Count) 0
 
             [AgentSandboxAssessmentNative]::ParentGranted = 0x2
             $script:Findings.Clear()
             Invoke-IndirectCheck
-            Assert-Equal $script:Criteria['A-SVC'].Critical $true
+            Assert-Equal $script:Criteria[$criterionId].Critical $true
             Assert-Equal (Measure-Assessment).CriticalCapApplied $true
             Assert-Equal (@($script:Findings | Where-Object { $_.Capability -match 'replacement' }).Count) 1
         }
     }
+    # Hidden scheduled tasks: what is visible is checked, an exposure counts,
+    # a denial is out of reach (unscored) and any other failure is unknown.
+    function New-CimDenial {
+        param([uint32]$StatusCode = 2, [uint32]$ErrorCode = 0)
+        $properties = @{ CIMStatusCode = $StatusCode; Message = 'synthetic denial' }
+        if ($ErrorCode) { $properties.error_Code = $ErrorCode }
+        [Microsoft.Management.Infrastructure.CimException]::new(
+            (New-CimInstance -ClassName MSFT_WmiError -Namespace root/cimv2 -ClientOnly -Property $properties))
+    }
+    $visibleTask = {
+        param($Exe)
+        [pscustomobject]@{ TaskName = 'visible'; Principal = [pscustomobject]@{ UserId = 'S-1-5-18' }
+            Actions = @([pscustomobject]@{ Execute = $Exe; Arguments = ''; WorkingDirectory = '' })
+        }
+    }
     foreach ($case in @(
-            @{ Name = 'Denied task enumeration excludes clean services from scoring'; Error = [UnauthorizedAccessException]::new('synthetic denial'); Write = 'denied'; Expected = 'na' },
-            @{ Name = 'Denied task enumeration still counts a writable service'; Error = [UnauthorizedAccessException]::new('synthetic denial'); Write = 'granted'; Expected = 'unmet' },
-            @{ Name = 'A failed task enumeration that is not a denial stays unknown'; Error = [InvalidOperationException]::new('synthetic failure'); Write = 'denied'; Expected = 'unknown' })) {
+            @{ Name = 'A CIM access denial puts hidden tasks out of reach'; Error = { New-CimDenial }; Visible = $false; Write = 'denied'; Service = 'met'; Task = 'out-of-reach' },
+            @{ Name = 'A CIM provider error carrying E_ACCESSDENIED is a denial'; Error = { New-CimDenial -StatusCode 1 -ErrorCode 2147942405 }; Visible = $false; Write = 'denied'; Service = 'met'; Task = 'out-of-reach' },
+            @{ Name = 'A writable visible task counts when other folders are denied'; Error = { New-CimDenial }; Visible = $true; Write = 'granted'; Service = 'unmet'; Task = 'unmet' },
+            @{ Name = 'A failed task enumeration that is not a denial stays unknown'; Error = { [InvalidOperationException]::new('synthetic failure') }; Visible = $false; Write = 'denied'; Service = 'met'; Task = 'unknown' })) {
         Test-Case $case.Name {
+            $exe = Join-Path $script:WorkspacePath 'task.exe'
+            [IO.File]::WriteAllText($exe, '')
             function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = '"C:\synthetic\service.exe"'; StartName = 'LocalSystem' } }
-            function Get-ScheduledTask { throw $case.Error }
-            function Test-Path { $true }
+            function Get-ScheduledTask {
+                [CmdletBinding()] param()
+                if ($case.Visible) { & $visibleTask $exe }
+                Write-Error -Exception (& $case.Error)
+            }
             function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Write $case.Write }
             Invoke-IndirectCheck
-            Assert-Equal $script:Criteria['A-SVC'].Outcome $case.Expected
+            Assert-Equal $script:Criteria['A-SVC'].Outcome $case.Service
+            Assert-Equal $script:Criteria['A-TASK'].Outcome $case.Task
         }
+    }
+    Test-Case 'A denial while evaluating one service is unknown, not out of reach' {
+        function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = '"C:\synthetic\service.exe"'; StartName = 'LocalSystem' } }
+        function Get-ScheduledTask { @() }
+        function Get-ServiceImagePath { throw [UnauthorizedAccessException]::new('synthetic denial') }
+        Invoke-IndirectCheck
+        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unknown'
+    }
+    Test-Case 'A signed E_ACCESSDENIED error code is a denial' {
+        $instance = New-CimInstance -ClassName MSFT_WmiError -Namespace root/cimv2 -ClientOnly `
+            -Property @{ CIMStatusCode = [uint32]1; error_Code = [int]-2147024891; Message = 'synthetic' }
+        Assert-Equal (Test-AccessDeniedError ([Microsoft.Management.Infrastructure.CimException]::new($instance))) $true
+    }
+    Test-Case 'A terminating task enumeration denial is counted once' {
+        function Get-CimInstance { @() }
+        function Get-ScheduledTask { [CmdletBinding()] param() throw [UnauthorizedAccessException]::new('synthetic denial') }
+        Invoke-IndirectCheck
+        Assert-Equal @($script:Errors | Where-Object { $_.Category -eq 'task-enum' }).Count 1
+        Assert-Equal $script:Criteria['A-TASK'].Reason.Contains('(1 enumeration denial(s))') $true
+    }
+    Test-Case 'Out-of-reach criteria are unscored, never compliant and do not block the verdict' {
+        foreach ($criterion in $script:Criteria.Values) { $criterion.Outcome = 'met' }
+        $script:Criteria['A-TASK'].Outcome = 'out-of-reach'
+        $measure = Measure-Assessment
+        Assert-Equal $measure.ScoreLower 100
+        Assert-Equal $measure.Coverage 1
+        Assert-Equal $measure.Verdict 'Strong'
+        Assert-Equal (@($measure.Dimensions | Where-Object { $_.Dimension -eq 'Authority' })[0].Applicable) `
+            (@($script:Criteria.Values | Where-Object { $_.Dimension -eq 'Authority' }).Count - 1)
+        $policyPath = Join-Path $script:WorkspacePath 'policy.json'
+        [IO.File]::WriteAllText($policyPath, '{"requireMet":["A-TASK"]}')
+        Assert-Equal (Test-Policy -Path $policyPath).Results[0].Compliance 'unknown'
+    }
+    Test-Case 'A stale opened name is not accepted as a held file''s path' {
+        # Runs the real native class in a child process; this session holds the stub.
+        $probe = Join-Path $script:WorkspacePath 'same-file-probe.ps1'
+        [IO.File]::WriteAllText($probe, @'
+param([string]$Checker, [string]$Directory)
+$source = Get-Content -LiteralPath $Checker -Raw
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
+Invoke-Expression $source.Substring($ast.ParamBlock.Extent.EndOffset, $source.IndexOf('# --- Main ') - $ast.ParamBlock.Extent.EndOffset)
+Initialize-NativeProbe
+$held = Join-Path $Directory 'held.txt'
+$renamed = Join-Path $Directory 'renamed.txt'
+[IO.File]::WriteAllText($held, 'held')
+$stream = [IO.File]::Open($held, 'Open', 'Read', [IO.FileShare]'ReadWrite, Delete')
+try {
+    $handle = $stream.SafeFileHandle.DangerousGetHandle()
+    $results = @([AgentSandboxAssessmentNative]::IsSameFile($handle, $held))
+    [IO.File]::Move($held, $renamed)
+    $results += [AgentSandboxAssessmentNative]::IsSameFile($handle, $held)
+    [IO.File]::WriteAllText($held, 'another file')
+    $results += [AgentSandboxAssessmentNative]::IsSameFile($handle, $held)
+    $results += [AgentSandboxAssessmentNative]::IsSameFile($handle, $renamed)
+    $results -join ','
+}
+finally { $stream.Dispose() }
+'@)
+        $startInfo = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in '-NoProfile', '-File', $probe, '-Checker', (Join-Path $PSScriptRoot '..\Test-AgentSandboxExposure.ps1'), '-Directory', $script:WorkspacePath) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+        $process = [Diagnostics.Process]::Start($startInfo)
+        try {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(60000)) { $process.Kill($true); throw 'Native same-file probe timed out.' }
+            $output = @($stdout.GetAwaiter().GetResult() -split '\r?\n' | Where-Object { $_ })
+            if ($process.ExitCode -ne 0) { throw "Native same-file probe failed: $($stderr.GetAwaiter().GetResult())" }
+            Assert-Equal $output[-1] 'True,False,False,True'
+        }
+        finally { $process.Dispose() }
     }
     Test-Case 'Unresolved service binary permissions do not earn credit' {
         function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = '"C:\synthetic\service.exe"'; StartName = 'LocalSystem' } }
@@ -1169,8 +1268,8 @@ try {
             [pscustomobject]@{ Write = $(if ($Path -eq $taskScript) { 'granted' } else { 'denied' }); Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' }
         }
         Invoke-IndirectCheck
-        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
-        Assert-Equal $script:Criteria['A-SVC'].Critical $false
+        Assert-Equal $script:Criteria['A-TASK'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-TASK'].Critical $false
         Assert-Equal (@($script:Findings | Where-Object { $_.Capability.Contains('job.ps1') }).Count) 1
     }
     Test-Case 'A resolved different standard service account is not automatically privileged' {
@@ -1192,8 +1291,8 @@ try {
         function Test-Path { $true }
         function Get-PathAccess { [pscustomobject]@{ Write = 'granted'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
         Invoke-IndirectCheck
-        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
-        Assert-Equal $script:Criteria['A-SVC'].Critical $false
+        Assert-Equal $script:Criteria['A-TASK'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-TASK'].Critical $false
     }
     Test-Case 'Discovery limits survive into control and read sampling results' {
         foreach ($name in @('one.json', 'two.json', 'three.json')) {
@@ -1258,13 +1357,14 @@ try {
         function Get-CimInstance { [pscustomobject]@{ Name = 'test-service'; PathName = '"C:\synthetic\service.exe"'; StartName = '' } }
         function Get-ScheduledTask {
             [pscustomobject]@{ TaskName = 'synthetic'; Principal = [pscustomobject]@{ UserId = '' }
-                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\task.exe'; Arguments = ''; WorkingDirectory = '' }) 
+                Actions = @([pscustomobject]@{ Execute = 'C:\synthetic\task.exe'; Arguments = ''; WorkingDirectory = '' })
             }
         }
         function Test-Path { $true }
         function Get-PathAccess { [pscustomobject]@{ Write = 'denied'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
         Invoke-IndirectCheck
         Assert-Equal $script:Criteria['A-SVC'].Outcome 'met'
+        Assert-Equal $script:Criteria['A-TASK'].Outcome 'met'
     }
     foreach ($create in @('granted', 'denied', 'unknown')) {
         Test-Case "A missing service binary is assessed by ancestor create rights ($create)" {
@@ -1543,8 +1643,8 @@ try {
         function Test-Path { $true }
         function Get-PathAccess { [pscustomobject]@{ Write = 'denied'; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied' } }
         Invoke-IndirectCheck
-        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
-        Assert-Equal $script:Criteria['A-SVC'].Critical $true
+        Assert-Equal $script:Criteria['A-TASK'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-TASK'].Critical $true
     }
     Test-Case 'Absolute argument paths of a program are extracted; flags are data' {
         $action = [pscustomobject]@{ Execute = 'C:\synthetic\tool.exe'; Arguments = '/reporting --config "C:\Program Files\synthetic\a.json" /out:%ProgramData%\x.log'; WorkingDirectory = '' }
@@ -1573,8 +1673,8 @@ try {
             [pscustomobject]@{ Write = $write; Create = 'denied'; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied'; DeleteChild = 'denied' }
         }
         Invoke-IndirectCheck
-        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unmet'
-        Assert-Equal $script:Criteria['A-SVC'].Critical $false
+        Assert-Equal $script:Criteria['A-TASK'].Outcome 'unmet'
+        Assert-Equal $script:Criteria['A-TASK'].Critical $false
     }
     Test-Case 'A missing argument path stays unknown instead of plantable' {
         function Get-CimInstance { @() }
@@ -1592,7 +1692,7 @@ try {
             [pscustomobject]@{ Write = 'denied'; Create = $create; Delete = 'denied'; ChangeAcl = 'denied'; TakeOwnership = 'denied'; DeleteChild = 'denied'; ErrorCategory = $null; Exists = $true }
         }
         Invoke-IndirectCheck
-        Assert-Equal $script:Criteria['A-SVC'].Outcome 'unknown'
+        Assert-Equal $script:Criteria['A-TASK'].Outcome 'unknown'
         Assert-Equal (@($script:Findings | Where-Object { $_.Result -eq 'granted' }).Count) 0
     }
     Test-Case 'Native file analysis distinguishes child read rights and parent deletion rights' {

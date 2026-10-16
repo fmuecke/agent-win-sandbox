@@ -18,10 +18,17 @@ Git log.
 - Fixed: The exposure checker reported profile, adjacent-file, share, service
   and domain criteria as unknown when its own discovery was denied. It now reads
   profiles from ProfileList, probes a root whose listing is denied, and uses
-  registry and Win32 sources when CIM is denied. When scheduled tasks are
-  hidden from the agent, A-SVC is excluded from scoring unless an exposed
-  service is found; other enumeration failures stay unknown. Held file handles are resolved by the name
-  they were opened with when the agent cannot traverse their parent folders.
+  registry and Win32 sources when CIM is denied. Held file handles are
+  resolved by the name they were opened with when the agent cannot traverse
+  their parent folders, and only if that name still refers to the same file.
+- Changed: The exposure checker adds an `out-of-reach` outcome for evidence the
+  platform hides from the agent by design. Such criteria are listed in the
+  report, the verdict scope and the new JSON `outOfReach` field, but are not
+  scored, never count as policy-compliant and do not block the verdict; an
+  exposure found in the visible part still counts. Scheduled tasks move from
+  A-SVC to a new A-TASK criterion, so services score on their own (profile
+  version 6). Every visible task is evaluated even when some task folders are
+  denied.
 - Changed: The exposure checker's `-SandboxPath` is now `-AllowedPath`; the old
   name remains an alias. The report field `scope.sandboxPaths` is now
   `scope.allowedPaths`.
