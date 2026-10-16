@@ -30,7 +30,7 @@ Of course any other agent like OpenCode can be installed within the Agent Sandbo
 - Protects the launcher, [`launch-as`](https://github.com/fmuecke/launch-as), network tools, bootstrap, checker, and managed-settings
   files in admin-write locations.
 - Restricts the sandbox account's outbound TCP/UDP to the local proxy port with
-  [`wfp-lock`](https://github.com/fmuecke/wfp-lock); [`network-sandbox`](https://github.com/fmuecke/network-sandbox) forwards only allowlisted destinations.
+  [`wfp-lock`](https://github.com/fmuecke/wfp-lock); [`allowproxy`](https://github.com/fmuecke/allowproxy) forwards only allowlisted destinations.
 
 ### Learn more in the [F.A.Q.](https://github.com/fmuecke/agent-win-sandbox#faq)
 - [Why not PsExec or runas.exe?](#why-not-psexec-or-runasexe)
@@ -78,7 +78,7 @@ Run once from an elevated PowerShell 7 session, using the account that will norm
 Run setup and removal only from a reviewed release or a clone the agent cannot write. An elevated script in an agent-writable checkout runs whatever the agent changed in it, with administrator rights.
 
 Setup optionally deploys the Claude Code managed settings to `C:\Program Files\ClaudeCode\managed-settings.json`; it asks before replacing an existing file because this policy is machine-wide and shared by every Claude Code user. 
-It downloads and hash-verifies the `launch-as` package, then lets `launch-as-admin` install the broker and all command-line tools together under `C:\Program Files\launch-as`. It also installs pinned `wfp-lock` and `network-sandbox` binaries together under protected `C:\Program Files\agent-win-sandbox`, writes the protected `config.json`, and runs `Apply-Config.ps1` to generate the proxy policy and apply the per-user WFP lock.
+It downloads and hash-verifies the `launch-as` package, then lets `launch-as-admin` install the broker and all command-line tools together under `C:\Program Files\launch-as`. It also installs pinned `wfp-lock` and `allowproxy` binaries under protected `C:\Program Files\agent-win-sandbox`, writes the protected `config.json`, and runs `Apply-Config.ps1` to apply the per-user WFP lock. The launcher passes the proxy policy directly to `allowproxy -config-json`, derived from `config.json`. Background mode keeps a temporary JSON and PID file beside `allowproxy\allowproxy.exe` until the proxy stops; no separate policy file is maintained.
 The launcher starts the proxy under the launcher account. Setup enrolls `AgentSandbox` and creates the `Agent Sandbox` Public Desktop shortcut.
 Component directories are not added to `PATH`.
 
@@ -181,7 +181,7 @@ Run from an elevated PowerShell 7 session:
 .\Remove-AgentSandbox.ps1
 ```
 
-This stops the proxy and removes the account's WFP lock, user and profile, installed sandbox files, broker enrollment, shortcut, and installed `wfp-lock` and `network-sandbox` executables.
+This stops the proxy and removes the account's WFP lock, user and profile, installed sandbox files, broker enrollment, shortcut, and installed `wfp-lock` and `allowproxy` executables.
 It uninstalls the `launch-as` broker and executables when no other broker accounts remain. 
 It keeps the workspace, such as `C:\AgentSandbox`, and any older network-tool copies in Program Files that other tools may use.
 

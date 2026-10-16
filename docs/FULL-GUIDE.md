@@ -43,8 +43,8 @@ Setup creates `AgentSandbox` when absent and:
 - Blocks sandbox-account outbound TCP/UDP except the configured loopback proxy
   port and labeled `directEndpoints` with
   [`wfp-lock`](https://github.com/fmuecke/wfp-lock).
-- Installs [`network-sandbox`](https://github.com/fmuecke/network-sandbox) with
-  a policy generated from `proxy.allowedHosts`. The launcher starts one proxy
+- Installs [`allowproxy`](https://github.com/fmuecke/allowproxy) with
+  inline JSON derived from `proxy.allowedHosts`. The launcher starts one proxy
   shared by all sessions.
 - Merges settings over the installed `config.json` on update; `Apply-Config.ps1`
   applies edited settings without rerunning setup.
@@ -76,7 +76,7 @@ and managed-settings rules.
 | Managed settings | High-risk modes and agent-control-file edits | Claude Code |
 | Permission prompts | Unreviewed command execution | Claude Code |
 | Logon hardening | Network/RDP logon as the sandbox user | Windows user rights |
-| Network lock and proxy | Direct outbound TCP/UDP and unlisted destinations | WFP and `network-sandbox` |
+| Network lock and proxy | Direct outbound TCP/UDP and unlisted destinations | WFP and `allowproxy` |
 
 ## Prerequisites
 
@@ -131,8 +131,8 @@ Run from an elevated PowerShell:
 Setup prompts for the workspace base (Enter accepts `C:\dev`), confirmation to
 reuse an existing workspace, and optional managed-settings deployment. It
 installs and enrolls the broker-managed account without displaying its password.
-Existing ProgramData installations require removal with their matching
-Agent Sandbox version first; there is no automatic migration.
+Older installations must be fully removed with their matching
+`Remove-AgentSandbox.ps1` first; there is no automatic migration.
 
 Start the sandbox:
 

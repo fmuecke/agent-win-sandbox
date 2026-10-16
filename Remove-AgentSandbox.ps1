@@ -41,8 +41,8 @@ $LaunchAsVersion = 'v1.3.0'
 $SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
 $ToolsRoot = $InstallRoot
 $WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
-$NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path $InstallRoot 'network-sandbox') 'network-sandbox.json'
+$AllowProxyStateRoot = Join-Path $InstallRoot 'allowproxy'
+$AllowProxyExe = Join-Path $AllowProxyStateRoot 'allowproxy.exe'
 $ShortcutPaths = @(
     (Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk')
 )
@@ -296,11 +296,10 @@ if (-not $Force -and -not $WhatIfPreference) {
 
 # --- 0b. Remove the account network lock and proxy ---------------------------
 Write-Step "Removing AgentSandbox network controls"
-if ((Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) -and
-    (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
+if (Test-Path -LiteralPath $AllowProxyExe -PathType Leaf) {
     if ($PSCmdlet.ShouldProcess('Agent Sandbox network proxy', 'Stop')) {
-        & $NetworkSandboxExe stop -config $NetworkSandboxConfig
-        if ($LASTEXITCODE -ne 0) { throw 'Could not stop the network proxy.' }
+        . (Join-Path (Join-Path $PSScriptRoot 'bootstrap') 'AgentSandboxConfig.ps1')
+        Stop-AgentSandboxProxy -Exe $AllowProxyExe
         Write-Removed 'network proxy process'
     }
 }

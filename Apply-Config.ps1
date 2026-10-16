@@ -11,8 +11,8 @@
 
 .DESCRIPTION
     Part of agent-win-sandbox. Reads
-    C:\Program Files\agent-win-sandbox\config.json, validates it, regenerates
-    the proxy policy, stops the running proxy, and replaces the wfp-lock policy
+    C:\Program Files\agent-win-sandbox\config.json, validates it,
+    stops the running proxy, and replaces the wfp-lock policy
     with the proxy endpoint plus the configured directEndpoints. The launcher
     restarts the proxy as the launcher account on the next start.
 
@@ -35,9 +35,8 @@ $UserName = 'AgentSandbox'
 $InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
 $ConfigFile = Join-Path $InstallRoot 'config.json'
 $WfpLockExe = Join-Path $InstallRoot 'wfp-lock.exe'
-$NetworkSandboxExe = Join-Path $InstallRoot 'network-sandbox.exe'
-$NetworkSandboxStateRoot = Join-Path $InstallRoot 'network-sandbox'
-$NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.json'
+$AllowProxyStateRoot = Join-Path $InstallRoot 'allowproxy'
+$AllowProxyExe = Join-Path $AllowProxyStateRoot 'allowproxy.exe'
 $AdminFullAce = '*S-1-5-32-544:F'
 $SystemFullAce = '*S-1-5-18:F'
 $UsersReadExecuteAce = '*S-1-5-32-545:RX'
@@ -64,7 +63,7 @@ function Assert-NotLinked {
 }
 
 # --- Pre-flight ---------------------------------------------------------------
-foreach ($required in $ConfigFile, $WfpLockExe, $NetworkSandboxExe) {
+foreach ($required in $ConfigFile, $WfpLockExe, $AllowProxyExe) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Missing $required. Run Setup-AgentSandbox.ps1 first."
     }
@@ -94,26 +93,12 @@ $lockEndpoints = Get-AgentSandboxLockEndpoints -Settings $settings
 # The launcher starts the proxy as the launcher account; a proxy started here
 # would run with this elevated token.
 Write-Step "Stopping the network proxy"
-if (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf) {
-    & $NetworkSandboxExe stop -config $NetworkSandboxConfig
-    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the network proxy.' }
-}
+Stop-AgentSandboxProxy -Exe $AllowProxyExe
 $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $proxyPort -ErrorAction SilentlyContinue)
 if ($listeners.Count -gt 0) {
     throw "TCP port $proxyPort is in use (PID: $(($listeners.OwningProcess | Sort-Object -Unique) -join ', ')). Choose another proxy.port in $ConfigFile."
 }
 
-Write-Step "Writing proxy policy"
-$policy = [ordered]@{
-    port             = $proxyPort
-    logfile          = Join-Path $NetworkSandboxStateRoot 'network-sandbox.log'
-    loglevel         = 'info'
-    privateaddresses = 'deny'
-    allowed          = @($settings.proxy.allowedHosts)
-}
-Assert-NotLinked -Path $NetworkSandboxConfig
-Set-Content -LiteralPath $NetworkSandboxConfig -Value ($policy | ConvertTo-Json -Depth 4) -Encoding utf8NoBOM -NoNewline
-Protect-AdminFile -Path $NetworkSandboxConfig
 foreach ($allowedHost in $settings.proxy.allowedHosts) {
     Write-Host "  proxy allows $allowedHost" -ForegroundColor Green
 }

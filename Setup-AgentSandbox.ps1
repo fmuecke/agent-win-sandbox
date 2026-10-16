@@ -81,13 +81,11 @@ $WfpLockUri = "https://github.com/fmuecke/wfp-lock/releases/download/$WfpLockVer
 $WfpLockSha256 = 'B4A4E52FB92DDF6CE4E1AA97F713438388DCA0BA213C6077BE4DEB273BB207E8'
 $ToolsRoot = $InstallRoot
 $WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
-$NetworkSandboxVersion = 'v0.3.0'
-$NetworkSandboxUri = "https://github.com/fmuecke/network-sandbox/releases/download/$NetworkSandboxVersion/network-sandbox-$NetworkSandboxVersion.zip"
-$NetworkSandboxSha256 = 'C4679D8CD93CDF31E88E290E2C881D30F6E18B67E6CF7382C21A43AD866D15D1'
-$NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
-$LegacyNetworkSandboxExe = Join-Path (Join-Path $env:ProgramFiles 'network-sandbox') 'network-sandbox.exe'
-$NetworkSandboxStateRoot = Join-Path $InstallRoot 'network-sandbox'
-$NetworkSandboxConfig = Join-Path $NetworkSandboxStateRoot 'network-sandbox.json'
+$AllowProxyVersion = 'v0.4.0'
+$AllowProxyUri = "https://github.com/fmuecke/allowproxy/releases/download/$AllowProxyVersion/allowproxy-$AllowProxyVersion.zip"
+$AllowProxySha256 = 'CA812875647E73912D8EB0DFC72DCC718BC373D6C2CB72911C487AC668CE529C'
+$AllowProxyStateRoot = Join-Path $InstallRoot 'allowproxy'
+$AllowProxyExe = Join-Path $AllowProxyStateRoot 'allowproxy.exe'
 $ClaudeCodePolicyDir = Join-Path $env:ProgramFiles 'ClaudeCode'
 $ManagedSettings = Join-Path $ClaudeCodePolicyDir 'managed-settings.json'
 $ShortcutPath = Join-Path (Join-Path $env:PUBLIC 'Desktop') 'Agent Sandbox.lnk'
@@ -323,12 +321,13 @@ function Install-PinnedExecutable {
 function Test-ExistingSandboxProxyListener {
     param([object]$Listener)
 
-    if (-not (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) { return $false }
     $process = Get-Process -Id $Listener.OwningProcess -ErrorAction SilentlyContinue
-    if (-not $process -or $process.Path -notin @($NetworkSandboxExe, $LegacyNetworkSandboxExe)) {
+    if (-not $process -or $process.Path -ne $AllowProxyExe) {
         return $false
     }
-    $output = @(& $process.Path status -config $NetworkSandboxConfig 2>&1)
+    $runtimeConfig = Join-Path $AllowProxyStateRoot "allowproxy.inline-$($Listener.LocalPort).json"
+    if (-not (Test-Path -LiteralPath $runtimeConfig -PathType Leaf)) { return $false }
+    $output = @(& $process.Path status -config $runtimeConfig 2>&1)
     return ($LASTEXITCODE -eq 0 -and ($output -join ' ') -match
         "running \(pid $($Listener.OwningProcess)\) on 127\.0\.0\.1:$($Listener.LocalPort)(?!\d)")
 }
@@ -544,7 +543,7 @@ New-ItemProperty -Path $ualPath -Name $UserName -Value 0 -PropertyType DWord -Fo
 Write-Host "  hidden from the login screen" -ForegroundColor Green
 
 # --- 1c. Protected proxy and account-scoped network lock --------------------
-Write-Step "Installing network proxy $NetworkSandboxVersion and wfp-lock $WfpLockVersion"
+Write-Step "Installing network proxy $AllowProxyVersion and wfp-lock $WfpLockVersion"
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 if ((Get-Item -LiteralPath $InstallRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
     throw "Refusing to install into linked Program Files directory: $InstallRoot"
@@ -557,34 +556,23 @@ $usersRootAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
 icacls $InstallRoot /inheritance:r /grant:r $adminRootAce $systemRootAce $usersRootAce | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Could not protect $InstallRoot." }
 Set-AdminOwner -Path $InstallRoot
-New-Item -ItemType Directory -Path $NetworkSandboxStateRoot -Force | Out-Null
-if ((Get-Item -LiteralPath $NetworkSandboxStateRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-    throw "Refusing to use linked proxy state directory: $NetworkSandboxStateRoot"
+if (Test-Path -LiteralPath $AllowProxyExe -PathType Leaf) {
+    Stop-AgentSandboxProxy -Exe $AllowProxyExe
 }
-icacls $NetworkSandboxStateRoot /reset | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Could not reset permissions on $NetworkSandboxStateRoot." }
-$adminStateAce = Get-IcaclsSidAce -Sid $BuiltinAdministratorsSid -Rights '(OI)(CI)F'
-$systemStateAce = Get-IcaclsSidAce -Sid $LocalSystemSid -Rights '(OI)(CI)F'
-$usersStateAce = Get-IcaclsSidAce -Sid $BuiltinUsersSid -Rights '(OI)(CI)RX'
-$launcherCreateAce = "*${callingUserSid}:(WD)"
-$launcherFileAce = "*${callingUserSid}:(OI)(CI)(IO)M"
-icacls $NetworkSandboxStateRoot /inheritance:r /grant:r $adminStateAce $systemStateAce $usersStateAce $launcherCreateAce $launcherFileAce | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Could not protect $NetworkSandboxStateRoot." }
-Set-AdminOwner -Path $NetworkSandboxStateRoot
 Install-PinnedExecutable -Name 'wfp-lock' -DownloadUri $WfpLockUri `
     -ExpectedSha256 $WfpLockSha256 -InstallRoot $ToolsRoot
-$previousProxyExe = if (Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) {
-    $NetworkSandboxExe
-}
-else { $LegacyNetworkSandboxExe }
-if ((Test-Path -LiteralPath $previousProxyExe -PathType Leaf) -and
-    (Test-Path -LiteralPath $NetworkSandboxConfig -PathType Leaf)) {
-    & $previousProxyExe stop -config $NetworkSandboxConfig
-    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the previous network proxy.' }
-}
-foreach ($runtimeName in 'network-sandbox.json.pid', 'network-sandbox.json.pid.lock',
-    'network-sandbox.log', 'network-sandbox.log.1', 'network-sandbox.log.2', 'network-sandbox.log.3') {
-    $runtimePath = Join-Path $NetworkSandboxStateRoot $runtimeName
+Install-PinnedExecutable -Name 'allowproxy' -DownloadUri $AllowProxyUri `
+    -ExpectedSha256 $AllowProxySha256 -InstallRoot $AllowProxyStateRoot
+# Inline mode writes runtime files beside its executable. Keep the executable
+# admin-write-only before granting the launcher file creation in this directory.
+icacls $AllowProxyExe /inheritance:r /grant:r '*S-1-5-32-544:F' '*S-1-5-18:F' '*S-1-5-32-545:RX' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not protect $AllowProxyExe." }
+$launcherCreateAce = "*${callingUserSid}:(WD)"
+$launcherFileAce = "*${callingUserSid}:(OI)(CI)(IO)M"
+icacls $AllowProxyStateRoot /grant:r $launcherCreateAce $launcherFileAce | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not protect $AllowProxyStateRoot." }
+foreach ($runtimeName in 'allowproxy.log', 'allowproxy.log.1', 'allowproxy.log.2', 'allowproxy.log.3') {
+    $runtimePath = Join-Path $AllowProxyStateRoot $runtimeName
     if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) { continue }
     if ((Get-Item -LiteralPath $runtimePath -Force).LinkType) {
         throw "Refusing to update linked proxy runtime file: $runtimePath"
@@ -593,8 +581,6 @@ foreach ($runtimeName in 'network-sandbox.json.pid', 'network-sandbox.json.pid.l
     if ($LASTEXITCODE -ne 0) { throw "Could not protect $runtimePath." }
     Set-AdminOwner -Path $runtimePath
 }
-Install-PinnedExecutable -Name 'network-sandbox' -DownloadUri $NetworkSandboxUri `
-    -ExpectedSha256 $NetworkSandboxSha256 -InstallRoot $ToolsRoot
 
 # --- 1d. Write configuration and apply network settings ----------------------
 # config.json is the single source of truth for settings. It inherits the
@@ -605,15 +591,15 @@ if ((Test-Path -LiteralPath $InstalledConfigFile) -and (Get-Item -LiteralPath $I
 }
 $config = Merge-AgentSandboxSettings -Base $settings -Override @{
     setup = [ordered]@{
-        version               = $Version
-        createdAtUtc          = (Get-Date).ToUniversalTime().ToString('o')
-        userName              = $UserName
-        installedByUser       = $callingUser
-        launchAsVersion       = $LaunchAsVersion
-        wfpLockVersion        = $WfpLockVersion
-        networkSandboxVersion = $NetworkSandboxVersion
-        proxyOwnerSid         = $callingUserSid
-        provisionedWorkspace  = $SandboxPath
+        version              = $Version
+        createdAtUtc         = (Get-Date).ToUniversalTime().ToString('o')
+        userName             = $UserName
+        installedByUser      = $callingUser
+        launchAsVersion      = $LaunchAsVersion
+        wfpLockVersion       = $WfpLockVersion
+        allowProxyVersion    = $AllowProxyVersion
+        proxyOwnerSid        = $callingUserSid
+        provisionedWorkspace = $SandboxPath
     }
 }
 Set-Content -LiteralPath $InstalledConfigFile -Value ($config | ConvertTo-Json -Depth 10) -Encoding utf8NoBOM

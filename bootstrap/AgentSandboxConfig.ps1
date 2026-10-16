@@ -196,6 +196,61 @@ function Test-AgentSandboxSettings {
 }
 
 # --- Derived values -----------------------------------------------------------
+function Get-AgentSandboxProxyJson {
+    param([Collections.IDictionary]$Settings, [string]$StateRoot)
+
+    return ([ordered]@{
+        port             = [int]$Settings.proxy.port
+        logfile          = Join-Path $StateRoot 'allowproxy.log'
+        loglevel         = 'info'
+        privateaddresses = 'deny'
+        allowed          = @($Settings.proxy.allowedHosts)
+    } | ConvertTo-Json -Depth 4 -Compress)
+}
+
+# ArgumentList preserves JSON quotes even on PowerShell 7.0-7.2 and when the
+# caller selects legacy native argument passing.
+function Invoke-AgentSandboxProxy {
+    param([string]$Exe, [string]$Operation, [string]$ConfigJson)
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new($Exe)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Operation, '-config-json', $ConfigJson) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $global:LASTEXITCODE = $process.ExitCode
+        foreach ($output in $stdout.Result, $stderr.Result) {
+            if ($output) { $output.TrimEnd() }
+        }
+    }
+    finally { $process.Dispose() }
+}
+
+# Stop every inline instance in this installation, including the previous port
+# after config.json was edited. allowproxy owns and removes these runtime files.
+function Stop-AgentSandboxProxy {
+    param([string]$Exe)
+
+    $stateRoot = Split-Path $Exe -Parent
+    foreach ($pidFile in Get-ChildItem -LiteralPath $stateRoot -Filter 'allowproxy.inline-*.json.pid' -File) {
+        if ($pidFile.Name -notmatch '^allowproxy\.inline-(\d+)\.json\.pid$') { continue }
+        $port = [int]$Matches[1]
+        $runtimeConfig = Read-AgentSandboxConfig -Path ($pidFile.FullName -replace '\.pid$', '')
+        if ($runtimeConfig.port -ne $port) { throw "Proxy runtime port does not match $($pidFile.Name)." }
+        $json = $runtimeConfig | ConvertTo-Json -Depth 4 -Compress
+        Invoke-AgentSandboxProxy -Exe $Exe -Operation stop -ConfigJson $json
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stop the network proxy.' }
+    }
+}
+
 # The network lock allows the local proxy plus the configured direct endpoints.
 function Get-AgentSandboxLockEndpoints {
     param([Collections.IDictionary]$Settings)

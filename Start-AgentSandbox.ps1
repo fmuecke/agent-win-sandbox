@@ -39,8 +39,8 @@ $CheckerScript = Join-Path $InstallRoot 'Check-AgentSandbox.ps1'
 $ApplyConfigScript = Join-Path $InstallRoot 'Apply-Config.ps1'
 $ConfigFile = Join-Path $InstallRoot 'config.json'
 $PwshExe = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
-$NetworkSandboxExe = Join-Path $InstallRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path $InstallRoot 'network-sandbox') 'network-sandbox.json'
+$AllowProxyStateRoot = Join-Path $InstallRoot 'allowproxy'
+$AllowProxyExe = Join-Path $AllowProxyStateRoot 'allowproxy.exe'
 
 function Stop-LauncherError {
     param([string]$Message)
@@ -221,14 +221,16 @@ if (-not (Test-Path $sandboxPath)) {
 if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne $proxyOwnerSid) {
     Stop-LauncherError 'This launcher must run as the account that installed the proxy. Run setup again from the intended launcher account.'
 }
-if (-not (Test-Path $NetworkSandboxExe -PathType Leaf) -or
-    -not (Test-Path $NetworkSandboxConfig -PathType Leaf)) {
+if (-not (Test-Path $AllowProxyExe -PathType Leaf)) {
     Stop-LauncherError 'Network proxy is not installed. Run Setup-AgentSandbox.ps1 again.'
 }
-$proxyStatus = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
+$issue = Get-WriteAccessIssue -Path $AllowProxyExe
+if ($issue) { Stop-LauncherError "Refusing to launch: $issue Run Setup-AgentSandbox.ps1 again." }
+$proxyJson = Get-AgentSandboxProxyJson -Settings $settings -StateRoot $AllowProxyStateRoot
+$proxyStatus = @(Invoke-AgentSandboxProxy -Exe $AllowProxyExe -Operation status -ConfigJson $proxyJson)
 if ($LASTEXITCODE -ne 0 -or ($proxyStatus -join ' ') -notmatch "127\.0\.0\.1:$proxyPort(?!\d)") {
-    & $NetworkSandboxExe start -config $NetworkSandboxConfig
-    $proxyStatus = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
+    Invoke-AgentSandboxProxy -Exe $AllowProxyExe -Operation start -ConfigJson $proxyJson
+    $proxyStatus = @(Invoke-AgentSandboxProxy -Exe $AllowProxyExe -Operation status -ConfigJson $proxyJson)
     if ($LASTEXITCODE -ne 0 -or ($proxyStatus -join ' ') -notmatch "127\.0\.0\.1:$proxyPort(?!\d)") {
         Stop-LauncherError "Network proxy could not start on 127.0.0.1:$proxyPort. Run Setup-AgentSandbox.ps1 again."
     }

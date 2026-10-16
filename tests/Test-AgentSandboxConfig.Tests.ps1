@@ -73,15 +73,15 @@ try {
     Write-Output 'PASS: endpoint normalization'
 
     $endpointCases = [ordered]@{
-        'host name'        = @('db.example.com:1433', 'host names are not allowed')
-        'IPv4 shorthand'   = @('10.5:1433', 'host names are not allowed')
-        'missing port'     = @('10.0.0.5', 'host names are not allowed')
-        'port zero'        = @('10.0.0.5:0', 'invalid port')
-        'port too large'   = @('10.0.0.5:65536', 'invalid port')
-        'bad octet'        = @('10.0.0.256:22', 'invalid IP')
-        'IPv6 zone id'     = @('[fe80::1%3]:22', 'host names are not allowed')
-        'IPv4 wildcard'    = @('0.0.0.0:22', 'wildcard')
-        'IPv6 wildcard'    = @('[::]:22', 'wildcard')
+        'host name'      = @('db.example.com:1433', 'host names are not allowed')
+        'IPv4 shorthand' = @('10.5:1433', 'host names are not allowed')
+        'missing port'   = @('10.0.0.5', 'host names are not allowed')
+        'port zero'      = @('10.0.0.5:0', 'invalid port')
+        'port too large' = @('10.0.0.5:65536', 'invalid port')
+        'bad octet'      = @('10.0.0.256:22', 'invalid IP')
+        'IPv6 zone id'   = @('[fe80::1%3]:22', 'host names are not allowed')
+        'IPv4 wildcard'  = @('0.0.0.0:22', 'wildcard')
+        'IPv6 wildcard'  = @('[::]:22', 'wildcard')
     }
     foreach ($name in $endpointCases.Keys) {
         $endpoint, $pattern = $endpointCases[$name]
@@ -90,23 +90,23 @@ try {
 
     # Settings validation.
     $settingCases = [ordered]@{
-        'unknown top-level key'  = @({ param($s) $s.directEndpoint = @() }, "Unknown top-level setting 'directEndpoint'")
-        'missing key'            = @({ param($s) $s.Remove('directEndpoints') }, "Missing top-level setting 'directEndpoints'")
-        'setup in settings'      = @({ param($s) $s.setup = @{} }, "Unknown top-level setting 'setup'")
-        'relative workspace'     = @({ param($s) $s.workspace = 'AgentSandbox' }, 'absolute local path')
-        'UNC workspace'          = @({ param($s) $s.workspace = '\\server\share\AgentSandbox' }, 'absolute local path')
-        'workspace name'         = @({ param($s) $s.workspace = 'C:\Work' }, "directory name 'AgentSandbox'")
-        'unknown proxy key'      = @({ param($s) $s.proxy.privateAddresses = 'allow' }, "Unknown proxy setting 'privateAddresses'")
-        'string port'            = @({ param($s) $s.proxy.port = '8080' }, 'proxy.port')
-        'port out of range'      = @({ param($s) $s.proxy.port = 70000 }, 'proxy.port')
-        'host list not a list'   = @({ param($s) $s.proxy.allowedHosts = 'example.com:443' }, 'must be a list')
-        'host without port'      = @({ param($s) $s.proxy.allowedHosts = @('example.com') }, '<host>:<port>')
-        'endpoint without label' = @({ param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22' }) }, "Missing directEndpoints setting 'label'")
-        'blank label'            = @({ param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22'; label = ' ' }) }, 'one-line label')
-        'multi-line label'       = @({ param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22'; label = "a`nb" }) }, 'one-line label')
-        'proxy as endpoint'      = @({ param($s) $s.directEndpoints = @(@{ endpoint = '127.0.0.1:8080'; label = 'proxy' }) }, 'proxy endpoint')
-        'duplicate endpoint'     = @({ param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22'; label = 'a' }, @{ endpoint = '[::ffff:10.0.0.5]:22'; label = 'b' }) }, 'more than once')
-        'too many endpoints'     = @({ param($s) $s.directEndpoints = @(1..32 | ForEach-Object { @{ endpoint = "10.0.0.$($_):22"; label = 'host' } }) }, 'at most 32')
+        'unknown top-level key'  = @( { param($s) $s.directEndpoint = @() }, "Unknown top-level setting 'directEndpoint'")
+        'missing key'            = @( { param($s) $s.Remove('directEndpoints') }, "Missing top-level setting 'directEndpoints'")
+        'setup in settings'      = @( { param($s) $s.setup = @{} }, "Unknown top-level setting 'setup'")
+        'relative workspace'     = @( { param($s) $s.workspace = 'AgentSandbox' }, 'absolute local path')
+        'UNC workspace'          = @( { param($s) $s.workspace = '\\server\share\AgentSandbox' }, 'absolute local path')
+        'workspace name'         = @( { param($s) $s.workspace = 'C:\Work' }, "directory name 'AgentSandbox'")
+        'unknown proxy key'      = @( { param($s) $s.proxy.privateAddresses = 'allow' }, "Unknown proxy setting 'privateAddresses'")
+        'string port'            = @( { param($s) $s.proxy.port = '8080' }, 'proxy.port')
+        'port out of range'      = @( { param($s) $s.proxy.port = 70000 }, 'proxy.port')
+        'host list not a list'   = @( { param($s) $s.proxy.allowedHosts = 'example.com:443' }, 'must be a list')
+        'host without port'      = @( { param($s) $s.proxy.allowedHosts = @('example.com') }, '<host>:<port>')
+        'endpoint without label' = @( { param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22' }) }, "Missing directEndpoints setting 'label'")
+        'blank label'            = @( { param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22'; label = ' ' }) }, 'one-line label')
+        'multi-line label'       = @( { param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22'; label = "a`nb" }) }, 'one-line label')
+        'proxy as endpoint'      = @( { param($s) $s.directEndpoints = @(@{ endpoint = '127.0.0.1:8080'; label = 'proxy' }) }, 'proxy endpoint')
+        'duplicate endpoint'     = @( { param($s) $s.directEndpoints = @(@{ endpoint = '10.0.0.5:22'; label = 'a' }, @{ endpoint = '[::ffff:10.0.0.5]:22'; label = 'b' }) }, 'more than once')
+        'too many endpoints'     = @( { param($s) $s.directEndpoints = @(1..32 | ForEach-Object { @{ endpoint = "10.0.0.$($_):22"; label = 'host' } }) }, 'at most 32')
     }
     foreach ($name in $settingCases.Keys) {
         $mutate, $pattern = $settingCases[$name]
@@ -209,13 +209,13 @@ try {
             Microsoft.PowerShell.Management\Join-Path -Path $Path -ChildPath $ChildPath
         }
         $defaults = @('D:\Agent Work', [Environment]::GetFolderPath('UserProfile'))
-        $actual = & $wrapper -Brief -SkipCheck NETWORK,DESKTOP
+        $actual = & $wrapper -Brief -SkipCheck NETWORK, DESKTOP
         if (($actual.AllowedPath -join '|') -ne ($defaults -join '|') -or
             -not $actual.Brief -or ($actual.SkipCheck -join ',') -ne 'NETWORK,DESKTOP') {
             throw 'Exposure shortcut must supply the workspace and profile, and forward other options.'
         }
-        $actual = & $wrapper -allowedpath 'E:\Extra Work','F:\More Work'
-        if (($actual.AllowedPath -join '|') -ne (($defaults + @('E:\Extra Work','F:\More Work')) -join '|')) {
+        $actual = & $wrapper -allowedpath 'E:\Extra Work', 'F:\More Work'
+        if (($actual.AllowedPath -join '|') -ne (($defaults + @('E:\Extra Work', 'F:\More Work')) -join '|')) {
             throw 'Explicit allowed paths must be appended to both defaults without duplicate binding.'
         }
         $actual = & $wrapper -SandboxPath 'E:\Extra Work'
@@ -232,32 +232,31 @@ try {
     # Evaluate only path declarations, never setup/removal or installed checks.
     # Every entry point must agree on the protected Program Files installation.
     $installedPaths = @{
-        ProgramDataRoot = ''
-        InstallRoot = ''
-        ToolsRoot = ''
-        InstalledConfigFile = 'config.json'
-        ConfigFile = 'config.json'
-        BootstrapRoot = 'bootstrap'
-        LauncherScript = 'Start-AgentSandbox.ps1'
-        CheckerScript = 'Check-AgentSandbox.ps1'
-        ExposureCheckScript = 'Test-AgentSandboxExposure.ps1'
-        ApplyConfigScript = 'Apply-Config.ps1'
-        WfpLockExe = 'wfp-lock.exe'
-        NetworkSandboxExe = 'network-sandbox.exe'
-        NetworkSandboxStateRoot = 'network-sandbox'
-        NetworkSandboxConfig = 'network-sandbox\network-sandbox.json'
-        ShellInitScript = 'bootstrap\Initialize-AgentSandboxShell.ps1'
-        DevShellScript = 'bootstrap\Enter-DevShell.ps1'
-        ClaudeWrapperScript = 'bootstrap\claude-wrapper.ps1'
-        CopilotWrapperScript = 'bootstrap\copilot-wrapper.ps1'
+        ProgramDataRoot       = ''
+        InstallRoot           = ''
+        ToolsRoot             = ''
+        InstalledConfigFile   = 'config.json'
+        ConfigFile            = 'config.json'
+        BootstrapRoot         = 'bootstrap'
+        LauncherScript        = 'Start-AgentSandbox.ps1'
+        CheckerScript         = 'Check-AgentSandbox.ps1'
+        ExposureCheckScript   = 'Test-AgentSandboxExposure.ps1'
+        ApplyConfigScript     = 'Apply-Config.ps1'
+        WfpLockExe            = 'wfp-lock.exe'
+        AllowProxyExe         = 'allowproxy\allowproxy.exe'
+        AllowProxyStateRoot   = 'allowproxy'
+        ShellInitScript       = 'bootstrap\Initialize-AgentSandboxShell.ps1'
+        DevShellScript        = 'bootstrap\Enter-DevShell.ps1'
+        ClaudeWrapperScript   = 'bootstrap\claude-wrapper.ps1'
+        CopilotWrapperScript  = 'bootstrap\copilot-wrapper.ps1'
         ConfigFunctionsScript = 'bootstrap\AgentSandboxConfig.ps1'
-        ClaudeWrapper = 'bootstrap\claude-wrapper.ps1'
-        CopilotWrapper = 'bootstrap\copilot-wrapper.ps1'
-        CheckScript = 'Check-AgentSandbox.ps1'
-        InstalledCheckScript = 'Check-AgentSandbox.ps1'
-        launcher = 'Start-AgentSandbox.ps1'
-        installedRoot = ''
-        expectedRoot = ''
+        ClaudeWrapper         = 'bootstrap\claude-wrapper.ps1'
+        CopilotWrapper        = 'bootstrap\copilot-wrapper.ps1'
+        CheckScript           = 'Check-AgentSandbox.ps1'
+        InstalledCheckScript  = 'Check-AgentSandbox.ps1'
+        launcher              = 'Start-AgentSandbox.ps1'
+        installedRoot         = ''
+        expectedRoot          = ''
     }
     foreach ($relativePath in @('Setup-AgentSandbox.ps1', 'Remove-AgentSandbox.ps1',
             'Start-AgentSandbox.ps1', 'Apply-Config.ps1', 'Check-AgentSandbox.ps1',

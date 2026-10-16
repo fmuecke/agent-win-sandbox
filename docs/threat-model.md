@@ -203,15 +203,18 @@ Limitations:
 security boundary. A process running as `AgentSandbox` can unset them, configure
 a proxy bypass, or invoke a client that ignores them. Setup installs
 both network executables under protected `C:\Program Files\agent-win-sandbox`
-and the allowlist in its protected `network-sandbox` subdirectory. The trusted
+with `allowproxy.exe` in its `allowproxy` subdirectory. The executable stays
+admin-write-only; the trusted launcher can create and modify runtime files in
+that subdirectory, including the temporary JSON and PID files that allowproxy
+creates for background mode. AgentSandbox has read/execute access only. The trusted
 launcher account starts one proxy on `127.0.0.1` and
 the shell sets proxy variables for clients that honor them. `wfp-lock`
 applies a per-account WFP policy that allows TCP only to the configured proxy
 port on loopback and to the labeled `directEndpoints`, and blocks other
 outbound TCP/UDP attributed to `AgentSandbox`. Each direct endpoint is a
 deliberate bypass of the proxy for one address and port; a loopback endpoint
-exposes a local service to the agent. Setup and `Apply-Config.ps1` derive both
-the proxy policy and the WFP allow set from the admin-write `config.json`. The
+exposes a local service to the agent. The launcher derives the inline proxy policy and
+`Apply-Config.ps1` derives the WFP allow set from the admin-write `config.json`. The
 launcher refuses to start when settings are unapplied or when a non-admin can
 modify the config or bootstrap scripts. The shell verifies the WFP lock against
 `config.json` first and closes the session on mismatch.

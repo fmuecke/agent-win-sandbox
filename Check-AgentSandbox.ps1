@@ -77,13 +77,13 @@ param(
 $Version = '0.10.0'
 $LaunchAsVersion = 'v1.3.0'
 $WfpLockVersion = 'v0.10.0'
-$NetworkSandboxVersion = 'v0.3.0'
+$AllowProxyVersion = 'v0.4.0'
 $ToolsRoot = Split-Path $ConfigFile -Parent
 $ConfigFunctionsScript = Join-Path (Join-Path $ToolsRoot 'bootstrap') 'AgentSandboxConfig.ps1'
 $ApplyConfigScript = Join-Path $ToolsRoot 'Apply-Config.ps1'
 $WfpLockExe = Join-Path $ToolsRoot 'wfp-lock.exe'
-$NetworkSandboxExe = Join-Path $ToolsRoot 'network-sandbox.exe'
-$NetworkSandboxConfig = Join-Path (Join-Path (Split-Path $ConfigFile -Parent) 'network-sandbox') 'network-sandbox.json'
+$AllowProxyStateRoot = Join-Path $ToolsRoot 'allowproxy'
+$AllowProxyExe = Join-Path $AllowProxyStateRoot 'allowproxy.exe'
 $BuiltinAdministratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $BuiltinUsersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
 $LocalSystemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
@@ -328,7 +328,7 @@ else {
             Test-ConfigSetupRequiredField -Setup $setup -Field 'installedByUser' -Description 'Installing user'
             Test-ConfigSetupField -Setup $setup -Field 'launchAsVersion' -Expected $LaunchAsVersion -Description 'launch-as version'
             Test-ConfigSetupField -Setup $setup -Field 'wfpLockVersion' -Expected $WfpLockVersion -Description 'wfp-lock version'
-            Test-ConfigSetupField -Setup $setup -Field 'networkSandboxVersion' -Expected $NetworkSandboxVersion -Description 'network-sandbox version'
+            Test-ConfigSetupField -Setup $setup -Field 'allowProxyVersion' -Expected $AllowProxyVersion -Description 'allowproxy version'
             Test-ConfigSetupRequiredField -Setup $setup -Field 'proxyOwnerSid' -Description 'Proxy launcher account SID'
         }
     }
@@ -502,8 +502,7 @@ Test-LaunchAsBrokerService
 Section "Network proxy and lock"
 foreach ($component in @(
         [pscustomobject]@{ Description = 'wfp-lock'; Path = $WfpLockExe },
-        [pscustomobject]@{ Description = 'network-sandbox'; Path = $NetworkSandboxExe },
-        [pscustomobject]@{ Description = 'proxy policy'; Path = $NetworkSandboxConfig },
+        [pscustomobject]@{ Description = 'allowproxy'; Path = $AllowProxyExe },
         [pscustomobject]@{ Description = 'exposure checker'; Path = (Join-Path $installRoot 'Test-AgentSandboxExposure.ps1') }
     )) {
     if (Test-Path -LiteralPath $component.Path -PathType Leaf) {
@@ -519,7 +518,7 @@ foreach ($component in @(
 }
 Test-AdminWriteOnlyPath -Path $ToolsRoot -Description 'Network tools directory' -UserName $UserName
 Test-AdminOwner -Path $ToolsRoot -Description 'Network tools directory'
-$proxyStateRoot = Split-Path $NetworkSandboxConfig -Parent
+$proxyStateRoot = $AllowProxyStateRoot
 if (Test-Path -LiteralPath $proxyStateRoot -PathType Container) {
     Test-AdminOwner -Path $proxyStateRoot -Description 'Proxy state directory'
     $sandboxSid = (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue).SID.Value
@@ -538,9 +537,10 @@ if (Test-Path -LiteralPath $proxyStateRoot -PathType Container) {
     else { Pass 'Proxy state directory excludes AgentSandbox from write access.' }
 }
 else { Fail "Proxy state directory missing: $proxyStateRoot" }
-if ((Test-Path -LiteralPath $NetworkSandboxExe -PathType Leaf) -and $proxyPort -ge 1 -and $proxyPort -le 65535) {
+if ((Test-Path -LiteralPath $AllowProxyExe -PathType Leaf) -and $proxyPort -ge 1 -and $proxyPort -le 65535) {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $proxyStatus = @(& $NetworkSandboxExe status -config $NetworkSandboxConfig 2>&1)
+    $runtimeConfig = Join-Path $AllowProxyStateRoot "allowproxy.inline-$proxyPort.json"
+    $proxyStatus = @(& $AllowProxyExe status -config $runtimeConfig 2>&1)
     if ($LASTEXITCODE -eq 0 -and ($proxyStatus -join ' ') -match "127\.0\.0\.1:$proxyPort(?!\d)") {
         Pass "Proxy running on 127.0.0.1:$proxyPort"
     }
