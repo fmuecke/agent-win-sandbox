@@ -2587,9 +2587,8 @@ function Invoke-TcpProbe {
 }
 
 function Invoke-DnsProbe {
-    # Resolves a name through the system resolver. Returns answered when a DNS
-    # server answered, including a not-found answer (WSAHOST_NOT_FOUND), or
-    # error.
+    # Returns answered on successful resolution, inconclusive for host-not-found,
+    # or error. WSAHOST_NOT_FOUND does not establish that a DNS response arrived.
     param([Parameter(Mandatory)][string]$HostName)
 
     try {
@@ -2599,7 +2598,7 @@ function Invoke-DnsProbe {
     catch {
         $exception = $_.Exception
         while ($exception -and $exception -isnot [System.Net.Sockets.SocketException]) { $exception = $exception.InnerException }
-        if ($exception -and $exception.ErrorCode -eq 11001) { return 'answered' }
+        if ($exception -and $exception.ErrorCode -eq 11001) { return 'inconclusive' }
         return 'error'
     }
 }
@@ -2890,10 +2889,9 @@ function Invoke-NetworkCheck {
     }
     $script:Inventory['proxyProbes'] = @($proxyResults)
 
-    # R-NET-COVERT: routes outside TCP. The system resolver sends queries from
-    # the DNS Client service, so a per-user firewall rule cannot block them; an
-    # answer for a unique name, even not-found, shows the query left the host
-    # (or a local resolver answered it).
+    # R-NET-COVERT: routes outside TCP. The system resolver may broker queries
+    # through the DNS Client service. Host-not-found alone proves neither egress
+    # nor blocking; confirmation requires receiver or packet-capture evidence.
     $uniqueName = 'probe-' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '.example.com'
     $covert = @(
         [pscustomobject]@{ Route = 'dns'; Target = "dns:$uniqueName"; Outcome = (Invoke-DnsProbe -HostName $uniqueName) }
@@ -2912,13 +2910,14 @@ function Invoke-NetworkCheck {
         Set-CriterionOutcome -Id 'R-NET-COVERT' -Outcome 'unmet' -Method 'observed-operation' `
             -Reason "$(($covertReached | ForEach-Object { $_.Route }) -join ', ') egress reached outside TCP. Probes: $covertNote."
     }
-    elseif (@($covert | Where-Object { $_.Route -eq 'udp' -and $_.Outcome -eq 'blocked' }).Count) {
+    elseif (@($covert | Where-Object { $_.Route -eq 'udp' -and $_.Outcome -eq 'blocked' }).Count -and
+        -not @($covert | Where-Object { $_.Outcome -eq 'inconclusive' }).Count) {
         Set-CriterionOutcome -Id 'R-NET-COVERT' -Outcome 'met' -Method 'observed-operation' `
             -Reason "Direct UDP 53 was blocked by local policy and the unique DNS name got no answer; ICMP without a reply is accepted, not proven blocked. Probes: $covertNote."
     }
     else {
         Set-CriterionOutcome -Id 'R-NET-COVERT' -Outcome 'unknown' -Method 'observed-operation' `
-            -Reason "No route outside TCP answered, but timeouts and errors do not establish enforced restriction. Probes: $covertNote."
+            -Reason "No route outside TCP was confirmed; inconclusive results, timeouts and errors do not establish enforced restriction. Probes: $covertNote."
     }
     $proxyReached = @($proxyResults | Where-Object { $_.Result -eq 'reached' })
     # 403/451 are a proxy's explicit policy refusal; 407 only asks for

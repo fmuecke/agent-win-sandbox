@@ -31,6 +31,11 @@ public sealed class TestHeldHandle {
     public string Path; public string TokenSid; public bool TokenElevated;
 }
 public sealed class TestJob { public bool InJob; public uint LimitFlags; public uint UiRestrictions; public int Error; }
+public static class TestDnsResolver {
+    public static System.Net.IPAddress[] GetHostAddresses(string hostName) {
+        throw new System.Net.Sockets.SocketException(11001);
+    }
+}
 public static class AgentSandboxAssessmentNative {
     public static int NamedError;
     public static uint NamedGranted;
@@ -1824,8 +1829,7 @@ finally {
         Assert-Equal ($script:Criteria['C-POLICY-INTEGRITY'].Remediation -match 'elevated') $true
     }
 
-    # Medium: egress outside TCP 443. DNS through the system resolver is sent by
-    # the DNS Client service, so a per-user firewall rule cannot block it.
+    # Medium: egress outside TCP 443. Resolver errors alone do not prove egress.
     # Dot-source so the mocks stay local to the calling case.
     function Set-BlockedEgressMocks {
         $script:NetworkTarget = @()
@@ -1848,6 +1852,25 @@ finally {
         if (-not @($script:probes | Where-Object { $_ -like 'icmp:*' }).Count) { throw 'No ICMP probe.' }
         if (-not @($script:probes | Where-Object { $_ -match '^tcp:(?!127\.).*:(?!443$)\d+$' }).Count) { throw 'No non-443 Internet TCP probe.' }
         Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome 'met'
+    }
+    foreach ($udpOutcome in @('blocked', 'timeout', 'reply')) {
+        Test-Case "Host-not-found DNS is inconclusive when direct UDP is $udpOutcome" {
+            . Set-BlockedEgressMocks
+            # Exercise the real probe, substituting only the resolver API to
+            # produce a wrapped SocketException without sending network traffic.
+            $dnsProbe = $ast.Find({ param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-DnsProbe'
+            }, $true).Extent.Text
+            Invoke-Expression $dnsProbe.Replace('[System.Net.Dns]', '[TestDnsResolver]')
+            Set-Item -Path Function:\Invoke-UdpProbe -Value ([scriptblock]::Create("'$udpOutcome'"))
+            Assert-Equal (Invoke-DnsProbe -HostName 'probe.example.com') 'inconclusive'
+            Invoke-NetworkCheck
+            Assert-Equal (@($script:Inventory['covertProbes'] | Where-Object Route -eq 'dns')[0].Outcome) 'inconclusive'
+            Assert-Equal $script:Criteria['R-NET-COVERT'].Outcome $(if ($udpOutcome -eq 'reply') { 'unmet' } else { 'unknown' })
+            $covertFindings = @($script:Findings | Where-Object Criterion -eq 'R-NET-COVERT')
+            Assert-Equal (@($covertFindings | Where-Object Target -like 'dns:*').Count) 0
+            Assert-Equal $covertFindings.Count $(if ($udpOutcome -eq 'reply') { 1 } else { 0 })
+        }
     }
     foreach ($case in @(
             @{ Name = 'an answered unique DNS name'; Mock = 'Invoke-DnsProbe'; Result = 'answered' },
