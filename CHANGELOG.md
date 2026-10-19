@@ -8,7 +8,7 @@ Git log.
 - Changed: Update the proxy to `allowproxy v0.4.0` and pass its policy with
   `-config-json` from the shared `config.json`. Remove the separately generated
   proxy policy; allowproxy manages its own temporary background config.
-
+- Changed: Made `Setup-AgentSandbox.ps1` and `Apply-Config.ps1` auto-elevate.
 - Fixed: The launcher rejected protected directories with inherit-only
   CREATOR OWNER entries, incorrectly reporting them as writable.
 - Changed: Install network tools, configuration, bootstrap, and runtime scripts

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
-#Requires -RunAsAdministrator
 #Requires -Version 7.0
 <#
 .SYNOPSIS
@@ -11,7 +10,7 @@
     access to the calling user's secrets.
 
 .NOTES
-    - Run from an ELEVATED PowerShell session.
+    - Requests administrator elevation when needed.
     - Model: AgentSandbox is a STANDARD user. Windows default ACLs already deny it
       access to other users' profiles and admin areas. We GRANT the few extra
       paths it needs (sandbox workspace, its own profile) and add EXPLICIT DENY only on the
@@ -43,6 +42,51 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# --- Elevation ---------------------------------------------------------------
+function Test-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-Administrator)) {
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    foreach ($name in 'ConfigFile', 'SandboxPath') {
+        if (-not $PSBoundParameters.ContainsKey($name)) { continue }
+        $value = [string]$PSBoundParameters[$name]
+        # A quote could end the argument and inject options into the elevated process.
+        if ($value.Contains('"') -or $value.IndexOfAny([IO.Path]::GetInvalidPathChars()) -ge 0) {
+            throw "-$name contains invalid path characters."
+        }
+        if ($name -eq 'ConfigFile' -and $value) {
+            $value = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($value)
+        }
+        # Windows command-line parsing consumes backslashes before a closing quote.
+        $value = $value -replace '(\\+)$', '$1$1'
+        $arguments += " -$name `"$value`""
+    }
+    if ($PSBoundParameters.ContainsKey('ProxyPort')) {
+        $arguments += " -ProxyPort $ProxyPort"
+    }
+    $powerShell = Join-Path $PSHOME 'pwsh.exe'
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        throw "PowerShell 7 executable not found at $powerShell."
+    }
+    $process = Start-Process -FilePath $powerShell `
+        -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+    $exitCode = $process.ExitCode
+    if ($exitCode -eq 0) {
+        Write-Host 'Elevated setup completed successfully (exit code 0).' -ForegroundColor Green
+    }
+    elseif ($exitCode -eq 1223) {
+        Write-Host 'Elevated setup was cancelled (exit code 1223).' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "Elevated setup failed (exit code $exitCode)." -ForegroundColor Red
+    }
+    exit $exitCode
+}
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
 $Version = '0.10.0'

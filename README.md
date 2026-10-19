@@ -69,7 +69,7 @@ Use `-ProxyPort 18080` to try another port, or `-PrepareOnly` to create and insp
 
 Note: Existing installations must be removed with their matching `Remove-AgentSandbox.ps1` before setup. There is no automatic migration.
 
-Run once from an elevated PowerShell 7 session, using the account that will normally launch the sandbox:
+Run once from PowerShell 7, using the account that will normally launch the sandbox. Setup requests administrator elevation when needed:
 
 ```powershell
 .\Setup-AgentSandbox.ps1 -ProxyPort 8080
@@ -109,7 +109,7 @@ Setup merges settings in this order, later wins: `config\agent-sandbox.json` def
 .\Setup-AgentSandbox.ps1 -ConfigFile .\my-sandbox.json
 ```
 
-To change settings without setup, edit `config.json` as administrator, close all AgentSandbox sessions, then run elevated:
+To change settings without setup, edit `config.json` as administrator, close all AgentSandbox sessions, then run the following command. It requests administrator elevation when needed:
 
 ```powershell
 & "$env:ProgramFiles\agent-win-sandbox\Apply-Config.ps1"

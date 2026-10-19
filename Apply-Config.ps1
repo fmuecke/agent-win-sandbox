@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Part of agent-win-sandbox: https://github.com/fmuecke/agent-win-sandbox
 
-#Requires -RunAsAdministrator
 #Requires -Version 7.0
 <#
 .SYNOPSIS
@@ -16,8 +15,9 @@
     with the proxy endpoint plus the configured directEndpoints. The launcher
     restarts the proxy as the launcher account on the next start.
 
-    Setup calls this script. Run it yourself, elevated, after editing
+    Setup calls this script. Run it yourself after editing
     config.json; the launcher refuses to start until settings are applied.
+    Requests administrator elevation when needed.
     Close all AgentSandbox sessions first.
 
     Workspace changes are not applied here; run Setup-AgentSandbox.ps1.
@@ -30,6 +30,34 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+
+# --- Elevation ---------------------------------------------------------------
+function Test-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-Administrator)) {
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    $powerShell = Join-Path $PSHOME 'pwsh.exe'
+    if (-not (Test-Path -LiteralPath $powerShell -PathType Leaf)) {
+        throw "PowerShell 7 executable not found at $powerShell."
+    }
+    $process = Start-Process -FilePath $powerShell `
+        -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+    $exitCode = $process.ExitCode
+    if ($exitCode -eq 0) {
+        Write-Host 'Elevated configuration applied successfully (exit code 0).' -ForegroundColor Green
+    }
+    elseif ($exitCode -eq 1223) {
+        Write-Host 'Elevated configuration was cancelled (exit code 1223).' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "Elevated configuration failed (exit code $exitCode)." -ForegroundColor Red
+    }
+    exit $exitCode
+}
 
 $UserName = 'AgentSandbox'
 $InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
