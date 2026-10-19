@@ -1059,6 +1059,19 @@ finally { $stream.Dispose() }
         Assert-Equal (@($result.Paths) -contains $root) $true
         Assert-Equal $result.Incomplete $false
     }
+    Test-Case 'The legacy Documents and Settings junction is not adjacent reach' {
+        $root = Join-Path $testRoot 'drive\root'
+        $legacy = Join-Path $env:SystemDrive 'Documents and Settings'
+        function Get-ChildItem {
+            [CmdletBinding()] param([string]$LiteralPath, [switch]$Directory, [switch]$Force)
+            if ($LiteralPath -eq $root) { return [pscustomobject]@{ FullName = $legacy } }
+            Microsoft.PowerShell.Management\Get-ChildItem @PSBoundParameters
+        }
+        function Get-ScanPathExclusion { $null }
+        $result = Get-AdjacentDirectories -DriveRoot @($root)
+        Assert-Equal (@($result.Paths) -contains $legacy) $false
+        Assert-Equal $result.Incomplete $false
+    }
     $usersRoot = Join-Path $testRoot 'users'
     Test-Case 'Profiles behind a denied users listing are found through ProfileList' {
         $other = Join-Path $usersRoot 'other'

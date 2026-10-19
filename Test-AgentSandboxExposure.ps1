@@ -125,8 +125,8 @@ $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 
 $SchemaVersion = 'agent-sandbox-assessment/1'
-$CheckerVersion = '0.2.0'
-$ReportHeader = 'Agent sandbox exposure checker - inside-only assessment | Copyright (c) 2026 Florian Mücke'
+$CheckerVersion = '0.2.1'
+$ReportHeader = "Agent sandbox exposure checker - inside-only assessment v$CheckerVersion | Copyright (c) 2026 Florian Mücke"
 $ProfileId = 'default'
 $ProfileVersion = '6'
 $MinimumCoverageForVerdict = 0.6
@@ -2182,8 +2182,12 @@ function Get-AdjacentDirectories {
         $DriveRoot = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } |
             ForEach-Object { $_.RootDirectory.FullName })
     }
+    # Documents and Settings is the OS compatibility junction to Users, which
+    # R-FILES-PROFILES covers. A standard user cannot read its link target, and
+    # the reparse attribute alone does not tell links from cloud-file folders.
     $systemRoots = @($env:SystemRoot, (Join-Path $env:SystemDrive 'Program Files'),
         (Join-Path $env:SystemDrive 'Program Files (x86)'), (Join-Path $env:SystemDrive 'Users'),
+        (Join-Path $env:SystemDrive 'Documents and Settings'),
         (Join-Path $env:SystemDrive 'ProgramData')) | ForEach-Object { $_.TrimEnd('\') }
     $workspace = $script:WorkspacePath.TrimEnd('\')
     $ancestors = @()
