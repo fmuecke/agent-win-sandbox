@@ -5,7 +5,7 @@
 # Initializes a plain PowerShell session as AgentSandbox. It deliberately does
 # not enter the Visual Studio Developer Shell or start an agent.
 #Requires -Version 7.0
-$Version = '0.10.0'
+$Version = '1.0.0'
 # Not %ProgramFiles%: AgentSandbox can redirect its own environment variables.
 $InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
 $ConfigFile = Join-Path $InstallRoot 'config.json'
@@ -183,7 +183,7 @@ Set-Alias -Name copilot -Value $CopilotWrapper -Scope Global
 Set-Alias -Name sandbox-check -Value $CheckScript -Scope Global
 
 function global:Invoke-SandboxExposure {
-    param([string[]]$AllowedPath = @())
+    param([Alias('SandboxPath')][string[]]$AllowedPath = @())
 
     $installedRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'
     $installedConfig = Get-Content (Join-Path $installedRoot 'config.json') -Raw | ConvertFrom-Json

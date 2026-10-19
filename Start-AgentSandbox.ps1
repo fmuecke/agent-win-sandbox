@@ -246,6 +246,7 @@ try {
     & $LaunchAsExe `
         --user $UserName `
         --working-directory $sandboxPath `
+        --restrict-access `
         -- $PwshExe -NoLogo -NoExit -NoProfile -ExecutionPolicy Bypass -File $ShellInitScript
     $launchAsExitCode = $LASTEXITCODE
 }

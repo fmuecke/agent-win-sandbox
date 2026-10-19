@@ -3,8 +3,10 @@
 All notable user-facing changes are documented here. Earlier history is in the
 Git log.
 
-## Unreleased
+## 1.0.0 - 2026-10-20
 
+- Changed: Update the pinned `launch-as` release to `v1.5.0` and launch with
+  `--restrict-access` to restrict filesystem access.
 - Changed: Update the proxy to `allowproxy v0.4.0` and pass its policy with
   `-config-json` from the shared `config.json`. Remove the separately generated
   proxy policy; allowproxy manages its own temporary background config.

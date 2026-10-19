@@ -856,12 +856,19 @@ finally { $stream.Dispose() }
             @{ Name = 'A user PATH entry that leaves the profile through .. is outside it'; PathDirs = @('{profile}\..\other\bin'); Expected = 'unmet' })) {
         Test-Case $case.Name {
             $userProfile = $env:USERPROFILE
-            function Get-UserPathDirectories { @($case.PathDirs | ForEach-Object { $_.Replace('{profile}', $userProfile) }) }
+            $pathDirs = @($case.PathDirs | ForEach-Object { $_.Replace('{profile}', $userProfile) })
+            $writablePaths = $pathDirs + (Join-Path $userProfile '.local\bin')
+            function Get-UserPathDirectories { $pathDirs }
             function Test-Path { $true }
             function Get-ChildItem { @() }
             function Get-ItemProperty { [pscustomobject]@{ CallLegacyWCMPolicies = 0 } }
             function Get-Content { '{"allowManagedHooksOnly":true}' }
-            function Get-PathAccess { param($Path) New-PathAccessFixture -Path $Path -Write granted }
+            function Get-PathAccess {
+                param($Path)
+                # Redirected Documents folders must not affect this startup-path fixture.
+                $write = if ($Path -in $writablePaths) { 'granted' } else { 'denied' }
+                New-PathAccessFixture -Path $Path -Write $write
+            }
             Invoke-ContainmentCheck
             Assert-Equal $script:Criteria['C-PERSIST-SELF'].Outcome $case.Expected
             $expected = @($script:Findings | Where-Object { $_.Criterion -eq 'C-PERSIST-SELF' -and $_.Severity -eq 'info' })

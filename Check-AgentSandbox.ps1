@@ -74,8 +74,8 @@ param(
     [string]$ConfigFile = (Join-Path (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox') 'config.json')
 )
 
-$Version = '0.10.0'
-$LaunchAsVersion = 'v1.3.0'
+$Version = '1.0.0'
+$LaunchAsVersion = 'v1.5.0'
 $WfpLockVersion = 'v0.10.0'
 $AllowProxyVersion = 'v0.4.0'
 $ToolsRoot = Split-Path $ConfigFile -Parent

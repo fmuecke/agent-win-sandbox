@@ -2,15 +2,18 @@
 
 <img width="640" height="360" alt="image" src="https://github.com/user-attachments/assets/641b6d56-cc92-46b3-a48c-b53a0c94e5e1" />
 
-> Give coding agents their own Windows identity, workspace, and controlled path to the internet. Keep your familiar PowerShell terminal and development tools.
+> Give coding agents their own Windows identity, restricted filesystem access, and controlled path to the internet. Keep your familiar PowerShell terminal and development tools.
 
 - **Protect your account:** the agent runs as a separate standard user, away from your personal credentials and interactive desktop.
+- **Restrict file access:** launch-as 1.5.0 with `--restrict-access` enforces filesystem restrictions around the workspace and agent profile while keeping Windows and installed development tools usable.
 - **Control network egress:** outbound TCP/UDP is limited to a local proxy that forwards only to destinations in your allowlist.
 - **See what is exposed:** run `sandbox-exposure` to check the agent's actual reach, authority, containment, and monitoring controls.
 - **Stay in your tools:** the console runs in Windows Terminal or the integrated terminal of VS Code or Visual Studio.
 
-**Measured on one Windows host (October 2026):** the exposure checker scored an AgentSandbox session **51–67/100**, versus **17–31/100** for a regular developer session. Both used checker profile `default/5`; evidence coverage was 85% and 87%, respectively; the sandbox assessment was marked incomplete.
-These are control-assessment ranges, not a multiplier for security or breach risk. Results depend on the machine and session. This setup reduces blast radius, but does not provide VM-grade isolation; use a VM for adversarial code or strong isolation.
+Identity separation, filesystem restrictions, protected configuration, and network policy together provide strong practical containment for everyday agentic development. The agent still shares your Windows host; the [shared-host model](#the-shared-host-model) explains the remaining responsibilities.
+
+**Historical baseline, before the launch-as 1.5.0 update (October 2026):** the exposure checker scored an AgentSandbox session **51–67/100**, versus **17–31/100** for a regular developer session. Both used checker profile `default/5`; evidence coverage was 85% and 87%, respectively; the sandbox assessment was marked incomplete.
+These are control-assessment ranges, not a multiplier for security or breach risk, and do not measure the new filesystem restriction. Results depend on the machine and session.
 
 Currently supported with built-in commands:
 
@@ -26,11 +29,27 @@ Of course any other agent like OpenCode can be installed within the Agent Sandbo
   `C:\Users\AgentSandbox`.
 - Runs console agents through a passwordless broker in an independent logon
   session and noninteractive desktop.
-- Limits expected agent writes to the sandbox workspace.
+- Applies `launch-as --restrict-access` to the agent shell and its descendants.
 - Protects the launcher, [`launch-as`](https://github.com/fmuecke/launch-as), network tools, bootstrap, checker, and managed-settings
   files in admin-write locations.
 - Restricts the sandbox account's outbound TCP/UDP to the local proxy port with
   [`wfp-lock`](https://github.com/fmuecke/wfp-lock); [`allowproxy`](https://github.com/fmuecke/allowproxy) forwards only allowlisted destinations.
+
+### The shared-host model
+
+Windows file permissions are often permissive for ordinary users, especially in shared folders and application data. A separate account alone does not make everything else on the machine private.
+
+Think of the agent as a roommate. The filesystem restriction adds strong locks to rooms it should not enter, but you still need to avoid leaving sensitive files and credentials in shared spaces. The workspace, agent profile, and accessible system locations remain part of that shared environment. An isolated VM is closer to a locked room with no windows, perhaps with Wi-Fi: it has its own filesystem, with only the host resources you deliberately share.
+
+This setup combines substantial restrictions with the convenience of your installed Windows tools. Keep unrelated secrets out of the agent's reach, review shared resources, and use a disposable VM when you need a separate operating-system boundary for adversarial code.
+
+### Filesystem restriction
+
+Every session uses launch-as 1.5.0 with `--restrict-access`. It combines a write-restricted token with temporary folder ACL denies. Ordinary path-based reads are restricted to the agent profile, configured workspace, Windows, and Program Files trees, subject to their existing permissions. System locations retain their normal ACLs and can still contain writable paths; this is not a guarantee that all writes stay in the workspace.
+
+The broker checks and applies the restriction on each launch and rejects launches if preparation fails. Concurrent restricted sessions share their allowed workspaces; temporary denies are removed after the account's last session tree exits. During that time, pinned directories cannot be renamed or deleted by any user.
+
+The restriction is path-based rather than an exact filesystem allowlist. Folder names and loose files in allowed-path ancestors can remain accessible. File-ID opens, previously opened handles, hard-link aliases, remote shares, and unmounted volumes are outside this restriction. New base folders and mounted volumes are covered only on the next launch. Abrupt broker termination can leave temporary denies behind. See the [launch-as 1.5.0 filesystem contract](https://github.com/fmuecke/launch-as/blob/v1.5.0/README.md#launch) for details.
 
 ### Learn more in the [F.A.Q.](https://github.com/fmuecke/agent-win-sandbox#faq)
 - [Why not PsExec or runas.exe?](#why-not-psexec-or-runasexe)
@@ -38,9 +57,9 @@ Of course any other agent like OpenCode can be installed within the Agent Sandbo
 
 ### What it does not protect against
 
-- Malicious code, prompt injection, or hard isolation failures.
+- Prompt injection itself, Windows privilege-escalation vulnerabilities, or host compromise.
 - Exfiltration through services included in the proxy allowlist.
-- Data readable by `AgentSandbox`, including its workspace, credentials, and broadly readable local files.
+- Misuse or loss of data still accessible to `AgentSandbox`, including its workspace and credentials.
 - Snapshots, resource limits, centralized audit logs, or automatic kill switches.
 
 ### Requirements
@@ -188,11 +207,21 @@ It keeps the workspace, such as `C:\AgentSandbox`, and any older network-tool co
 ## Important notes
 
 - Install agent CLIs per-user under `C:\Users\AgentSandbox`, not machine-wide or in your main profile.
-- The sandbox user can access anything in its workspace and anything readable by ordinary Windows users.
+- The workspace and sandbox profile remain available to the agent. Treat credentials stored there as usable by every process running as `AgentSandbox`.
 - Claude managed settings do not govern Copilot CLI. Configure each agent's permissions independently.
 - The default `proxy.allowedHosts` list is intentionally small. Agent sign-in, updates, and package feeds may need additional reviewed destinations.
 - Each `directEndpoints` entry bypasses the proxy for that address and port. A loopback entry exposes a local service on this machine to the agent; setup and `Apply-Config.ps1` warn about it.
 - WFP covers outbound TCP/UDP attributed to `AgentSandbox`; ICMP and brokered DNS or traffic under another identity remain outside that per-user lock. The proxy controls destination hosts and ports, not HTTPS content. See the [threat model](docs/threat-model.md#proxy-settings-and-strict-egress).
+
+## Tests
+
+Run all regression suites from PowerShell 7:
+
+```powershell
+.\Run-Tests.ps1
+```
+
+Each suite runs in a separate process. The runner reports all failures and exits with code 1 if any suite fails. Add `-ProxyExecutable C:\tools\allowproxy.exe` to include the optional proxy binary integration test.
 
 ## References
 

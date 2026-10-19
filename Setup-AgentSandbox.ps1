@@ -89,7 +89,7 @@ if (-not (Test-Administrator)) {
 }
 
 $UserName = 'AgentSandbox'   # baked in; not configurable
-$Version = '0.10.0'
+$Version = '1.0.0'
 $InstallRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'agent-win-sandbox'    # baked in; not configurable
 $InstalledConfigFile = Join-Path $InstallRoot 'config.json'
 $SettingsDefaultsSource = Join-Path $PSScriptRoot 'config\agent-sandbox.json'
@@ -116,10 +116,10 @@ $ApplyConfigScript = Join-Path $InstallRoot 'Apply-Config.ps1'
 $LaunchAsInstallRoot = Join-Path $env:ProgramFiles 'launch-as'
 $LaunchAsExe = Join-Path $LaunchAsInstallRoot 'launch-as.exe'
 $LaunchAsAdminExe = Join-Path $LaunchAsInstallRoot 'launch-as-admin.exe'
-$LaunchAsVersion = 'v1.3.0'
+$LaunchAsVersion = 'v1.5.0'
 $LaunchAsDownloadUri = "https://github.com/fmuecke/launch-as/releases/download/$LaunchAsVersion/launch-as-$LaunchAsVersion-win64.zip"
-$LaunchAsSha256 = '1CCDA8A7736C24846102D94A9C12A6D3F0C29733EB282504CCCCED69E0543A8F'
-$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0')
+$LaunchAsSha256 = 'F8FF36BF5CC045FB3A2FC41A6E94C5AC53602A0A697067CE35110CC2B919DF32'
+$SupportedLaunchAsVersions = @('v1.0.0-preview', 'v1.1.0-preview', 'v1.1.0', 'v1.2.0-preview', 'v1.3.0', 'v1.5.0')
 $WfpLockVersion = 'v0.10.0'
 $WfpLockUri = "https://github.com/fmuecke/wfp-lock/releases/download/$WfpLockVersion/wfp-lock-$WfpLockVersion-win64.zip"
 $WfpLockSha256 = 'B4A4E52FB92DDF6CE4E1AA97F713438388DCA0BA213C6077BE4DEB273BB207E8'
