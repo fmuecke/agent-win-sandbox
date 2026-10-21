@@ -1079,6 +1079,59 @@ finally { $stream.Dispose() }
         Assert-Equal (@($result.Paths) -contains $legacy) $false
         Assert-Equal $result.Incomplete $false
     }
+    Test-Case 'Junctions to system folders are not adjacent reach' {
+        $root = Join-Path $testRoot ('junction-drive-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root | Out-Null
+        $link = Join-Path $root 'Programme'
+        New-Item -ItemType Junction -Path $link -Target (Join-Path $env:SystemDrive 'Program Files') | Out-Null
+        try {
+            $result = Get-AdjacentDirectories -DriveRoot @($root)
+            Assert-Equal (@($result.Paths) -contains $link) $false
+            Assert-Equal $result.Incomplete $false
+        }
+        finally { [IO.Directory]::Delete($link) }
+    }
+    foreach ($aliasName in @('a-alias', 'z-alias')) {
+        Test-Case "A junction to another listed directory is deduplicated ($aliasName)" {
+            $root = Join-Path $testRoot ('junction-drive-' + [guid]::NewGuid().ToString('N'))
+            $target = Join-Path $root 'middle-target'
+            New-Item -ItemType Directory -Path $target | Out-Null
+            $link = Join-Path $root $aliasName
+            New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+            try {
+                $result = Get-AdjacentDirectories -DriveRoot @($root)
+                Assert-Equal (@($result.Paths) -contains $target) $true
+                Assert-Equal (@($result.Paths) -contains $link) $false
+                Assert-Equal $result.Incomplete $false
+            }
+            finally { [IO.Directory]::Delete($link) }
+        }
+    }
+    Test-Case 'A junction to an unlisted directory is retained' {
+        $root = Join-Path $testRoot ('junction-drive-' + [guid]::NewGuid().ToString('N'))
+        $target = Join-Path $script:WorkspacePath 'unlisted-target'
+        New-Item -ItemType Directory -Path $root, $target | Out-Null
+        $link = Join-Path $root 'alias'
+        New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+        try {
+            $result = Get-AdjacentDirectories -DriveRoot @($root)
+            Assert-Equal (@($result.Paths) -contains $link) $true
+            Assert-Equal (Get-ReadSamples -Directory @($link)).Incomplete $true
+        }
+        finally { [IO.Directory]::Delete($link) }
+    }
+    Test-Case 'Unreadable junction metadata does not suppress an adjacent target' {
+        $root = Join-Path $testRoot ('junction-drive-' + [guid]::NewGuid().ToString('N'))
+        $unresolved = Join-Path $root 'unresolved-alias'
+        New-Item -ItemType Directory -Path $root | Out-Null
+        function Get-ChildItem {
+            [CmdletBinding()] param([string]$LiteralPath, [switch]$Directory, [switch]$Force)
+            if ($LiteralPath -eq $root) { return [pscustomobject]@{ FullName = $unresolved } }
+            Microsoft.PowerShell.Management\Get-ChildItem @PSBoundParameters
+        }
+        $result = Get-AdjacentDirectories -DriveRoot @($root)
+        Assert-Equal (@($result.Paths) -contains $unresolved) $true
+    }
     $usersRoot = Join-Path $testRoot 'users'
     Test-Case 'Profiles behind a denied users listing are found through ProfileList' {
         $other = Join-Path $usersRoot 'other'

@@ -125,7 +125,7 @@ $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 
 $SchemaVersion = 'agent-sandbox-assessment/1'
-$CheckerVersion = '0.2.1'
+$CheckerVersion = '0.2.2'
 $ReportHeader = "Agent sandbox exposure checker - inside-only assessment v$CheckerVersion | Copyright (c) 2026 Florian Mücke"
 $ProfileId = 'default'
 $ProfileVersion = '6'
@@ -2223,7 +2223,23 @@ function Get-AdjacentDirectories {
             $paths.Add($directory.FullName)
         }
     }
-    return [pscustomobject]@{ Paths = @($paths.ToArray()); Incomplete = $incomplete; MaxTargets = $MaxTargets }
+    # Resolve only the immediate link metadata, never enumerate its target.
+    # Localized aliases such as Programme must not reintroduce system roots;
+    # aliases to a listed ordinary directory add no coverage either. Keep
+    # unresolved links and links to unlisted targets for the normal assessment.
+    $uniquePaths = foreach ($path in $paths) {
+        try {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($item.LinkType -in @('Junction', 'SymbolicLink')) {
+                $targetPath = [IO.Path]::GetFullPath([string]$item.Target, (Split-Path -Parent $path)).TrimEnd('\')
+                if ($systemRoots -contains $targetPath -or
+                    ($paths -contains $targetPath -and -not ([IO.File]::GetAttributes($targetPath) -band [IO.FileAttributes]::ReparsePoint))) { continue }
+            }
+        }
+        catch { } # Unreadable link metadata is not evidence of a duplicate.
+        $path
+    }
+    return [pscustomobject]@{ Paths = @($uniquePaths); Incomplete = $incomplete; MaxTargets = $MaxTargets }
 }
 
 function Get-ReadSamples {
