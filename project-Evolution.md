@@ -5,6 +5,21 @@ user while keeping a native Visual Studio/MSVC workflow. It has grown into a
 set of controls for identity, console sessions, filesystem access and network
 egress, with diagnostics that test the resulting exposure.
 
+```mermaid
+flowchart TD
+    S1["1. A separate user and a run-as launcher — June 2026"]
+    S2["2. Protecting the setup and checking the baseline — June–July 2026"]
+    S3["3. Remembering the password and keeping the terminal — July–August 2026"]
+    S4["4. From Claude launcher to agent workspace — August 2026"]
+    S5["5. An independent logon session and noninteractive desktop — August–September 2026"]
+    S6["6. From selected port blocks to an enforced web allowlist — October 2026"]
+    S7["7. One configuration, explicit exceptions and startup refusal — October 9, 2026"]
+    S8["8. Measuring exposure beyond the installation baseline — August–October 2026"]
+    S9["9. Restricting writes and reads beyond ordinary account ACLs — October 2026"]
+    S10["Current composition and upstream work not yet adopted"]
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10
+```
+
 This account follows the repository through commit
 [`7d69960` (2026-10-21)](https://github.com/fmuecke/agent-win-sandbox/commit/7d6996060ccbe774046dfc2188bcb3fc1335d3c1),
 including the 1.0.0 changelog, and checks dependency history as of 2026-11-11.
